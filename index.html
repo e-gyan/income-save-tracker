@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <style>
+      vite-error-overlay {
+        display: none !important;
+        visibility: hidden !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+      }
+    </style>
+    <script>
+      (function() {
+        // Suppress harmless Vite dev server HMR WebSocket closure notifications in AI Studio iframe environment
+        function isWsError(msg) {
+          if (!msg) return false;
+          var str = String(msg);
+          return str.indexOf('WebSocket') !== -1 || str.indexOf('websocket') !== -1 || str.indexOf('closed without opened') !== -1;
+        }
+
+        window.addEventListener('error', function(event) {
+          var msg = event.message || (event.error && event.error.message);
+          if (isWsError(msg)) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return true;
+          }
+        }, true);
+
+        window.addEventListener('unhandledrejection', function(event) {
+          var reason = event.reason && (event.reason.message || String(event.reason));
+          if (isWsError(reason)) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }
+        }, true);
+
+        // Filter out Vite HMR connection closed noise in console
+        var origConsoleError = console.error;
+        console.error = function() {
+          var args = Array.prototype.slice.call(arguments);
+          var hasWs = args.some(function(arg) {
+            return isWsError(arg && (arg.message || String(arg)));
+          });
+          if (hasWs) return;
+          origConsoleError.apply(console, args);
+        };
+      })();
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Save N Know</title>
+    <meta name="description" content="Progressive financial management system to route income into accounts, manage defined deductions as expenses or 30/15/5/20/10/15/5 savings split transfers, and track multi-account analytics." />
+    <meta property="og:title" content="Save N Know" />
+    <meta property="og:description" content="Progressive financial management system to route income into accounts, manage defined deductions as expenses or 30/15/5/20/10/15/5 savings split transfers, and track multi-account analytics." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

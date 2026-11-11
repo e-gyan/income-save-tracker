@@ -1,0 +1,6 @@
+{
+  "name": "Income Allocation and Finance Tracker",
+  "description": "Progressive financial management system to route income into accounts, calculate mandatory cuts, allocate flexible expenses, distribute 50/30/15/5 savings, and transfer deductions across vaults.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

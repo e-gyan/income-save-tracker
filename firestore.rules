@@ -1,0 +1,233 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation for UserSettings
+    function isValidUserSettings(data, userId) {
+      return data.keys().hasAll(['userId', 'currency']) &&
+             data.userId == userId &&
+             data.currency is string && data.currency.size() <= 10;
+    }
+
+    // Validation for FinancialAccount
+    function isValidFinancialAccount(data, userId) {
+      return data.keys().hasAll(['userId', 'name', 'type', 'initialBalance']) &&
+             data.userId == userId &&
+             data.name is string && data.name.size() <= 100 &&
+             data.type is string && data.type.size() <= 100 &&
+             data.initialBalance is number &&
+             (!('currency' in data) || (data.currency is string && data.currency.size() <= 10)) &&
+             (!('originalInitialBalance' in data) || (data.originalInitialBalance is number)) &&
+             (!('exchangeRate' in data) || (data.exchangeRate is number)) &&
+             (!('accountNumber' in data) || (data.accountNumber is string && data.accountNumber.size() <= 50)) &&
+             (!('institution' in data) || (data.institution is string && data.institution.size() <= 100)) &&
+             (!('isDefaultDeposit' in data) || (data.isDefaultDeposit is bool)) &&
+             (!('isVirtual' in data) || (data.isVirtual is bool)) &&
+             (!('color' in data) || (data.color is string && data.color.size() <= 30)) &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+             (!('linkedSavingsBucketId' in data) || (data.linkedSavingsBucketId is string && data.linkedSavingsBucketId.size() <= 128)) &&
+             (!('custodianAccountId' in data) || (data.custodianAccountId is string && data.custodianAccountId.size() <= 128)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 50)) &&
+             (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 50));
+    }
+
+    // Validation for AccountTransfer
+    function isValidAccountTransfer(data, userId) {
+      return data.keys().hasAll(['userId', 'date', 'sourceAccountId', 'destinationAccountId', 'amount', 'transferType']) &&
+             data.userId == userId &&
+             data.date is string && data.date.size() <= 30 &&
+             data.sourceAccountId is string && data.sourceAccountId.size() <= 128 &&
+             data.destinationAccountId is string && data.destinationAccountId.size() <= 128 &&
+             data.amount is number && data.amount >= 0 &&
+             data.transferType is string && data.transferType.size() <= 50 &&
+             (!('sourceCurrency' in data) || (data.sourceCurrency is string && data.sourceCurrency.size() <= 10)) &&
+             (!('sourceAmount' in data) || (data.sourceAmount is number && data.sourceAmount >= 0)) &&
+             (!('destinationCurrency' in data) || (data.destinationCurrency is string && data.destinationCurrency.size() <= 10)) &&
+             (!('destinationAmount' in data) || (data.destinationAmount is number && data.destinationAmount >= 0)) &&
+             (!('exchangeRate' in data) || (data.exchangeRate is number && data.exchangeRate >= 0)) &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 250)) &&
+             (!('linkedIncomeId' in data) || (data.linkedIncomeId is string && data.linkedIncomeId.size() <= 128)) &&
+             (!('linkedDeductionId' in data) || (data.linkedDeductionId is string && data.linkedDeductionId.size() <= 128)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 50));
+    }
+
+    // Validation for IncomeReceipt
+    function isValidIncomeReceipt(data, userId) {
+      return data.keys().hasAll(['userId', 'date', 'clientOrSource', 'grossAmount']) &&
+             data.userId == userId &&
+             data.date is string && data.date.size() <= 30 &&
+             data.clientOrSource is string && data.clientOrSource.size() <= 200 &&
+             data.grossAmount is number && data.grossAmount >= 0 &&
+             (!('currency' in data) || (data.currency is string && data.currency.size() <= 10)) &&
+             (!('originalGrossAmount' in data) || (data.originalGrossAmount is number && data.originalGrossAmount >= 0)) &&
+             (!('exchangeRate' in data) || (data.exchangeRate is number && data.exchangeRate >= 0)) &&
+             (!('category' in data) || (data.category is string && data.category.size() <= 100)) &&
+             (!('receiptId' in data) || (data.receiptId is string && data.receiptId.size() <= 100)) &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 1000)) &&
+             (!('quarter' in data) || (data.quarter is string && data.quarter.size() <= 10)) &&
+             (!('savingsRate' in data) || (data.savingsRate is number && data.savingsRate >= 0 && data.savingsRate <= 100)) &&
+             (!('accountId' in data) || (data.accountId is string && data.accountId.size() <= 128)) &&
+             (!('netTransferredToAccountId' in data) || (data.netTransferredToAccountId is string && data.netTransferredToAccountId.size() <= 128)) &&
+             (!('allocatedDeductionsJson' in data) || (data.allocatedDeductionsJson is string && data.allocatedDeductionsJson.size() <= 50000)) &&
+             (!('allowSubscription' in data) || (data.allowSubscription is bool)) &&
+             (!('allowData' in data) || (data.allowData is bool)) &&
+             (!('allowProjects' in data) || (data.allowProjects is bool)) &&
+             (!('allowPartnership' in data) || (data.allowPartnership is bool)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 50)) &&
+             (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 50));
+    }
+
+    // Validation for FlexibleExpense
+    function isValidFlexibleExpense(data, userId) {
+      return data.keys().hasAll(['userId', 'date', 'category', 'amount']) &&
+             data.userId == userId &&
+             data.date is string && data.date.size() <= 30 &&
+             data.category is string && data.category.size() <= 100 &&
+             data.amount is number && data.amount >= 0 &&
+             (!('currency' in data) || (data.currency is string && data.currency.size() <= 10)) &&
+             (!('originalAmount' in data) || (data.originalAmount is number && data.originalAmount >= 0)) &&
+             (!('exchangeRate' in data) || (data.exchangeRate is number && data.exchangeRate >= 0)) &&
+             (!('subcategory' in data) || (data.subcategory is string && data.subcategory.size() <= 100)) &&
+             (!('subcategoryColor' in data) || (data.subcategoryColor is string && data.subcategoryColor.size() <= 30)) &&
+             (!('recipient' in data) || (data.recipient is string && data.recipient.size() <= 200)) &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 250)) &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 1000)) &&
+             (!('incomeReceiptId' in data) || (data.incomeReceiptId is string && data.incomeReceiptId.size() <= 128)) &&
+             (!('accountId' in data) || (data.accountId is string && data.accountId.size() <= 128)) &&
+             (!('batchId' in data) || (data.batchId is string && data.batchId.size() <= 128)) &&
+             (!('vaultAction' in data) || (data.vaultAction is string && data.vaultAction.size() <= 20)) &&
+             (!('linkedExpenseId' in data) || (data.linkedExpenseId is string && data.linkedExpenseId.size() <= 128)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 50)) &&
+             (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 50));
+    }
+
+    // Validation for ForecastEntry
+    function isValidForecastEntry(data, userId) {
+      return data.keys().hasAll(['userId', 'monthIndex', 'expectedGross', 'expectedReceiptCount']) &&
+             data.keys().hasOnly(['userId', 'monthIndex', 'expectedGross', 'expectedReceiptCount', 'monthName', 'notes', 'updatedAt']) &&
+             data.userId == userId &&
+             data.monthIndex is number && data.monthIndex >= 1 && data.monthIndex <= 12 &&
+             data.expectedGross is number && data.expectedGross >= 0 &&
+             data.expectedReceiptCount is number && data.expectedReceiptCount >= 0 &&
+             (!('monthName' in data) || (data.monthName is string && data.monthName.size() <= 50)) &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 500));
+    }
+
+    // Validation for RevisionEntry
+    function isValidRevisionEntry(data, userId) {
+      return data.keys().hasAll(['userId', 'versionNumber', 'actionType', 'summary']) &&
+             data.keys().hasOnly(['userId', 'versionNumber', 'actionType', 'summary', 'snapshotData', 'timestamp']) &&
+             data.userId == userId &&
+             data.versionNumber is number && data.versionNumber >= 1 &&
+             data.actionType is string && data.actionType.size() <= 50 &&
+             data.summary is string && data.summary.size() <= 300 &&
+             (!('snapshotData' in data) || (data.snapshotData is string && data.snapshotData.size() <= 500000));
+    }
+
+    // Match /users/{userId} hierarchy
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+
+      // UserSettings
+      match /settings/{settingId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(settingId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(settingId) && isValidUserSettings(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(settingId) &&
+                         isValidUserSettings(incoming(), userId) &&
+                         incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(settingId);
+      }
+
+      // Incomes
+      match /incomes/{incomeId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(incomeId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(incomeId) && isValidIncomeReceipt(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(incomeId) &&
+                         isValidIncomeReceipt(incoming(), userId) &&
+                         incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(incomeId);
+      }
+
+      // Flexible Expenses
+      match /flexible_expenses/{expenseId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(expenseId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(expenseId) && isValidFlexibleExpense(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(expenseId) &&
+                         isValidFlexibleExpense(incoming(), userId) &&
+                         incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(expenseId);
+      }
+
+      // Forecasts
+      match /forecasts/{forecastId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(forecastId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(forecastId) && isValidForecastEntry(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(forecastId) &&
+                         isValidForecastEntry(incoming(), userId) &&
+                         incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(forecastId);
+      }
+
+      // Accounts
+      match /accounts/{accountId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(accountId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(accountId) && isValidFinancialAccount(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(accountId) &&
+                         isValidFinancialAccount(incoming(), userId) &&
+                         incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(accountId);
+      }
+
+      // Transfers
+      match /transfers/{transferId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(transferId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(transferId) && isValidAccountTransfer(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(transferId) &&
+                         isValidAccountTransfer(incoming(), userId) &&
+                         incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(transferId);
+      }
+
+      // Revisions (Progressive Version Control)
+      match /revisions/{revisionId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(revisionId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(revisionId) && isValidRevisionEntry(incoming(), userId);
+        allow update: if false; // Revisions are immutable audit snapshots
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(revisionId);
+      }
+    }
+  }
+}

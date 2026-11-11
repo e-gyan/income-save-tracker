@@ -1,0 +1,492 @@
+{
+  "entities": {
+    "UserSettings": {
+      "title": "UserSettings",
+      "description": "User configuration for currency, mandatory deductions, savings buckets, and quarterly rates",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner user ID"
+        },
+        "currency": {
+          "type": "string",
+          "description": "Selected currency code such as GHS, USD, EUR, GBP",
+          "maxLength": 10
+        },
+        "themeMode": {
+          "type": "string",
+          "description": "Theme mode (light, dark, system)",
+          "maxLength": 20
+        },
+        "colorTheme": {
+          "type": "string",
+          "description": "Selected functional app color theme",
+          "maxLength": 30
+        },
+        "subscriptionFee": {
+          "type": "number",
+          "description": "Default fixed Subscription deduction per income receipt (default 85 GHS)"
+        },
+        "dataBundleFee": {
+          "type": "number",
+          "description": "Default fixed Data Bundle deduction per income receipt (default 80 GHS)"
+        },
+        "projectBuildingsRate": {
+          "type": "number",
+          "description": "Default percentage Project Buildings deduction rate (default 0%)"
+        },
+        "customCuts": {
+          "type": "string",
+          "description": "JSON stringified list of custom deductions"
+        },
+        "savingsBuckets": {
+          "type": "string",
+          "description": "JSON stringified configuration of 50/30/15/5 savings structure and sub-buckets"
+        },
+        "quarterlyRates": {
+          "type": "string",
+          "description": "JSON stringified quarterly savings target rates"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp"
+        }
+      },
+      "required": ["userId", "currency", "subscriptionFee", "dataBundleFee", "projectBuildingsRate"]
+    },
+    "IncomeReceipt": {
+      "title": "IncomeReceipt",
+      "description": "Recorded income receipt in the Income Log",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner user ID"
+        },
+        "date": {
+          "type": "string",
+          "description": "Date of income receipt",
+          "maxLength": 30
+        },
+        "clientOrSource": {
+          "type": "string",
+          "description": "Name of client, payer, or income source",
+          "maxLength": 200
+        },
+        "category": {
+          "type": "string",
+          "description": "Category of income (e.g. Salary, Consulting, Sales, Project)",
+          "maxLength": 100
+        },
+        "grossAmount": {
+          "type": "number",
+          "description": "Total income amount in app base currency before deductions (2-point floating)"
+        },
+        "currency": {
+          "type": "string",
+          "description": "Currency selected for this income record",
+          "maxLength": 10
+        },
+        "originalGrossAmount": {
+          "type": "number",
+          "description": "Original total income amount in the selected income currency (2-point floating)"
+        },
+        "exchangeRate": {
+          "type": "number",
+          "description": "Market exchange rate applied (2-point floating)"
+        },
+        "receiptId": {
+          "type": "string",
+          "description": "Receipt reference or invoice identifier",
+          "maxLength": 100
+        },
+        "notes": {
+          "type": "string",
+          "description": "Optional notes or description",
+          "maxLength": 1000
+        },
+        "quarter": {
+          "type": "string",
+          "description": "Fiscal quarter (Q1, Q2, Q3, Q4)",
+          "maxLength": 10
+        },
+        "savingsRate": {
+          "type": "number",
+          "description": "Target savings rate percentage"
+        },
+        "accountId": {
+          "type": "string",
+          "description": "Receiving financial account identifier",
+          "maxLength": 128
+        },
+        "allocatedDeductionsJson": {
+          "type": "string",
+          "description": "Serialized JSON array of allocated deductions directly deducted from this specific income record",
+          "maxLength": 50000
+        },
+        "allowSubscription": {
+          "type": "boolean",
+          "description": "Whether subscription fee is deducted"
+        },
+        "allowData": {
+          "type": "boolean",
+          "description": "Whether data bundle fee is deducted"
+        },
+        "allowProjects": {
+          "type": "boolean",
+          "description": "Whether project building percentage is deducted"
+        },
+        "allowPartnership": {
+          "type": "boolean",
+          "description": "Whether partnership support cut is deducted"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Update timestamp"
+        }
+      },
+      "required": ["userId", "date", "clientOrSource", "grossAmount"]
+    },
+    "FlexibleExpense": {
+      "title": "FlexibleExpense",
+      "description": "Flexible expense allocated from Available after cuts",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner user ID"
+        },
+        "date": {
+          "type": "string",
+          "description": "Expense date",
+          "maxLength": 30
+        },
+        "incomeReceiptId": {
+          "type": "string",
+          "description": "Optional linked income receipt ID or general pool",
+          "maxLength": 128
+        },
+        "category": {
+          "type": "string",
+          "description": "Expense category (e.g. Operations, Living, Supplies, Miscellaneous)",
+          "maxLength": 100
+        },
+        "subcategory": {
+          "type": "string",
+          "description": "Expense subcategory",
+          "maxLength": 100
+        },
+        "subcategoryColor": {
+          "type": "string",
+          "description": "Resolved or custom hex color for the expense subcategory",
+          "maxLength": 30
+        },
+        "description": {
+          "type": "string",
+          "description": "Description of the flexible expense",
+          "maxLength": 250
+        },
+        "amount": {
+          "type": "number",
+          "description": "Expense monetary amount in app base currency (2-point floating)"
+        },
+        "currency": {
+          "type": "string",
+          "description": "Currency of the expense transaction",
+          "maxLength": 10
+        },
+        "originalAmount": {
+          "type": "number",
+          "description": "Original expense amount in spend currency (2-point floating)"
+        },
+        "exchangeRate": {
+          "type": "number",
+          "description": "Market exchange rate applied (2-point floating)"
+        },
+        "vaultAction": {
+          "type": "string",
+          "description": "Vault cause action: debit or credit",
+          "maxLength": 20
+        },
+        "linkedExpenseId": {
+          "type": "string",
+          "description": "Linked original debit expense ID when crediting a cause instance",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp"
+        }
+      },
+      "required": ["userId", "date", "category", "description", "amount"]
+    },
+    "ForecastEntry": {
+      "title": "ForecastEntry",
+      "description": "Projected gross income and receipt count for 12-month financial planning",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner user ID"
+        },
+        "monthIndex": {
+          "type": "number",
+          "description": "Month index from 1 to 12"
+        },
+        "monthName": {
+          "type": "string",
+          "description": "Month label (e.g. Month 1, Month 2)",
+          "maxLength": 50
+        },
+        "expectedGross": {
+          "type": "number",
+          "description": "Expected gross income in Forecast column B"
+        },
+        "expectedReceiptCount": {
+          "type": "number",
+          "description": "Adjusted expected receipt count in Forecast column C"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Planning notes",
+          "maxLength": 500
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp"
+        }
+      },
+      "required": ["userId", "monthIndex", "expectedGross", "expectedReceiptCount"]
+    },
+    "RevisionEntry": {
+      "title": "RevisionEntry",
+      "description": "Progressive version control record capturing financial state snapshots and deltas",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner user ID"
+        },
+        "versionNumber": {
+          "type": "number",
+          "description": "Sequential version number"
+        },
+        "actionType": {
+          "type": "string",
+          "description": "Type of action triggering revision",
+          "maxLength": 50
+        },
+        "summary": {
+          "type": "string",
+          "description": "Human-readable summary of the modification",
+          "maxLength": 300
+        },
+        "snapshotData": {
+          "type": "string",
+          "description": "Serialized JSON snapshot data for rollback support"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of revision"
+        }
+      },
+      "required": ["userId", "versionNumber", "actionType", "summary"]
+    },
+    "FinancialAccount": {
+      "title": "FinancialAccount",
+      "description": "User bank, mobile money, or cash account",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner user ID"
+        },
+        "name": {
+          "type": "string",
+          "description": "Account display name",
+          "maxLength": 100
+        },
+        "type": {
+          "type": "string",
+          "description": "Account classification type",
+          "maxLength": 50
+        },
+        "accountNumber": {
+          "type": "string",
+          "description": "Optional account or wallet identifier",
+          "maxLength": 50
+        },
+        "institution": {
+          "type": "string",
+          "description": "Financial institution or bank",
+          "maxLength": 100
+        },
+        "isDefaultDeposit": {
+          "type": "boolean",
+          "description": "Whether this is the default deposit destination"
+        },
+        "isVirtual": {
+          "type": "boolean",
+          "description": "Whether this is a virtual fund management account attached to a main account"
+        },
+        "initialBalance": {
+          "type": "number",
+          "description": "Starting balance for reconciliation (2-point floating)"
+        },
+        "currency": {
+          "type": "string",
+          "description": "Account currency code",
+          "maxLength": 10
+        },
+        "originalInitialBalance": {
+          "type": "number",
+          "description": "Original starting balance in account currency (2-point floating)"
+        },
+        "exchangeRate": {
+          "type": "number",
+          "description": "Market exchange rate applied (2-point floating)"
+        },
+        "color": {
+          "type": "string",
+          "description": "Color tag or theme",
+          "maxLength": 30
+        },
+        "description": {
+          "type": "string",
+          "description": "Account description or notes",
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp"
+        }
+      },
+      "required": ["userId", "name", "type", "initialBalance"]
+    },
+    "AccountTransfer": {
+      "title": "AccountTransfer",
+      "description": "Internal transfer between financial accounts",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner user ID"
+        },
+        "date": {
+          "type": "string",
+          "description": "Transfer date",
+          "maxLength": 30
+        },
+        "sourceAccountId": {
+          "type": "string",
+          "description": "Origin account ID",
+          "maxLength": 128
+        },
+        "destinationAccountId": {
+          "type": "string",
+          "description": "Target account ID",
+          "maxLength": 128
+        },
+        "amount": {
+          "type": "number",
+          "description": "Monetary transfer amount in app base currency (2-point floating)"
+        },
+        "sourceCurrency": {
+          "type": "string",
+          "description": "Currency of source account",
+          "maxLength": 10
+        },
+        "sourceAmount": {
+          "type": "number",
+          "description": "Amount debited in source account currency (2-point floating)"
+        },
+        "destinationCurrency": {
+          "type": "string",
+          "description": "Currency of destination account",
+          "maxLength": 10
+        },
+        "destinationAmount": {
+          "type": "number",
+          "description": "Amount credited in destination account currency (2-point floating)"
+        },
+        "exchangeRate": {
+          "type": "number",
+          "description": "Market exchange rate applied (2-point floating)"
+        },
+        "transferType": {
+          "type": "string",
+          "description": "Type of transfer (e.g. manual, automated_deduction, savings_allocation)",
+          "maxLength": 50
+        },
+        "description": {
+          "type": "string",
+          "description": "Transfer explanation",
+          "maxLength": 250
+        },
+        "linkedIncomeId": {
+          "type": "string",
+          "description": "Optional linked income receipt ID",
+          "maxLength": 128
+        },
+        "linkedDeductionId": {
+          "type": "string",
+          "description": "Optional linked deduction or bucket ID",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp"
+        }
+      },
+      "required": ["userId", "date", "sourceAccountId", "destinationAccountId", "amount", "transferType"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/settings/{settingId}": {
+      "schema": "UserSettings",
+      "description": "User application settings"
+    },
+    "/users/{userId}/incomes/{incomeId}": {
+      "schema": "IncomeReceipt",
+      "description": "Income log entries"
+    },
+    "/users/{userId}/flexible_expenses/{expenseId}": {
+      "schema": "FlexibleExpense",
+      "description": "Flexible expenses deducted from Available after cuts"
+    },
+    "/users/{userId}/forecasts/{forecastId}": {
+      "schema": "ForecastEntry",
+      "description": "12-month forward projections"
+    },
+    "/users/{userId}/revisions/{revisionId}": {
+      "schema": "RevisionEntry",
+      "description": "Progressive version control audit records"
+    },
+    "/users/{userId}/accounts/{accountId}": {
+      "schema": "FinancialAccount",
+      "description": "User financial accounts"
+    },
+    "/users/{userId}/transfers/{transferId}": {
+      "schema": "AccountTransfer",
+      "description": "Internal account transfers"
+    }
+  }
+}
