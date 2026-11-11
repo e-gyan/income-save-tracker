@@ -1,10 +1,10 @@
-# Save N Know — Enterprise Financial Allocation & Multi-Account Ledger (`v3.3.0`)
+# Save N Know: Enterprise Financial Allocation and Multi-Account Ledger (`v3.3.0`)
 
-**Save N Know** is an enterprise-grade personal and business capital allocation, multi-account ledger, account-driven FX currency conversion, file import & ingestion, expense intelligence, and automated savings vault platform built with React 19, TypeScript, Tailwind CSS v4, Express, and Firebase (Authentication & Cloud Firestore).
+**Save N Know** is an enterprise-grade personal and business capital allocation, multi-account ledger, account-driven FX currency conversion, file import & ingestion, expense intelligence, and automated savings vault platform built with React 19, TypeScript, Tailwind CSS v4, Express, and Firebase (Authentication and Cloud Firestore).
 
 ---
 
-## 1. Executive Summary & Core Product Capabilities
+## 1. Core Product Capabilities
 
 - **Month-over-Month Category Spending Bar Chart (Creeping Expense Tracker)**:
   - **Visual MoM Category Bar Comparison**: Dedicated bar chart visualization in **Analytics & Insights** that compares monthly spending across each expense category (`By Category` multi-month trajectory bars with dashed monthly average line vs. `By Month` clustered category bars).
@@ -14,7 +14,7 @@
   - **Base Currency Mode (`'base'`)**: Consolidates all KPIs and account cards in the system's base currency using real-time **2-point floating** market exchange rate conversions, with secondary original-currency captions when foreign accounts exist.
   - **Account Original Currency Mode (`'original'`)**: Displays all KPI totals grouped in each account's native currency (e.g., `$1,200.00 + GH₵4,500.00`) and displays account cards in their native currency alongside a real-time market-converted base currency caption (`≈ GH₵...`).
 - **Account-Driven Currency Model & Native-Currency Income Persistence**:
-  - **Flexible App & Account Currencies**: Set a global primary base currency in **Settings** (`GHS`, `USD`, `EUR`, `GBP`, `NGN`, `KES`, `ZAR`, `CAD`, `AUD`, `JPY`, `INR`) while assigning any currency to individual accounts (`account.currency`). Each account's currency governs how transactions operate on that account across the app.
+  - **Flexible App and Account Currencies**: Set a global primary base currency in **Settings** (`GHS`, `USD`, `EUR`, `GBP`, `NGN`, `KES`, `ZAR`, `CAD`, `AUD`, `JPY`, `INR`) while assigning any currency to individual accounts (`account.currency`). Each account's currency governs how transactions operate on that account across the app.
   - **Save Income in Account Currency Without Conversion**: When adding or importing a new income into an account whose currency differs from the system currency, the income and its allocated deductions are saved and displayed directly in that account's native currency (`grossAmount: rawEnteredAmount`, `originalGrossAmount: rawEnteredAmount`, `currency: accountCurrency`) without conversion.
   - **Real-Time Market Conversion on Consolidated Totals**: All consolidated system totals (**Dashboard**, **Analytics**, **Monthly Summary**, **Savings Vaults**, and **Total Balance Across Accounts**) automatically convert non-base currency incomes, deductions, expenses, transfers, and account balances into `settings.currency` using real-time **2-point floating** market exchange rates (`convertCurrency2dp`).
   - **Real-Time Conversion on Spending & Transfers**: When spending or transferring from an account whose currency differs from the main app currency, the transaction operates in the account's currency and converts in real time across the source account currency, destination account currency, and system base currency.
@@ -23,15 +23,15 @@
   - Combines deterministic multi-format parsing (including JSON/NDJSON/base64/delimited `.bak` archives) with AI fallback (`gemini-3.1-flash-lite`) to extract **Incomes**, **Expenses**, **Accounts**, and **Transfers**, preserving native account currencies on incomes while converting expenses, transfers, and system totals at real-time 2-point floating market rates.
 - **Standardized Executive Terminology**:
   - Standardized all income metrics across the platform from *Gross Income* to **Total Income** and savings metrics from *Savings Transfers* to **Savings Accumulated**.
-- **Intelligent Quarterly Savings & Defined Deductions Engine**:
-  - Supports quarter-aware (`Q1`, `Q2`, `Q3`, `Q4`) savings deduction rates based on the income record's date.
+- **Intelligent Quarterly Savings and Defined Deductions Engine**:
+  - Supports quarter-aware savings deduction rates based on the income record's date.
   - Non-retroactive rate updates: modifying quarterly savings rates in **Settings** applies only to subsequent income records without altering historical ledgers.
   - Custom per-income rate overrides (`isCustomRateOverride`) and **Net Income Routing** to designated accounts.
-- **Virtual Accounts & Attached Main Accounts (Operating & Savings Vaults)**:
+- **Virtual Accounts and Attached Main Accounts (Operating and Savings Vaults)**:
   - Any Operating Account or Savings Vault can be marked as a **Virtual Account** attached to a non-virtual **Main Account** (`custodianAccountId`).
   - All transfers, spending, debits, and credits on a virtual account or savings vault are reflected in both the virtual account/vault AND its attached Main Account, while **Total Balance Across Accounts** is calculated strictly from Main (non-virtual) accounts to prevent double-counting.
-- **Savings Vaults — Debit & Credit Cause Lifecycle**:
-  - **Debit Vault**: Deploy funds from a Savings Vault for an investment or capital cause (*Treasury Bond*, *Mutual Funds*, *Buying of Lands*, *Fixed Deposit*, *Equity / ETF*), deducting from both the Savings Vault and its attached Main Account.
+- **Savings Vaults — Debit and Credit Cause Lifecycle**:
+  - **Debit Vault**: Deploy funds from a Savings Vault for an investment or capital cause deducting from both the Savings Vault and its attached Main Account.
   - **Credit Vault / Credit Instance**: Credit a debited cause instance once the cause matures or ends, crediting both the Savings Vault and its attached Main Account.
 - **Intuitive Backend Expense Subcategory Color Engine**:
   - Automatically assigns semantic, high-contrast colors to expense subcategories on the backend using financial domain keyword intelligence with deterministic FNV-1a hash fallback and interactive palette customization in **Settings**.
@@ -77,7 +77,7 @@
 
 ---
 
-## 3. Component & Module Reference
+## 3. Component and Module Reference
 
 | Component / Module | Responsibility |
 | :--- | :--- |
@@ -93,34 +93,7 @@
 
 ---
 
-## 4. GitHub File Change Log (Brief Summary per Modified File)
-
-Use the following file-by-file summary for commit messages and pull request documentation when uploading to GitHub:
-
-- **`src/types/finance.ts`**:
-  - Added `TotalsCurrencyMode` (`'base' | 'original'`) and `totalsCurrencyMode?: TotalsCurrencyMode` on `UserSettings` to persist the global totals display preference.
-- **`src/lib/firestoreService.ts`**:
-  - Hydrated and persisted `totalsCurrencyMode` (`'base'` or `'original'`) in `fetchUserSettings` and `saveUserSettings`.
-- **`src/lib/calculations.ts`**:
-  - Added `CurrencyBucketTotal`, `addCurrencyBucketAmount`, `mapToCurrencyBucketTotals`, `formatTotalByCurrencyMode`, `getSecondaryCurrencyModeCaption`, and `formatAccountCardBalanceByMode` helpers.
-  - Extended `calculateAccountSummaries` to accept `MarketFxSnapshot` and return per-currency bucket breakdowns (`cashByCurrency`, `operatingCashByCurrency`, `savingsVaultCashByCurrency`, `grossDepositedByCurrency`, `netAfterDeductionsByCurrency`, `transferredSavingsByCurrency`); bumped `APP_VERSION` to `3.3.0`.
-- **`src/components/SettingsView.tsx`**:
-  - Added the global **View Totals In** segmented toggle (`Base (${currency})` vs. `Account Currency`) in the Settings header bar with instant persistence.
-- **`src/components/DashboardView.tsx`**:
-  - Updated the 4 executive KPI cards (`Total Balance`, `Total Income`, `Total Expenses`, `Savings Accumulated`) and the `Accounts` list to switch between the system's base currency and each account's original currency with real-time market conversion captions.
-- **`src/components/AccountsView.tsx`**:
-  - Updated the 4-column Aggregate Summary Bar (`Total Balance Across Accounts`, `Total Income Deposited`, `Net Income After Deductions`, `Total Savings Accumulated`), Operating Account cards, and Savings Vault cards to respect `settings.totalsCurrencyMode` with real-time FX conversion captions.
-- **`src/components/FlexibleExpensesView.tsx`**:
-  - Updated the KPI Summary Strip (`Total Expenses`, `Income Deduction Expenses`, `Net Savings Deployed to Causes`) to render in base currency or per-account original currencies with real-time market conversion captions.
-- **`src/components/AnalyticsView.tsx`**:
-  - Connected live `MarketFxSnapshot` rates and updated the Top 4-Card Analytical KPI Strip (`Total Income`, `Total Expenses (All)`, `Savings Accumulated`, `Total Cash Liquidity`) to respect `settings.totalsCurrencyMode`.
-  - Implemented the **Month-over-Month Category Spending** bar chart visualization (`By Category` and `By Month` modes, `Creeping Up` filter, monthly average reference line, and MoM delta summary strip) to help users identify creeping expenses.
-- **`README.md`**:
-  - Updated enterprise documentation and file-by-file GitHub change summary.
-
----
-
-## 5. Local Development & Production Deployment
+## 4. Local Development and Production Deployment
 
 ```bash
 # Install dependencies
