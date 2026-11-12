@@ -1,4 +1,4 @@
-# Save N Know: Enterprise Financial Allocation and Multi-Account Ledger (`v3.5.0`)
+# Save N Know: Enterprise Financial Allocation and Multi-Account Ledger (`v3.6.0`)
 
 **Save N Know** is an enterprise-grade personal and business capital allocation, multi-account ledger, recurring & custom subcategory budgeting, account-driven FX currency conversion, file import & ingestion, expense intelligence, and automated savings vault platform built with React 19, TypeScript, Tailwind CSS v4, Express, and Firebase (Authentication and Cloud Firestore).
 
@@ -8,31 +8,18 @@
 
 - **Budgets Engine (`BudgetsView.tsx` & `budgetCalculations.ts`)**:
   - **Primary Menu Option (`Budgets`)**: Dedicated workspace accessible from the top-right menu drawer (`Sidebar.tsx`) with live badge counters for total budgets and active threshold/over-limit alerts.
-  - **Flexible Period Recurrence**: Define budgets as **Recurring Weekly** (current Monday–Sunday cycle), **Recurring Monthly** (current calendar month), or **Custom Period** (`customStartDate` to `customEndDate`).
-  - **Single or Multiple Subcategory Scope**: Assign either a **Single Subcategory** (`scopeType: 'single'`) or **Multiple Subcategories** (`scopeType: 'multiple'`) to each budget, with optional binding to a specific financial account (`accountId`).
-  - **Budget Cards with Progress & Residual Visuals**: Each budget card renders real-time spent amount, usage percentage (`%`), residual remaining balance (`residualAmount` and `residualPercentage%`), a segmented **Subcategory Progress + Residual Visual Bar**, and per-subcategory progress breakdown bars.
-  - **Real-Time Spend & Account Balance Checks with Alerts**: When recording expenses (`FlexibleExpensesView.tsx`, `FloatingQuickActions.tsx`) or transferring funds (`AccountsView.tsx`), the engine checks both matching subcategory budgets and source account balances (including attached Main Accounts for virtual accounts) in real time—displaying color-coded alerts (**Exceeded / Overdrawn** in rose, **Near Limit** in amber, **Within Budget / Sufficient** in emerald).
-- **Redesigned Global Date Filters (`dateFilters.ts`, `Header.tsx`, `Navigation.tsx`, `Sidebar.tsx`)**:
-  - Standardized date filter presets across desktop pills, tablet dropdown, mobile collapsible grid, and menu drawer:
-    - **Last 7 days** (`7d`)
-    - **This month** (`this_month`)
-    - **Last 31 days** (`31d`)
-    - **Last month** (`last_month`)
-    - **This year** (`this_year`)
-    - **Last 365 days** (`365d`)
-    - **Last year** (`last_year`)
-    - **All Time** (`all` — reset/full history)
-- **Consolidated Mobile-First Header & Top-Right Menu Drawer**:
-  - **Streamlined Single Top Bar (`Header.tsx`)**: Compact 56px top bar featuring `Save N Know` and the active workspace section on the left, effective date filter controls in the center/right, and a unified **Top-Right Menu** trigger.
-  - **Bundled Top-Right Menu (`Sidebar.tsx`)**: Anchored to the top-right corner, bundling **App Name & Version (`v3.5.0`)**, **Account Login / Sign Out & Session Details**, **Workspace Views Navigation** (including **Budgets**), **Quick Date Filter**, **Appearance & Display Mode (`Light` / `Dark` / `Auto`)**, **8 Color Themes**, and **Reset Sheet**.
-- **High-Contrast, Bold Quick Record Experience (`FloatingQuickActions.tsx`)**:
-  - Floating `+` trigger and Quick Record action menu (`Transfer Fund`, `Income`, `Expense`, `Deduction Assistant`) with bold SVG icons, tinted icon badges, and real-time Budget & Account spend check alerts inside the Quick Expense modal.
-- **Month-over-Month Category Spending Bar Chart (Creeping Expense Tracker)**:
-  - Dedicated bar chart visualization in **Analytics & Insights** that compares monthly spending across each expense category and highlights creeping expenses.
-- **Global Totals Currency Mode Toggle & Account-Driven FX Engine**:
-  - Switch `totalsCurrencyMode` between **Base (`settings.currency`)** and **Account Currency (`original`)** in **Settings → View Totals In** with real-time **2-point floating** market exchange rate conversions (`convertCurrency2dp`).
-- **Seamless Backend File Import & Database Synchronization (`POST /api/import/parse`)**:
-  - Import `.csv`, `.tsv`, `.json`, `.txt`, `.md`, `.pdf`, or `.bak` backup files directly from **Settings → Import Records & Files**.
+  - **Flexible Period Recurrence**: Define budgets as **Recurring Weekly** (current Monday–Sunday cycle), **Recurring Monthly** (current calendar month), **Recurring Yearly** (current calendar year), or **Custom Period** (`customStartDate` to `customEndDate`). Elapsed recurring budgets automatically recreate for the new period.
+  - **Minimalist Clickable Budget Card & Pop-Up Budget Options Modal**:
+    - Each defined **Budget Card** displays only the **Budget Name**, **Top Bar Row** (Start Period on top-left, Usage `%` in the middle, End Period on top-right), **Progress Bar with the Alert Mark embedded inside the bar**, **Bottom Bar Row** (`0.00` starting currency on bottom-left, Spent currency in the middle, Budget Amount on bottom-right), and **Residual Amount** beneath on the left.
+    - Clicking any budget card opens the **Pop-Up Budget Options Modal** displaying **Selected Subcategories** (with colors and spend breakdown), **Accounts Chosen**, **History of Transactions**, **Edit Budget**, and **Delete Budget**.
+- **Streamlined Static Header on Mobile & Navigation Defaults (`Header.tsx`, `Navigation.tsx`, `App.tsx`)**:
+  - **Default Menu Option**: Opens on **Overview** (`dashboard`) by default.
+  - **Mobile Static Header (`Header.tsx`)**: Compact 48px (`h-12 sm:h-14`) header showing only `Save N Know` on the left (without adjacent menu option descriptions), responsive date filter controls, and the top-right `Menu` button.
+  - **Renamed Menu Option**: Changed `"Income & Deductions"` to `"Income"`.
+- **Income Fixed-Value Deductions Currency Equivalence & Unselected Default Sources (`IncomeLogView.tsx`, `FloatingQuickActions.tsx`, `calculations.ts`, `deductionIntelligence.ts`)**:
+  - **Currency Equivalence for Fixed Deductions**: When recording income in a currency different from the app's base currency, any **Defined Deduction** or **Suggested from Your History** deduction with a **fixed value** (`type === 'fixed'`) is automatically converted to the equivalent value in the selected income currency.
+  - **Unselected Default Options & Synced Quick Record**: **Income Source** and **Source** start unselected (`Select Income Source...` / `Select Source...`) until chosen by the user, are shared and persisted across both the full **Income** view and **Quick Record**, and have all pre-defined seed lists cleared from the codebase.
+  - **Subcategory Color Badges on Deductions (`SettingsView.tsx`, `IncomeLogView.tsx`, `FloatingQuickActions.tsx`)**: Defined and expense deductions display only the subcategory description styled with its configured color badge.
 
 ---
 
@@ -40,37 +27,37 @@
 
 ```text
 ├── src/
-│   ├── App.tsx                         # Root state orchestrator, Firestore sync (incomes, expenses, accounts, transfers, budgets)
+│   ├── App.tsx                         # Root state orchestrator (default tab: Overview / 'dashboard'), Firestore sync & settings persistence
 │   ├── index.css                       # Global Tailwind v4 typography, theme variables, text wrapping & surface rules
 │   ├── types/
 │   │   └── finance.ts                  # Enterprise domain models (IncomeReceipt, FlexibleExpense, FinancialAccount, AccountTransfer, FinancialBudget, UserSettings)
 │   ├── lib/
 │   │   ├── currencyService.ts          # Real-time FX market rate sync, account native currency helpers & 2-point floating conversion engine
-│   │   ├── calculations.ts             # Account-native & system-base ledger engine, virtual/main account rollup & subcategory color engine
-│   │   ├── budgetCalculations.ts       # Budget period window resolver, subcategory progress/residual evaluator & real-time spend/account check engine
-│   │   ├── deductionIntelligence.ts    # Pattern-learning engine suggesting deductions from historical income & expense data
+│   │   ├── calculations.ts             # Account-native & system-base ledger engine, fixed-deduction FX conversion & subcategory color engine
+│   │   ├── budgetCalculations.ts       # Budget period window resolver, recurring rollover engine, subcategory progress/residual evaluator & spend checks
+│   │   ├── deductionIntelligence.ts    # Pattern-learning engine suggesting deductions with fixed-value FX equivalence conversion
 │   │   ├── colorThemes.ts              # Persistent functional color palettes & CSS custom property injector
 │   │   ├── dateFilters.ts              # Redesigned date filters (Last 7 days, This month, Last 31 days, Last month, This year, Last 365 days, Last year, All Time)
 │   │   ├── firebase.ts                 # Firebase Auth (Google Sign-In) & Firestore initialization with error diagnostics
-│   │   └── firestoreService.ts         # Real-time Firestore subscriptions (including /users/{userId}/budgets) & local cache fallback
+│   │   └── firestoreService.ts         # Real-time Firestore subscriptions & legacy pre-defined seed stripper
 │   └── components/
-│       ├── Header.tsx                  # Compact 56px top bar with Save N Know branding, redesigned desktop/mobile date filters & Menu button
-│       ├── Navigation.tsx              # Collapsible 4-column mobile date filter grid (md:hidden) with full redesigned labels
-│       ├── Sidebar.tsx                 # Top-right menu drawer bundling Account/Login details, Views (with Budgets badge), Date Filter & Theme
-│       ├── BudgetsView.tsx             # Budgets workspace: Weekly/Monthly/Custom budgets, Single/Multiple subcategories, Progress + Residual visual cards & alerts
-│       ├── DashboardView.tsx           # Executive KPI strip (Total Income, Savings Accumulated), allocation flow & native-currency accounts
-│       ├── IncomeLogView.tsx           # Account-currency income entry (saved without conversion), quarterly rates & net routing
+│       ├── Header.tsx                  # Compact mobile-first static top bar (h-12 sm:h-14) with Save N Know branding (no menu subtitle), date filters & Menu button
+│       ├── Navigation.tsx              # Primary navigation metadata ("Income" label) & collapsible mobile 2-column date filter grid
+│       ├── Sidebar.tsx                 # Top-right menu drawer bundling Account/Login details, Views, Date Filter & Theme
+│       ├── BudgetsView.tsx             # Minimalist clickable budget cards (progress bar + alert mark + start/pct/end + 0.00/spent/budget + residual) & Pop-Up Budget Options Modal
+│       ├── DashboardView.tsx           # Default Overview workspace: Executive KPI strip, allocation flow & native-currency accounts
+│       ├── IncomeLogView.tsx           # Income workspace: unselected default Income Source/Source, fixed-deduction FX equivalence & subcategory color badges
 │       ├── FlexibleExpensesView.tsx    # Multi-item expense batch recorder with real-time Budget & Account spend check alerts
-│       ├── AccountsView.tsx            # Account native currency ledger, live Transfer balance check alert & Vault Debit/Credit modals
+│       ├── AccountsView.tsx            # Multi-account ledger without pre-defined account type seeds, live Transfer balance check & Vault modals
 │       ├── AnalyticsView.tsx           # Mobile-responsive MoM category bar charts, compact labels & zero-overlap breakdowns
-│       ├── SettingsView.tsx            # Mobile-responsive Base Currency, File Import (.csv/.json/.txt/.pdf/.bak), vaults & deductions
+│       ├── SettingsView.tsx            # Base Currency, File Import, vaults & Defined Deductions showing only colored subcategory badge
 │       ├── DeductionAgentModal.tsx     # Smart deduction suggestion modal learned from user ledger history
-│       ├── FloatingQuickActions.tsx    # Bold floating action shortcut (+ button) with real-time Budget & Account spend checks
+│       ├── FloatingQuickActions.tsx    # Quick Record modal synced with Income Source/Source options, fixed-deduction FX conversion & colored subcategory badges
 │       ├── WrapSelect.tsx              # Accessible custom select component with gentle multi-line option wrapping
 │       └── ConfirmDeleteModal.tsx      # Confirmation modal for destructive actions
 ├── server.ts                           # Express server (port 3000) + /api/fx/rates + /api/import/parse + /api/budgets/evaluate
-├── firebase-blueprint.json             # Canonical Firestore entity schema & collection path definitions (including FinancialBudget)
-├── firestore.rules                     # Zero-trust user-isolated Firestore security rules (including /budgets/{budgetId})
+├── firebase-blueprint.json             # Canonical Firestore entity schema & collection path definitions
+├── firestore.rules                     # Zero-trust user-isolated Firestore security rules
 ├── render.yaml                         # Render cloud deployment blueprint
 └── CHANGELOG.md                        # Semantic versioning release log
 ```
@@ -81,32 +68,33 @@
 
 | Component / Module | Responsibility |
 | :--- | :--- |
-| `src/components/BudgetsView.tsx` | Mobile-fitted Budgets management workspace supporting Weekly, Monthly, Yearly, and Custom date budgets across Single or Multiple expense subcategories, rendering clean Progress + Residual visual bars, omitting single/multiple descriptions on cards, and revealing the Subcategory Breakdown alongside Recorded Expenses inside `View Expenses`. |
-| `src/lib/budgetCalculations.ts` | Computes active budget date windows (`computeRecurringPeriodBounds`, `resolveBudgetPeriodWindow`), automatically recreates elapsed recurring budgets for the new period (`reconcileRecurringBudgets`), evaluates subcategory spend progress and residual balances (`evaluateBudgetProgress`, `evaluateAllBudgets`), and runs real-time pre-spend budget + account balance checks (`checkSpendAgainstBudgetsAndAccount`). |
-| `src/lib/dateFilters.ts` | Implements the redesigned date filter presets (`Last 7 days`, `This month`, `Last 31 days`, `Last month`, `This year`, `Last 365 days`, `Last year`, and `All Time`) with exact calendar and rolling-day boundary calculation. |
-| `src/components/Header.tsx` | Compact 56px sticky header displaying `Save N Know` and active workspace badge on the left, redesigned date filter pills/dropdown on desktop, mobile date filter trigger pill, and the top-right `Menu` button. |
-| `src/components/Navigation.tsx` | Collapsible mobile date filter panel (`md:hidden`) rendering the redesigned date filter options in a clean 4-column responsive grid (`grid-cols-2 sm:grid-cols-4`). |
-| `src/components/Sidebar.tsx` | Top-right slide-over menu drawer bundling Account & Login Details, Workspace Views (with live **Budgets** count and alert badge), Redesigned Date Filter grid, Display Mode, and Color Themes. |
-| `src/components/FlexibleExpensesView.tsx` | Multi-item expense batch recorder with inline real-time **Account Balance** and **Subcategory Budget Progress + Residual** alert banners per draft expense row. |
-| `src/components/FloatingQuickActions.tsx` | Quick Record modal with live **Budget & Account Spend Check** alerts when logging an expense. |
-| `src/components/AccountsView.tsx` | Multi-account ledger with live source account balance check alerts inside the **Transfer Funds** form. |
+| `src/components/BudgetsView.tsx` | Minimalist clickable budget cards showing only Name, Start/Percentage/End above the bar, Progress Bar with embedded Alert Mark, `0.00`/Spent/Budget beneath the bar, and Residual on the bottom-left; clicking a card opens the Pop-Up Budget Options Modal (Selected Subcategory, Accounts Chosen, History of Transactions, Edit Budget, Delete Budget). |
+| `src/components/Header.tsx` | Mobile-optimized static header (`h-12 sm:h-14`) displaying `Save N Know` without adjacent menu descriptions, responsive date filter trigger, and top-right `Menu` button. |
+| `src/components/Navigation.tsx` | Defines workspace navigation metadata (with `"Income"` label) and renders the mobile collapsible date filter bar (`grid-cols-2 sm:grid-cols-4`). |
+| `src/components/IncomeLogView.tsx` | Full Income recording view with unselected default `Income Source` and `Source` dropdowns, automatic currency conversion for fixed-value Defined and Suggested deductions, and subcategory color badges. |
+| `src/components/FloatingQuickActions.tsx` | Quick Record modal syncing custom `Income Source` and `Source` options to user settings, starting dropdowns unselected, converting fixed-value deductions to the selected income currency, and displaying colored subcategory badges. |
+| `src/components/SettingsView.tsx` | Settings workspace where Defined Deductions display only the subcategory description with its color badge. |
 
 ---
 
-## 4. GitHub File Change Summary (`v3.5.0`)
+## 4. GitHub File Change Summary (`v3.6.0`)
 
 Brief summary of changes per file for GitHub commit and release notes:
 
 | File Path | Summary of Changes for GitHub |
 | :--- | :--- |
-| `src/types/finance.ts` | Added `'yearly'` to `BudgetPeriodType` (`'weekly' \| 'monthly' \| 'yearly' \| 'custom'`) and added recurring period lifecycle fields (`activePeriodStart`, `activePeriodEnd`, `parentRecurringBudgetId`, `isArchivedPeriod`) to `FinancialBudget`. |
-| `firebase-blueprint.json` | Updated `FinancialBudget` schema to include `yearly` recurrence and recurring period tracking properties (`activePeriodStart`, `activePeriodEnd`, `parentRecurringBudgetId`, `isArchivedPeriod`). |
-| `firestore.rules` | Updated `isValidFinancialBudget` to validate recurring period tracking fields and deployed updated security rules to Firestore. |
-| `src/lib/firestoreService.ts` | Updated `subscribeToBudgets` and `saveFinancialBudget` to persist `'yearly'` period budgets and recurring cycle fields. |
-| `src/lib/budgetCalculations.ts` | Added `'yearly'` period calculation in `computeRecurringPeriodBounds` & `resolveBudgetPeriodWindow`, and implemented `reconcileRecurringBudgets` to automatically recreate recurring budgets when their weekly, monthly, or yearly period elapses. |
-| `src/components/BudgetsView.tsx` | Added `Yearly` recurring period option, refined mobile layouts (`grid-cols-2` KPIs and period buttons, `grid-cols-3` mobile filter tabs), removed single/multiple descriptions from budget cards, and moved the Subcategory Breakdown inside the collapsible `View Expenses` section. |
-| `src/App.tsx` | Wired `computeRecurringPeriodBounds` on budget creation/update and added automatic `reconcileRecurringBudgets` rollover sync to recreate elapsed recurring budgets in state and Firestore. |
-| `README.md` | Updated enterprise documentation and GitHub per-file change summary. |
+| `src/App.tsx` | Set default menu view to `Overview` (`'dashboard'`) and passed `onSaveSettings` to `FloatingQuickActions` so Quick Record persists new Income Source and Source options. |
+| `src/components/Header.tsx` | Optimized static header for mobile screens (`h-12 sm:h-14`, compact controls) and removed the menu option description next to `Save N Know`. |
+| `src/components/Navigation.tsx` | Renamed menu option `"Income & Deductions"` to `"Income"` and refined the mobile date filter bar to a clean 2-column mobile grid. |
+| `src/lib/calculations.ts` | Cleared all pre-defined arrays (`DEFAULT_ACCOUNT_TYPES`, `DEFAULT_INCOME_SOURCES`, `DEFAULT_INCOME_ORIGINS`, `DEFAULT_INCOME_CATEGORIES`), added legacy seed sets, and updated `buildDefaultDeductionsForIncome` to convert fixed-value deductions into the selected income currency. |
+| `src/lib/firestoreService.ts` | Added `stripLegacyPredefinedList` in `fetchUserSettings` to strip legacy pre-defined seed arrays on load. |
+| `src/lib/deductionIntelligence.ts` | Updated `learnDeductionSuggestions` to convert fixed-value historical and defined deductions into the selected income currency using live market FX rates. |
+| `src/components/AccountsView.tsx` | Cleared `CAUSE_PRESETS` pre-defined account types and started the Account Type selector unselected (`Select Account Type...`). |
+| `src/components/SettingsView.tsx` | Updated Defined Deductions list items to show only the subcategory description with its color badge. |
+| `src/components/IncomeLogView.tsx` | Updated header to `"Income"`, started `Income Source` and `Source` unselected until user selection, converted fixed-value suggested/defined deductions to the selected income currency, and rendered only colored subcategory descriptions on deduction badges. |
+| `src/components/FloatingQuickActions.tsx` | Synced `Income Source` and `Source` options with user settings in Quick Record, started dropdowns unselected, converted fixed-value deductions to the selected currency, and rendered colored subcategory badges on deductions. |
+| `src/components/BudgetsView.tsx` | Redesigned defined budget cards to be minimalist and clickable (showing Name, Start/`%`/End top row, Progress Bar with Alert Mark, `0.00`/Spent/Budget bottom row, and Residual on bottom-left) and added the Pop-Up Budget Options Modal (Selected Subcategory, Accounts Chosen, History of Transactions, Edit Budget, Delete Budget). |
+| `README.md` | Updated enterprise architecture documentation and per-file GitHub commit summary. |
 
 ---
 
@@ -123,3 +111,4 @@ npm run dev
 npm run lint
 npm run build
 ```
+

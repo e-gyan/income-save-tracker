@@ -27,8 +27,8 @@ export const NAV_ITEMS: NavItem[] = [
   },
   {
     id: 'income_log',
-    label: 'Income & Deductions',
-    shortLabel: 'Income & Deductions',
+    label: 'Income',
+    shortLabel: 'Income',
   },
   {
     id: 'flexible_expenses',
@@ -75,7 +75,7 @@ export const Navigation: React.FC<NavigationProps> = ({
   return (
     <div className="md:hidden border-b border-slate-200/80 bg-slate-50/95">
       <div className="mx-auto max-w-7xl px-3 py-2">
-        <div className="grid grid-cols-4 gap-1.5 rounded-xl border border-slate-200/90 bg-white p-1.5">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 rounded-xl border border-slate-200/90 bg-white p-1.5">
           {TIME_RANGE_OPTIONS.map((opt) => {
             const isSelected = timeRange === opt.id;
             return (

@@ -17,9 +17,12 @@ import {
   buildDefaultDeductionsForIncome,
   computeDeductionAmount,
   isSavingsDeduction,
+  getSavingsCutRateForDate,
   isSavingsVaultAccount,
   getEffectiveExpenseCategoryPreferences,
+  resolveDeductionExpenseMapping,
   resolveIntuitiveSubcategoryColor,
+  getSubcategoryBadgeStyle,
   DEFAULT_INCOME_SOURCES,
   DEFAULT_INCOME_ORIGINS,
 } from '../lib/calculations.ts';
@@ -58,6 +61,7 @@ interface FloatingQuickActionsProps {
   onAddTransfer: (
     transfer: Omit<AccountTransfer, 'id' | 'createdAt'>
   ) => Promise<void>;
+  onSaveSettings?: (settings: UserSettings) => Promise<void>;
   onOpenDeductionAgent: () => void;
   onNavigateToExpandedForm: (
     tab: ActiveTab,
@@ -76,6 +80,7 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
   onAddIncome,
   onAddExpenses,
   onAddTransfer,
+  onSaveSettings,
   onOpenDeductionAgent,
   onNavigateToExpandedForm,
 }) => {
@@ -187,9 +192,15 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
   };
 
   // --- 2. QUICK INCOME MODAL STATE ---
+  const [localSavedSources, setLocalSavedSources] = useState<string[]>([]);
+  const [localSavedOrigins, setLocalSavedOrigins] = useState<string[]>([]);
+
   const incomeSourceOptions = useMemo(() => {
     const set = new Set<string>(DEFAULT_INCOME_SOURCES);
     for (const s of settings.incomeSources || []) {
+      if (s && s.trim()) set.add(s.trim());
+    }
+    for (const s of localSavedSources) {
       if (s && s.trim()) set.add(s.trim());
     }
     for (const i of incomes) {
@@ -198,23 +209,63 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
       }
     }
     return Array.from(set);
-  }, [settings.incomeSources, incomes]);
+  }, [settings.incomeSources, localSavedSources, incomes]);
 
   const incomeOriginOptions = useMemo(() => {
     const set = new Set<string>(DEFAULT_INCOME_ORIGINS);
     for (const o of settings.incomeOrigins || []) {
       if (o && o.trim()) set.add(o.trim());
     }
+    for (const o of localSavedOrigins) {
+      if (o && o.trim()) set.add(o.trim());
+    }
     for (const i of incomes) {
       if (i.notes && i.notes.trim()) set.add(i.notes.trim());
     }
     return Array.from(set);
-  }, [settings.incomeOrigins, incomes]);
+  }, [settings.incomeOrigins, localSavedOrigins, incomes]);
+
+  const persistQuickIncomeSource = (rawSource: string): string => {
+    const trimmed = rawSource.trim();
+    if (!trimmed) return '';
+    if (!incomeSourceOptions.includes(trimmed)) {
+      const nextSources = [...incomeSourceOptions, trimmed];
+      setLocalSavedSources((prev) =>
+        prev.includes(trimmed) ? prev : [...prev, trimmed]
+      );
+      if (onSaveSettings) {
+        onSaveSettings({
+          ...settings,
+          incomeSources: nextSources,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+    return trimmed;
+  };
+
+  const persistQuickIncomeOrigin = (rawOrigin: string): string => {
+    const trimmed = rawOrigin.trim();
+    if (!trimmed) return '';
+    if (!incomeOriginOptions.includes(trimmed)) {
+      const nextOrigins = [...incomeOriginOptions, trimmed];
+      setLocalSavedOrigins((prev) =>
+        prev.includes(trimmed) ? prev : [...prev, trimmed]
+      );
+      if (onSaveSettings) {
+        onSaveSettings({
+          ...settings,
+          incomeOrigins: nextOrigins,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+    return trimmed;
+  };
 
   const [incDate, setIncDate] = useState(todayStr);
-  const [incSource, setIncSource] = useState(
-    incomeSourceOptions[0] || 'Monthly Salary'
-  );
+  // Income Source and Source start unselected until the user makes a selection
+  const [incSource, setIncSource] = useState('');
   const [isCustomIncSource, setIsCustomIncSource] = useState(false);
   const [customIncSourceText, setCustomIncSourceText] = useState('');
   const [incOrigin, setIncOrigin] = useState('');
@@ -264,6 +315,8 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
         activeSource: isCustomIncSource ? customIncSourceText : incSource,
         activeOrigin: isCustomIncOrigin ? customIncOriginText : incOrigin,
         grossAmount: numericIncGross,
+        targetCurrency: incCurrency,
+        fxSnapshot,
       }),
     [
       incomes,
@@ -277,13 +330,58 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
       customIncOriginText,
       incOrigin,
       numericIncGross,
+      incCurrency,
+      fxSnapshot,
     ]
   );
+
+  // Sync fixed-value deductions in Quick Record whenever selected currency or FX snapshot changes
+  useEffect(() => {
+    if (activeModal !== 'income') return;
+    const g = roundTo2Decimals(parseFloat(incGross) || 0);
+    const defaults = buildDefaultDeductionsForIncome(
+      g,
+      settings,
+      expenses,
+      incDate,
+      incCurrency,
+      fxSnapshot
+    );
+    setIncDeductions((prev) =>
+      prev.map((existing) => {
+        if (existing.isCustomRateOverride) {
+          return {
+            ...existing,
+            amount: computeDeductionAmount(g, existing.type, existing.value),
+          };
+        }
+        const matchedDef = defaults.find(
+          (d) =>
+            d.id === existing.id ||
+            d.name.trim().toLowerCase() === existing.name.trim().toLowerCase()
+        );
+        if (matchedDef) return matchedDef;
+
+        const matchedSug = learnedForIncome.find(
+          (s) =>
+            s.name.trim().toLowerCase() === existing.name.trim().toLowerCase()
+        );
+        if (matchedSug && existing.type === 'fixed') {
+          return {
+            ...existing,
+            value: matchedSug.value,
+            amount: computeDeductionAmount(g, existing.type, matchedSug.value),
+          };
+        }
+        return existing;
+      })
+    );
+  }, [incCurrency, fxSnapshot, activeModal]);
 
   const handleOpenIncomeModal = () => {
     setIsMenuOpen(false);
     setIncDate(todayStr);
-    setIncSource(incomeSourceOptions[0] || 'Monthly Salary');
+    setIncSource('');
     setIsCustomIncSource(false);
     setCustomIncSourceText('');
     setIncOrigin('');
@@ -292,10 +390,18 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
     setIncGross('');
     setIncAccountId(defaultOperatingId);
     const defaultIncAcc = accounts.find((a) => a.id === defaultOperatingId);
-    setIncCurrency(getAccountCurrency(defaultIncAcc, currency));
+    const defaultCurr = getAccountCurrency(defaultIncAcc, currency);
+    setIncCurrency(defaultCurr);
     setIncNetTransferAccountId(settings.defaultNetIncomeAccountId || '');
     setIncDeductions(
-      buildDefaultDeductionsForIncome(0, settings, expenses, todayStr)
+      buildDefaultDeductionsForIncome(
+        0,
+        settings,
+        expenses,
+        todayStr,
+        defaultCurr,
+        fxSnapshot
+      )
     );
     setActiveModal('income');
   };
@@ -306,6 +412,8 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
     dateChanged = false
   ) => {
     const g = roundTo2Decimals(parseFloat(nextGrossStr) || 0);
+    const baseCurr = (currency || 'GHS').toUpperCase();
+    const activeCurr = (incCurrency || baseCurr).toUpperCase();
     setIncDeductions((prev) =>
       prev.map((d) => {
         if (dateChanged && isSavingsDeduction(d) && !d.isCustomRateOverride) {
@@ -314,9 +422,16 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
               `ded_${c.id}` === d.id ||
               c.name.trim().toLowerCase() === d.name.trim().toLowerCase()
           );
-          if (matchedCut && matchedCut.quarterlyRates) {
-            const q = getQuarterFromDate(nextDateStr);
-            const nextVal = matchedCut.quarterlyRates[q] ?? d.value;
+          if (matchedCut) {
+            const rawVal = getSavingsCutRateForDate(
+              matchedCut,
+              nextDateStr
+            ).rate;
+            const nextVal =
+              d.type === 'fixed' && activeCurr !== baseCurr
+                ? convertCurrency2dp(rawVal, baseCurr, activeCurr, fxSnapshot)
+                    .convertedAmount
+                : rawVal;
             return {
               ...d,
               value: nextVal,
@@ -344,17 +459,31 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
 
     setIsSubmittingInc(true);
     try {
+      persistQuickIncomeSource(finalSource);
+      if (finalOrigin) {
+        persistQuickIncomeOrigin(finalOrigin);
+      }
+
       const finalizedDeductions = incDeductions
         .filter((d) => d.name.trim() !== '' && d.value > 0)
-        .map((d) => ({
-          ...d,
-          value: Number(d.value) || 0,
-          amount: computeDeductionAmount(
-            rawIncGross,
-            d.type,
-            Number(d.value) || 0
-          ),
-        }));
+        .map((d) => {
+          const isSav = isSavingsDeduction(d);
+          const mapped = !isSav
+            ? resolveDeductionExpenseMapping(d, settings, expenses)
+            : undefined;
+          return {
+            ...d,
+            value: Number(d.value) || 0,
+            amount: computeDeductionAmount(
+              rawIncGross,
+              d.type,
+              Number(d.value) || 0
+            ),
+            isSavingsSplit: isSav,
+            expenseCategory: mapped?.category,
+            expenseSubcategory: mapped?.subcategory,
+          };
+        });
       const totalDedAmt = finalizedDeductions.reduce((s, d) => s + d.amount, 0);
       const totalDedRate =
         rawIncGross > 0
@@ -386,7 +515,7 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
         date: incDate,
         quarter: activeIncQuarter,
         clientOrSource: finalSource,
-        category: 'Salary',
+        category: 'General',
         grossAmount: rawIncGross,
         currency: activeCurr,
         originalGrossAmount: rawIncGross,
@@ -938,26 +1067,57 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                       }
                     }}
                     options={[
+                      { value: '', label: 'Select Income Source...' },
                       ...incomeSourceOptions.map((s) => ({ value: s, label: s })),
                       { value: '__CUSTOM__', label: '+ Add New Income Source...' },
                     ]}
                   />
                   {isCustomIncSource && (
-                    <input
-                      type="text"
-                      required
-                      autoFocus
-                      value={customIncSourceText}
-                      onChange={(e) => setCustomIncSourceText(e.target.value)}
-                      placeholder="Enter new income source..."
-                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
-                    />
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        required
+                        autoFocus
+                        value={customIncSourceText}
+                        onChange={(e) => setCustomIncSourceText(e.target.value)}
+                        placeholder="Enter new income source..."
+                        className="flex-1 min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        disabled={!customIncSourceText.trim()}
+                        onClick={() => {
+                          const saved = persistQuickIncomeSource(
+                            customIncSourceText
+                          );
+                          if (saved) {
+                            setIncSource(saved);
+                            setIsCustomIncSource(false);
+                            setCustomIncSourceText('');
+                          }
+                        }}
+                        className="rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50 shrink-0"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsCustomIncSource(false);
+                          setCustomIncSourceText('');
+                          setIncSource('');
+                        }}
+                        className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 shrink-0"
+                      >
+                        Cancel
+                      </button>
+                    </div>
                   )}
                 </div>
 
                 <div className="space-y-1.5">
                   <label className="block text-xs font-medium text-slate-700">
-                    Source (Optional)
+                    Source
                   </label>
                   <WrapSelect
                     value={isCustomIncOrigin ? '__CUSTOM__' : incOrigin}
@@ -977,14 +1137,44 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                     ]}
                   />
                   {isCustomIncOrigin && (
-                    <input
-                      type="text"
-                      autoFocus
-                      value={customIncOriginText}
-                      onChange={(e) => setCustomIncOriginText(e.target.value)}
-                      placeholder="Enter new source..."
-                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
-                    />
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        autoFocus
+                        value={customIncOriginText}
+                        onChange={(e) => setCustomIncOriginText(e.target.value)}
+                        placeholder="Enter new source..."
+                        className="flex-1 min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        disabled={!customIncOriginText.trim()}
+                        onClick={() => {
+                          const saved = persistQuickIncomeOrigin(
+                            customIncOriginText
+                          );
+                          if (saved) {
+                            setIncOrigin(saved);
+                            setIsCustomIncOrigin(false);
+                            setCustomIncOriginText('');
+                          }
+                        }}
+                        className="rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50 shrink-0"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsCustomIncOrigin(false);
+                          setCustomIncOriginText('');
+                          setIncOrigin('');
+                        }}
+                        className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 shrink-0"
+                      >
+                        Cancel
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -1038,12 +1228,12 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                 </div>
               </div>
 
-              {/* Learned Deduction Suggestions */}
+              {/* Learned & Defined Deduction Suggestions */}
               {learnedForIncome.length > 0 && (
                 <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-semibold text-slate-800">
-                      Suggested Deductions (Tap to Toggle)
+                      Defined & Suggested Deductions (Tap to Toggle)
                     </span>
                     <span className="text-[11px] font-mono text-slate-500">
                       {incDeductions.length} selected
@@ -1086,6 +1276,7 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                               : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
                           }`}
                         >
+                          {isSelected ? '✓ ' : '+ '}
                           {sug.name} (
                           {sug.type === 'percentage'
                             ? `${sug.value}%`
@@ -1096,63 +1287,108 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                     })}
                   </div>
 
-                  {/* Editable Rates for Selected Deductions */}
+                  {/* Editable Rates & Subcategory Color Badges for Selected Deductions */}
                   {incDeductions.length > 0 && (
                     <div className="space-y-1.5 pt-2 border-t border-slate-200/70">
-                      {incDeductions.map((ded) => (
-                        <div
-                          key={ded.id}
-                          className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
-                        >
-                          <span className="font-medium text-slate-800 break-words min-w-0">
-                            {ded.name}
-                          </span>
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            <input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              value={ded.value}
-                              onChange={(e) => {
-                                const nextVal = Math.max(
-                                  0,
-                                  parseFloat(e.target.value) || 0
-                                );
-                                setIncDeductions((prev) =>
-                                  prev.map((item) =>
-                                    item.id === ded.id
-                                      ? {
-                                          ...item,
-                                          value: nextVal,
-                                          amount: computeDeductionAmount(
-                                            numericIncGross,
-                                            item.type,
-                                            nextVal
-                                          ),
-                                          isCustomRateOverride: true,
-                                        }
-                                      : item
-                                  )
-                                );
-                              }}
-                              className="w-16 rounded border border-slate-300 px-2 py-0.5 font-mono text-xs text-slate-900 tabular-nums focus:border-slate-900 focus:outline-none"
-                            />
-                            <span className="font-mono text-[11px] text-slate-500">
-                              {ded.type === 'percentage' ? '%' : incCurrency}
-                            </span>
-                            <span className="font-mono text-xs font-semibold text-slate-900 tabular-nums">
-                              -{formatAmount(
-                                computeDeductionAmount(
-                                  numericIncGross,
-                                  ded.type,
-                                  ded.value
-                                ),
-                                incCurrency
+                      {incDeductions.map((ded) => {
+                        const isSav = isSavingsDeduction(ded);
+                        const mapped = !isSav
+                          ? resolveDeductionExpenseMapping(
+                              ded,
+                              settings,
+                              expenses
+                            )
+                          : undefined;
+                        const subLabel =
+                          mapped?.subcategory ||
+                          mapped?.category ||
+                          ded.expenseSubcategory ||
+                          ded.expenseCategory ||
+                          'General';
+                        const subColor = !isSav
+                          ? resolveIntuitiveSubcategoryColor(
+                              mapped?.subcategory || ded.expenseSubcategory,
+                              mapped?.category || ded.expenseCategory,
+                              settings,
+                              expenses
+                            )
+                          : '#059669';
+                        const badgeStyle = getSubcategoryBadgeStyle(subColor);
+
+                        return (
+                          <div
+                            key={ded.id}
+                            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
+                          >
+                            <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                              <span className="font-semibold text-slate-900 break-words">
+                                {ded.name}
+                              </span>
+                              {isSav ? (
+                                <span className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-medium text-slate-700">
+                                  Savings Splits
+                                </span>
+                              ) : (
+                                <span
+                                  style={badgeStyle}
+                                  className="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-semibold break-words"
+                                >
+                                  <span
+                                    className="h-2 w-2 rounded-full shrink-0"
+                                    style={{ backgroundColor: subColor }}
+                                  />
+                                  {subLabel}
+                                </span>
                               )}
-                            </span>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={ded.value}
+                                onChange={(e) => {
+                                  const nextVal = Math.max(
+                                    0,
+                                    parseFloat(e.target.value) || 0
+                                  );
+                                  setIncDeductions((prev) =>
+                                    prev.map((item) =>
+                                      item.id === ded.id
+                                        ? {
+                                            ...item,
+                                            value: nextVal,
+                                            amount: computeDeductionAmount(
+                                              numericIncGross,
+                                              item.type,
+                                              nextVal
+                                            ),
+                                            isCustomRateOverride: true,
+                                          }
+                                        : item
+                                    )
+                                  );
+                                }}
+                                className="w-16 rounded border border-slate-300 px-2 py-0.5 font-mono text-xs text-slate-900 tabular-nums focus:border-slate-900 focus:outline-none"
+                              />
+                              <span className="font-mono text-[11px] text-slate-500">
+                                {ded.type === 'percentage' ? '%' : incCurrency}
+                              </span>
+                              <span className="font-mono text-xs font-semibold text-slate-900 tabular-nums">
+                                -
+                                {formatAmount(
+                                  computeDeductionAmount(
+                                    numericIncGross,
+                                    ded.type,
+                                    ded.value
+                                  ),
+                                  incCurrency
+                                )}
+                              </span>
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>

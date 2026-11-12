@@ -82,7 +82,7 @@ import { TimeRangePreset, isDateInPreset } from './lib/dateFilters.ts';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [activeTab, setActiveTab] = useState<ActiveTab>('income_log');
+  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isMobileDateFilterOpen, setIsMobileDateFilterOpen] = useState(false);
   const [timeRange, setTimeRange] = useState<TimeRangePreset>('all');
@@ -1217,6 +1217,7 @@ export default function App() {
         onAddIncome={handleAddIncome}
         onAddExpenses={handleAddExpenses}
         onAddTransfer={handleAddTransfer}
+        onSaveSettings={handleSaveSettings}
         onOpenDeductionAgent={() => setIsDeductionAgentOpen(true)}
         onNavigateToExpandedForm={(tab, formType) => {
           setActiveTab(tab);

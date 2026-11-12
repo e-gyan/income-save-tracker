@@ -29,6 +29,10 @@ import {
   DEFAULT_USER_SETTINGS,
   DEFAULT_FINANCIAL_ACCOUNTS,
   LEGACY_SEEDED_CUT_IDS,
+  LEGACY_PREDEFINED_ACCOUNT_TYPES,
+  LEGACY_PREDEFINED_INCOME_SOURCES,
+  LEGACY_PREDEFINED_INCOME_ORIGINS,
+  LEGACY_PREDEFINED_INCOME_CATEGORIES,
   resolveIntuitiveSubcategoryColor,
 } from './calculations.ts';
 import {
@@ -37,6 +41,21 @@ import {
   getPersistedThemeMode,
   setPersistedThemeMode,
 } from './colorThemes.ts';
+
+function stripLegacyPredefinedList(
+  rawList: unknown,
+  legacySet: Set<string>
+): string[] {
+  if (!Array.isArray(rawList)) return [];
+  const cleaned = rawList
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean);
+  // If every item in the stored array came from the old predefined seed list, clear it
+  if (cleaned.length > 0 && cleaned.every((item) => legacySet.has(item))) {
+    return [];
+  }
+  return cleaned.filter((item) => !legacySet.has(item));
+}
 
 const LOCAL_STORAGE_KEY_PREFIX = 'iaft_local_';
 
@@ -105,6 +124,31 @@ export async function fetchUserSettings(userId: string): Promise<UserSettings> {
         ? rawCuts.filter((c: any) => c && !LEGACY_SEEDED_CUT_IDS.has(c.id))
         : [];
 
+      const parsedIncomeCategories = data.incomeCategories
+        ? stripLegacyPredefinedList(
+            JSON.parse(data.incomeCategories),
+            LEGACY_PREDEFINED_INCOME_CATEGORIES
+          )
+        : [];
+      const parsedIncomeSources = data.incomeSources
+        ? stripLegacyPredefinedList(
+            JSON.parse(data.incomeSources),
+            LEGACY_PREDEFINED_INCOME_SOURCES
+          )
+        : [];
+      const parsedIncomeOrigins = data.incomeOrigins
+        ? stripLegacyPredefinedList(
+            JSON.parse(data.incomeOrigins),
+            LEGACY_PREDEFINED_INCOME_ORIGINS
+          )
+        : [];
+      const parsedAccountTypes = data.accountTypes
+        ? stripLegacyPredefinedList(
+            JSON.parse(data.accountTypes),
+            LEGACY_PREDEFINED_ACCOUNT_TYPES
+          )
+        : [];
+
       return {
         userId,
         currency: data.currency || 'GHS',
@@ -117,13 +161,13 @@ export async function fetchUserSettings(userId: string): Promise<UserSettings> {
         customCuts: userDefinedCuts,
         savingsBuckets: data.savingsBuckets ? JSON.parse(data.savingsBuckets) : DEFAULT_USER_SETTINGS.savingsBuckets,
         quarterlyRates: data.quarterlyRates ? JSON.parse(data.quarterlyRates) : DEFAULT_USER_SETTINGS.quarterlyRates,
-        incomeCategories: data.incomeCategories ? JSON.parse(data.incomeCategories) : DEFAULT_USER_SETTINGS.incomeCategories,
-        incomeSources: data.incomeSources ? JSON.parse(data.incomeSources) : DEFAULT_USER_SETTINGS.incomeSources,
-        incomeOrigins: data.incomeOrigins ? JSON.parse(data.incomeOrigins) : DEFAULT_USER_SETTINGS.incomeOrigins,
+        incomeCategories: parsedIncomeCategories,
+        incomeSources: parsedIncomeSources,
+        incomeOrigins: parsedIncomeOrigins,
         expenseCategories: data.expenseCategories ? JSON.parse(data.expenseCategories) : [],
         expenseCategoryPreferences: data.expenseCategoryPreferences ? JSON.parse(data.expenseCategoryPreferences) : [],
         vaultCustodianAccounts: data.vaultCustodianAccounts ? JSON.parse(data.vaultCustodianAccounts) : {},
-        accountTypes: data.accountTypes ? JSON.parse(data.accountTypes) : DEFAULT_USER_SETTINGS.accountTypes,
+        accountTypes: parsedAccountTypes,
         defaultAccountId: data.defaultAccountId || DEFAULT_USER_SETTINGS.defaultAccountId,
         askNetIncomeTransfer:
           data.askNetIncomeTransfer !== undefined
@@ -162,6 +206,22 @@ export async function fetchUserSettings(userId: string): Promise<UserSettings> {
         totalsCurrencyMode: local.totalsCurrencyMode === 'original' ? 'original' : 'base',
         themeMode: local.themeMode || getPersistedThemeMode(),
         colorTheme: local.colorTheme || getPersistedColorTheme(),
+        incomeCategories: stripLegacyPredefinedList(
+          local.incomeCategories,
+          LEGACY_PREDEFINED_INCOME_CATEGORIES
+        ),
+        incomeSources: stripLegacyPredefinedList(
+          local.incomeSources,
+          LEGACY_PREDEFINED_INCOME_SOURCES
+        ),
+        incomeOrigins: stripLegacyPredefinedList(
+          local.incomeOrigins,
+          LEGACY_PREDEFINED_INCOME_ORIGINS
+        ),
+        accountTypes: stripLegacyPredefinedList(
+          local.accountTypes,
+          LEGACY_PREDEFINED_ACCOUNT_TYPES
+        ),
         customCuts: (local.customCuts || []).filter(
           (c) => !LEGACY_SEEDED_CUT_IDS.has(c.id)
         ),

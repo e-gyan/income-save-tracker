@@ -16,6 +16,10 @@ import {
   formatAmount,
   LEGACY_SEEDED_CUT_IDS,
 } from './calculations.ts';
+import {
+  convertCurrency2dp,
+  MarketFxSnapshot,
+} from './currencyService.ts';
 
 export interface LearnedDeductionSuggestion {
   id: string;
@@ -67,7 +71,8 @@ export interface AgentRecordAction {
 
 /**
  * Learns deduction patterns across the user's defined rules, historical income deductions,
- * and expense records across the board.
+ * and expense records across the board. When `targetCurrency` is provided and differs from
+ * the app's base currency, fixed-value deductions are automatically converted to `targetCurrency`.
  */
 export function learnDeductionSuggestions(params: {
   incomes: IncomeReceipt[];
@@ -77,6 +82,8 @@ export function learnDeductionSuggestions(params: {
   activeSource?: string;
   activeOrigin?: string;
   grossAmount?: number;
+  targetCurrency?: string;
+  fxSnapshot?: MarketFxSnapshot | null;
 }): LearnedDeductionSuggestion[] {
   const {
     incomes,
@@ -85,7 +92,12 @@ export function learnDeductionSuggestions(params: {
     activeDate = new Date().toISOString().split('T')[0],
     activeSource = '',
     activeOrigin = '',
+    targetCurrency,
+    fxSnapshot,
   } = params;
+
+  const baseCurr = (settings.currency || 'GHS').trim().toUpperCase();
+  const activeCurr = (targetCurrency || baseCurr).trim().toUpperCase();
 
   const activeQuarter: Quarter = getQuarterFromDate(activeDate);
   const definedCuts = (settings.customCuts || []).filter(
@@ -96,13 +108,56 @@ export function learnDeductionSuggestions(params: {
   const normSource = activeSource.trim().toLowerCase();
   const normOrigin = activeOrigin.trim().toLowerCase();
 
-  // 1. Learn from Defined Deductions in Settings (with quarterly savings awareness)
+  // 1. Learn from Defined Deductions in Settings (with quarterly savings awareness & fixed currency equivalence)
   for (const cut of definedCuts) {
     const key = cut.name.trim().toLowerCase();
     const isSav = isSavingsDeduction(cut);
-    const { rate } = isSav
+    const { rate: rawRate } = isSav
       ? getSavingsCutRateForDate(cut, activeDate)
       : { rate: cut.amount };
+
+    const rate =
+      cut.type === 'fixed' && activeCurr !== baseCurr
+        ? convertCurrency2dp(rawRate, baseCurr, activeCurr, fxSnapshot)
+            .convertedAmount
+        : rawRate;
+
+    const convertedQ1 =
+      cut.quarterlyRates && cut.type === 'fixed' && activeCurr !== baseCurr
+        ? convertCurrency2dp(
+            cut.quarterlyRates.Q1 ?? cut.amount,
+            baseCurr,
+            activeCurr,
+            fxSnapshot
+          ).convertedAmount
+        : cut.quarterlyRates?.Q1;
+    const convertedQ2 =
+      cut.quarterlyRates && cut.type === 'fixed' && activeCurr !== baseCurr
+        ? convertCurrency2dp(
+            cut.quarterlyRates.Q2 ?? cut.amount,
+            baseCurr,
+            activeCurr,
+            fxSnapshot
+          ).convertedAmount
+        : cut.quarterlyRates?.Q2;
+    const convertedQ3 =
+      cut.quarterlyRates && cut.type === 'fixed' && activeCurr !== baseCurr
+        ? convertCurrency2dp(
+            cut.quarterlyRates.Q3 ?? cut.amount,
+            baseCurr,
+            activeCurr,
+            fxSnapshot
+          ).convertedAmount
+        : cut.quarterlyRates?.Q3;
+    const convertedQ4 =
+      cut.quarterlyRates && cut.type === 'fixed' && activeCurr !== baseCurr
+        ? convertCurrency2dp(
+            cut.quarterlyRates.Q4 ?? cut.amount,
+            baseCurr,
+            activeCurr,
+            fxSnapshot
+          ).convertedAmount
+        : cut.quarterlyRates?.Q4;
 
     const mapping = !isSav
       ? resolveDeductionExpenseMapping(cut, settings, expenses)
@@ -113,15 +168,25 @@ export function learnDeductionSuggestions(params: {
       name: cut.name,
       type: cut.type,
       value: rate,
-      quarterlyRates: cut.quarterlyRates,
+      quarterlyRates:
+        cut.quarterlyRates &&
+        convertedQ1 !== undefined &&
+        convertedQ2 !== undefined &&
+        convertedQ3 !== undefined &&
+        convertedQ4 !== undefined
+          ? {
+              Q1: convertedQ1,
+              Q2: convertedQ2,
+              Q3: convertedQ3,
+              Q4: convertedQ4,
+            }
+          : cut.quarterlyRates,
       routeTo: isSav ? 'savings_split' : 'expense',
       expenseCategory: mapping?.category,
       expenseSubcategory: mapping?.subcategory,
       reason: isSav
         ? `Defined Savings rule · ${activeQuarter} rate (${rate}${cut.type === 'percentage' ? '%' : ''})`
-        : `Defined rule · ${mapping?.category || 'Expense'}${
-            mapping?.subcategory ? ` → ${mapping.subcategory}` : ''
-          }`,
+        : `Defined rule · ${mapping?.subcategory || mapping?.category || 'Expense'}`,
       frequency: 1,
       isAlreadyDefinedCut: true,
       definedCutId: cut.id,
@@ -147,6 +212,7 @@ export function learnDeductionSuggestions(params: {
 
   for (const inc of incomes) {
     const incQuarter = getQuarterFromDate(inc.date);
+    const incCurr = (inc.currency || baseCurr).trim().toUpperCase();
     const incSourceNorm = (inc.clientOrSource || '').trim().toLowerCase();
     const incOriginNorm = (inc.notes || '').trim().toLowerCase();
     const matchesActiveSource =
@@ -170,7 +236,13 @@ export function learnDeductionSuggestions(params: {
         matchedSources: new Set<string>(),
       };
 
-      const numVal = Number(ded.value) || Number(ded.amount) || 0;
+      const rawNumVal = Number(ded.value) || Number(ded.amount) || 0;
+      const numVal =
+        ded.type === 'fixed' && incCurr !== activeCurr
+          ? convertCurrency2dp(rawNumVal, incCurr, activeCurr, fxSnapshot)
+              .convertedAmount
+          : rawNumVal;
+
       if (numVal > 0) {
         existing.values.push(numVal);
         existing.quarterValues[incQuarter].push(numVal);
@@ -248,7 +320,7 @@ export function learnDeductionSuggestions(params: {
         expenseCategory: mapping?.category,
         expenseSubcategory: mapping?.subcategory,
         reason: `${sourceBadge}${
-          mapping ? ` · ${mapping.category} → ${mapping.subcategory}` : ''
+          mapping ? ` · ${mapping.subcategory || mapping.category}` : ''
         }`,
         sourceMatch: Array.from(stats.matchedSources)[0],
         frequency: stats.totalCount + stats.matchedSourceCount * 2,
@@ -299,7 +371,13 @@ export function learnDeductionSuggestions(params: {
       amounts: [],
       count: 0,
     };
-    if (exp.amount > 0) prev.amounts.push(exp.amount);
+    const expBaseAmt = Number(exp.amount) || 0;
+    const expConvertedAmt =
+      activeCurr !== baseCurr
+        ? convertCurrency2dp(expBaseAmt, baseCurr, activeCurr, fxSnapshot)
+            .convertedAmount
+        : expBaseAmt;
+    if (expConvertedAmt > 0) prev.amounts.push(expConvertedAmt);
     prev.count += 1;
     expensePatternGroups.set(key, prev);
   }
@@ -328,7 +406,7 @@ export function learnDeductionSuggestions(params: {
       expenseSubcategory: group.subcategory || undefined,
       reason: `Learned from ${group.count} expense record${
         group.count === 1 ? '' : 's'
-      } in ${group.category}${group.subcategory ? ` → ${group.subcategory}` : ''}`,
+      } in ${group.subcategory || group.category}`,
       frequency: group.count,
       isAlreadyDefinedCut: false,
     });

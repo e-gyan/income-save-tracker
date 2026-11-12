@@ -171,7 +171,7 @@ export const DEFAULT_QUARTERLY_RATES: QuarterlyRates = {
   q4TargetRate: 0,
 };
 
-export const DEFAULT_INCOME_CATEGORIES: string[] = [
+export const LEGACY_PREDEFINED_INCOME_CATEGORIES = new Set<string>([
   'Consulting',
   'Salary',
   'Retainer',
@@ -180,11 +180,16 @@ export const DEFAULT_INCOME_CATEGORIES: string[] = [
   'Contract',
   'Dividends',
   'Other',
-];
+  'Consulting & Advisory',
+  'Speaking & Honorarium',
+  'Business & Dividends',
+  'Project Milestone',
+  'Royalties & Licensing',
+  'Gift & Support',
+  'Other Income',
+]);
 
-export const DEFAULT_EXPENSE_CATEGORIES: string[] = [];
-
-export const DEFAULT_ACCOUNT_TYPES: string[] = [
+export const LEGACY_PREDEFINED_ACCOUNT_TYPES = new Set<string>([
   'Operating Account',
   'Checking Account',
   'Savings Account',
@@ -194,9 +199,12 @@ export const DEFAULT_ACCOUNT_TYPES: string[] = [
   'Emergency Fund',
   'Project Escrow',
   'Cash Vault',
-];
+  'Investment / Custody',
+  'Mobile Wallet',
+  'Cash / Vault',
+]);
 
-export const DEFAULT_INCOME_SOURCES: string[] = [
+export const LEGACY_PREDEFINED_INCOME_SOURCES = new Set<string>([
   'Monthly Salary',
   'Client Retainer',
   'Consulting Fee',
@@ -204,16 +212,36 @@ export const DEFAULT_INCOME_SOURCES: string[] = [
   'Contract Payout',
   'Business Revenue',
   'Dividend / Return',
-];
+  'Quarterly Bonus',
+  'Consulting Retainer',
+  'Speaking Honorarium',
+  'Dividend / Yield',
+  'Advisory Fee',
+]);
 
-export const DEFAULT_INCOME_ORIGINS: string[] = [
+export const LEGACY_PREDEFINED_INCOME_ORIGINS = new Set<string>([
   'Primary Employer',
   'Corporate Client',
   'Freelance / Agency',
   'Business Operations',
   'Treasury & Dividends',
   'Partner Organization',
-];
+  'Client Organization',
+  'Board / Institution',
+  'Business Venture',
+  'Investment Portfolio',
+  'Partner / Sponsor',
+]);
+
+export const DEFAULT_INCOME_CATEGORIES: string[] = [];
+
+export const DEFAULT_EXPENSE_CATEGORIES: string[] = [];
+
+export const DEFAULT_ACCOUNT_TYPES: string[] = [];
+
+export const DEFAULT_INCOME_SOURCES: string[] = [];
+
+export const DEFAULT_INCOME_ORIGINS: string[] = [];
 
 export const DEFAULT_USER_SETTINGS: UserSettings = {
   userId: 'default_user',
@@ -234,7 +262,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   expenseCategoryPreferences: [],
   vaultCustodianAccounts: {},
   accountTypes: DEFAULT_ACCOUNT_TYPES,
-  defaultAccountId: 'acc-main-op',
+  defaultAccountId: '',
   askNetIncomeTransfer: true,
   defaultNetIncomeAccountId: '',
   updatedAt: new Date().toISOString(),
@@ -1628,18 +1656,27 @@ export function buildDefaultDeductionsForIncome(
   grossAmount: number,
   settings: UserSettings,
   existingExpenses: FlexibleExpense[] = [],
-  dateStr?: string
+  dateStr?: string,
+  targetCurrency?: string,
+  fxSnapshot?: MarketFxSnapshot | null
 ): IncomeDeductionItem[] {
   const items: IncomeDeductionItem[] = [];
+  const baseCurr = (settings.currency || 'GHS').trim().toUpperCase();
+  const activeCurr = (targetCurrency || baseCurr).trim().toUpperCase();
   const definedCuts = (settings.customCuts || []).filter(
     (cut) => !LEGACY_SEEDED_CUT_IDS.has(cut.id)
   );
   for (const cut of definedCuts) {
     if (!cut.enabled) continue;
     const isSav = isSavingsDeduction(cut);
-    const effectiveVal = isSav
+    const rawVal = isSav
       ? getSavingsCutRateForDate(cut, dateStr).rate
       : cut.amount;
+    const effectiveVal =
+      cut.type === 'fixed' && activeCurr !== baseCurr
+        ? convertCurrency2dp(rawVal, baseCurr, activeCurr, fxSnapshot)
+            .convertedAmount
+        : rawVal;
     const mapped = !isSav
       ? resolveDeductionExpenseMapping(cut, settings, existingExpenses)
       : undefined;

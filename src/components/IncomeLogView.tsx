@@ -19,6 +19,8 @@ import {
   computeSavingsBreakdown,
   getEffectiveExpenseCategoryPreferences,
   resolveDeductionExpenseMapping,
+  resolveIntuitiveSubcategoryColor,
+  getSubcategoryBadgeStyle,
   isSavingsVaultAccount,
   calculateAccountSummaries,
   getEffectiveNetTransferAccountId,
@@ -147,12 +149,20 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
     return Array.from(set);
   }, [settings.accountTypes, accounts]);
 
-  // Authoritative Income Source Options
-  const [incomeSourceOptions, setIncomeSourceOptions] = useState<string[]>(() =>
-    Array.isArray(settings.incomeSources)
-      ? settings.incomeSources
-      : DEFAULT_INCOME_SOURCES
-  );
+  // Authoritative Income Source Options (User-defined in Settings + Historical Records)
+  const [incomeSourceOptions, setIncomeSourceOptions] = useState<string[]>(() => {
+    const set = new Set<string>(
+      Array.isArray(settings.incomeSources)
+        ? settings.incomeSources.filter((s) => s && s.trim())
+        : DEFAULT_INCOME_SOURCES
+    );
+    for (const inc of incomes) {
+      if (inc.clientOrSource && inc.clientOrSource.trim()) {
+        set.add(inc.clientOrSource.trim());
+      }
+    }
+    return Array.from(set);
+  });
   const [isManagingSources, setIsManagingSources] = useState(false);
   const [editingSourceOriginal, setEditingSourceOriginal] = useState<string | null>(null);
   const [editingSourceValue, setEditingSourceValue] = useState('');
@@ -160,17 +170,33 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
   const [newSourceDraft, setNewSourceDraft] = useState('');
 
   useEffect(() => {
-    if (Array.isArray(settings.incomeSources)) {
-      setIncomeSourceOptions(settings.incomeSources);
+    const set = new Set<string>(
+      Array.isArray(settings.incomeSources)
+        ? settings.incomeSources.filter((s) => s && s.trim())
+        : []
+    );
+    for (const inc of incomes) {
+      if (inc.clientOrSource && inc.clientOrSource.trim()) {
+        set.add(inc.clientOrSource.trim());
+      }
     }
-  }, [settings.incomeSources]);
+    setIncomeSourceOptions(Array.from(set));
+  }, [settings.incomeSources, incomes]);
 
-  // Authoritative Source (Where Income Comes From) Options
-  const [incomeOriginOptions, setIncomeOriginOptions] = useState<string[]>(() =>
-    Array.isArray(settings.incomeOrigins)
-      ? settings.incomeOrigins
-      : DEFAULT_INCOME_ORIGINS
-  );
+  // Authoritative Source (Where Income Comes From) Options (User-defined in Settings + Historical Records)
+  const [incomeOriginOptions, setIncomeOriginOptions] = useState<string[]>(() => {
+    const set = new Set<string>(
+      Array.isArray(settings.incomeOrigins)
+        ? settings.incomeOrigins.filter((o) => o && o.trim())
+        : DEFAULT_INCOME_ORIGINS
+    );
+    for (const inc of incomes) {
+      if (inc.notes && inc.notes.trim()) {
+        set.add(inc.notes.trim());
+      }
+    }
+    return Array.from(set);
+  });
   const [isManagingOrigins, setIsManagingOrigins] = useState(false);
   const [editingOriginOriginal, setEditingOriginOriginal] = useState<string | null>(null);
   const [editingOriginValue, setEditingOriginValue] = useState('');
@@ -178,26 +204,24 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
   const [newOriginDraft, setNewOriginDraft] = useState('');
 
   useEffect(() => {
-    if (Array.isArray(settings.incomeOrigins)) {
-      setIncomeOriginOptions(settings.incomeOrigins);
+    const set = new Set<string>(
+      Array.isArray(settings.incomeOrigins)
+        ? settings.incomeOrigins.filter((o) => o && o.trim())
+        : []
+    );
+    for (const inc of incomes) {
+      if (inc.notes && inc.notes.trim()) {
+        set.add(inc.notes.trim());
+      }
     }
-  }, [settings.incomeOrigins]);
+    setIncomeOriginOptions(Array.from(set));
+  }, [settings.incomeOrigins, incomes]);
 
-  // New Income Form State
+  // New Income Form State — Income Source and Source start unselected until the user makes a selection
   const [date, setDate] = useState(() => new Date().toISOString().split('T')[0]);
-  const [clientOrSource, setClientOrSource] = useState(
-    () =>
-      (Array.isArray(settings.incomeSources) && settings.incomeSources[0]) ||
-      DEFAULT_INCOME_SOURCES[0] ||
-      'Monthly Salary'
-  );
-  const [notes, setNotes] = useState(
-    () =>
-      (Array.isArray(settings.incomeOrigins) && settings.incomeOrigins[0]) ||
-      DEFAULT_INCOME_ORIGINS[0] ||
-      'Primary Employer'
-  );
-  const [category, setCategory] = useState('Consulting');
+  const [clientOrSource, setClientOrSource] = useState('');
+  const [notes, setNotes] = useState('');
+  const [category, setCategory] = useState('');
   const [selectedAccountId, setSelectedAccountId] = useState<string>(
     defaultAccount?.id || ''
   );
@@ -369,7 +393,14 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
 
   // Per-income allocated deductions strictly from user-defined deductions in Settings
   const [draftDeductions, setDraftDeductions] = useState<IncomeDeductionItem[]>(() =>
-    buildDefaultDeductionsForIncome(0, settings, expenses, date)
+    buildDefaultDeductionsForIncome(
+      0,
+      settings,
+      expenses,
+      date,
+      incomeCurrency,
+      fxSnapshot
+    )
   );
   const [draftNetTransferAccountId, setDraftNetTransferAccountId] = useState<string>(
     settings.defaultNetIncomeAccountId || ''
@@ -380,38 +411,14 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
     setDraftNetTransferAccountId(settings.defaultNetIncomeAccountId || '');
   }, [settings.defaultNetIncomeAccountId]);
 
-  // Sync draftDeductions whenever user-defined cuts change, preserving any user-customized rates on the current draft
-  useEffect(() => {
-    setDraftDeductions((prev) => {
-      const defaults = buildDefaultDeductionsForIncome(
-        Math.max(0, parseFloat(grossAmount) || 0),
-        settings,
-        expenses,
-        date
-      );
-      return defaults.map((defItem) => {
-        const existing = prev.find((p) => p.id === defItem.id);
-        if (existing && existing.isCustomRateOverride) {
-          return {
-            ...defItem,
-            type: existing.type,
-            value: existing.value,
-            amount: computeDeductionAmount(
-              Math.max(0, parseFloat(grossAmount) || 0),
-              existing.type,
-              existing.value
-            ),
-            isCustomRateOverride: true,
-          };
-        }
-        return defItem;
-      });
-    });
-  }, [settings.customCuts, settings.expenseCategoryPreferences, expenses]);
-
   // When the selected date changes on the Record Income form, automatically update savings deduction rates for that date's quarter unless customized by the user
   const handleDateChange = (nextDate: string) => {
     setDate(nextDate);
+    const activeCurr = (
+      incomeCurrency ||
+      getAccountCurrency(defaultAccount, currency || 'GHS')
+    ).toUpperCase();
+    const baseCurr = (currency || 'GHS').toUpperCase();
     setDraftDeductions((prev) =>
       prev.map((d) => {
         if (!isSavingsDeduction(d)) return d;
@@ -423,7 +430,12 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
             c.name.trim().toLowerCase() === d.name.trim().toLowerCase()
         );
         if (!matchedCut) return d;
-        const nextVal = getSavingsCutRateForDate(matchedCut, nextDate).rate;
+        const rawVal = getSavingsCutRateForDate(matchedCut, nextDate).rate;
+        const nextVal =
+          d.type === 'fixed' && activeCurr !== baseCurr
+            ? convertCurrency2dp(rawVal, baseCurr, activeCurr, fxSnapshot)
+                .convertedAmount
+            : rawVal;
         return {
           ...d,
           value: nextVal,
@@ -441,7 +453,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
   const [isQuickAccountOpen, setIsQuickAccountOpen] = useState(false);
   const [quickAccName, setQuickAccName] = useState('');
   const [quickAccInstitution, setQuickAccInstitution] = useState('');
-  const [quickAccType, setQuickAccType] = useState('Operating Account');
+  const [quickAccType, setQuickAccType] = useState('');
   const [isAddingQuickType, setIsAddingQuickType] = useState(false);
   const [newQuickTypeInput, setNewQuickTypeInput] = useState('');
   const [quickAccCurrency, setQuickAccCurrency] = useState<string>(currency || 'GHS');
@@ -526,6 +538,91 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
     'GHS'
   ).toUpperCase();
 
+  // Sync draftDeductions whenever user-defined cuts or selected currency/FX rates change,
+  // automatically converting fixed-value deductions (defined or suggested from history) to the selected currency equivalence
+  useEffect(() => {
+    const grossNum = Math.max(0, parseFloat(grossAmount) || 0);
+    const defaults = buildDefaultDeductionsForIncome(
+      grossNum,
+      settings,
+      expenses,
+      date,
+      activeIncomeCurrency,
+      fxSnapshot
+    );
+    const learnedSuggestions = learnDeductionSuggestions({
+      incomes,
+      expenses,
+      settings,
+      activeDate: date,
+      activeSource: isAddingNewSource ? newSourceDraft : clientOrSource,
+      activeOrigin: isAddingNewOrigin ? newOriginDraft : notes,
+      grossAmount: grossNum,
+      targetCurrency: activeIncomeCurrency,
+      fxSnapshot,
+    });
+
+    setDraftDeductions((prev) => {
+      // Update any existing draft items (including suggested-from-history items)
+      const updatedExisting = prev.map((existing) => {
+        if (existing.isCustomRateOverride) {
+          return {
+            ...existing,
+            amount: computeDeductionAmount(
+              grossNum,
+              existing.type,
+              existing.value
+            ),
+          };
+        }
+        const matchedDef = defaults.find(
+          (d) =>
+            d.id === existing.id ||
+            d.name.trim().toLowerCase() === existing.name.trim().toLowerCase()
+        );
+        if (matchedDef) {
+          return matchedDef;
+        }
+        const matchedSug = learnedSuggestions.find(
+          (s) =>
+            s.name.trim().toLowerCase() === existing.name.trim().toLowerCase()
+        );
+        if (matchedSug && existing.type === 'fixed') {
+          return {
+            ...existing,
+            value: matchedSug.value,
+            amount: computeDeductionAmount(
+              grossNum,
+              existing.type,
+              matchedSug.value
+            ),
+          };
+        }
+        return existing;
+      });
+
+      // Add any newly enabled defined cuts not yet in draft
+      for (const defItem of defaults) {
+        if (
+          !updatedExisting.some(
+            (e) =>
+              e.id === defItem.id ||
+              e.name.trim().toLowerCase() === defItem.name.trim().toLowerCase()
+          )
+        ) {
+          updatedExisting.push(defItem);
+        }
+      }
+      return updatedExisting;
+    });
+  }, [
+    settings.customCuts,
+    settings.expenseCategoryPreferences,
+    expenses,
+    activeIncomeCurrency,
+    fxSnapshot,
+  ]);
+
   const rawDraftInputGross = roundTo2Decimals(Math.max(0, parseFloat(grossAmount) || 0));
   const draftConversion = useMemo(() => {
     return convertCurrency2dp(
@@ -600,9 +697,19 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
       setDraftDeductions((prev) => prev.filter((item) => item.id !== existing.id));
     } else {
       const isSav = isSavingsDeduction(cut);
-      const effectiveVal = isSav
+      const rawVal = isSav
         ? getSavingsCutRateForDate(cut, date).rate
         : cut.amount;
+      const baseCurr = (currency || 'GHS').toUpperCase();
+      const effectiveVal =
+        cut.type === 'fixed' && activeIncomeCurrency !== baseCurr
+          ? convertCurrency2dp(
+              rawVal,
+              baseCurr,
+              activeIncomeCurrency,
+              fxSnapshot
+            ).convertedAmount
+          : rawVal;
       const mapped = !isSav
         ? resolveDeductionExpenseMapping(cut, settings, expenses)
         : undefined;
@@ -766,6 +873,8 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
       });
 
       setGrossAmount('');
+      setClientOrSource('');
+      setNotes('');
       setIncomeCurrency(selectedAccountCurrency);
       setIsAddingNewSource(false);
       setNewSourceDraft('');
@@ -773,7 +882,16 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
       setNewOriginDraft('');
       setIsNetTransferPromptOpen(false);
       setDraftNetTransferAccountId(settings.defaultNetIncomeAccountId || '');
-      setDraftDeductions(buildDefaultDeductionsForIncome(0, settings, expenses, date));
+      setDraftDeductions(
+        buildDefaultDeductionsForIncome(
+          0,
+          settings,
+          expenses,
+          date,
+          selectedAccountCurrency,
+          fxSnapshot
+        )
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -948,11 +1066,21 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
       return;
     }
 
-    const { nativeGross } = getIncomeNativeGross(inc, settings, accounts);
+    const { nativeGross, currency: incNativeCurr } = getIncomeNativeGross(
+      inc,
+      settings,
+      accounts
+    );
     const isSav = isSavingsDeduction(cut);
-    const effectiveVal = isSav
+    const rawVal = isSav
       ? getSavingsCutRateForDate(cut, inc.date).rate
       : cut.amount;
+    const baseCurr = (currency || 'GHS').toUpperCase();
+    const effectiveVal =
+      cut.type === 'fixed' && incNativeCurr !== baseCurr
+        ? convertCurrency2dp(rawVal, baseCurr, incNativeCurr, fxSnapshot)
+            .convertedAmount
+        : rawVal;
     const mapped = !isSav
       ? resolveDeductionExpenseMapping(cut, settings, expenses)
       : undefined;
@@ -1075,7 +1203,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
       {/* Page Header */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 pb-4">
         <h1 className="font-display text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
-          Income & Deductions
+          Income
         </h1>
 
         <button
@@ -1148,6 +1276,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                   ariaLabel="Income Source"
                   value={isAddingNewSource ? '__CUSTOM__' : clientOrSource.trim()}
                   options={[
+                    { value: '', label: 'Select Income Source...' },
                     ...incomeSourceOptions.map((src) => ({
                       value: src,
                       label: src,
@@ -1201,7 +1330,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                         } else if (e.key === 'Escape') {
                           setIsAddingNewSource(false);
                           setNewSourceDraft('');
-                          setClientOrSource(incomeSourceOptions[0] || '');
+                          setClientOrSource('');
                         }
                       }}
                       placeholder="Enter new income source..."
@@ -1227,7 +1356,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                       onClick={() => {
                         setIsAddingNewSource(false);
                         setNewSourceDraft('');
-                        setClientOrSource(incomeSourceOptions[0] || '');
+                        setClientOrSource('');
                       }}
                       className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 shrink-0"
                     >
@@ -1341,6 +1470,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                   ariaLabel="Source"
                   value={isAddingNewOrigin ? '__CUSTOM_ORIGIN__' : notes.trim()}
                   options={[
+                    { value: '', label: 'Select Source...' },
                     ...incomeOriginOptions.map((orig) => ({
                       value: orig,
                       label: orig,
@@ -1394,7 +1524,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                         } else if (e.key === 'Escape') {
                           setIsAddingNewOrigin(false);
                           setNewOriginDraft('');
-                          setNotes(incomeOriginOptions[0] || '');
+                          setNotes('');
                         }
                       }}
                       placeholder="Enter new source..."
@@ -1420,7 +1550,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                       onClick={() => {
                         setIsAddingNewOrigin(false);
                         setNewOriginDraft('');
-                        setNotes(incomeOriginOptions[0] || '');
+                        setNotes('');
                       }}
                       className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 shrink-0"
                     >
@@ -1683,6 +1813,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                         <WrapSelect
                           value={isAddingQuickType ? '__ADD_NEW__' : quickAccType}
                           options={[
+                            { value: '', label: 'Select Account Type...' },
                             ...accountTypeOptions.map((opt) => ({
                               value: opt,
                               label: opt,
@@ -1818,6 +1949,8 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                     activeSource: isAddingNewSource ? newSourceDraft : clientOrSource,
                     activeOrigin: isAddingNewOrigin ? newOriginDraft : notes,
                     grossAmount: numericDraftGross,
+                    targetCurrency: activeIncomeCurrency,
+                    fxSnapshot,
                   }).filter((s) => !s.isAlreadyDefinedCut);
 
                   if (learnedList.length === 0) return null;
@@ -1869,7 +2002,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                               {sug.name} (
                               {sug.type === 'percentage'
                                 ? `${sug.value}%`
-                                : `${currency} ${sug.value}`}
+                                : formatAmount(sug.value, activeIncomeCurrency)}
                               )
                             </button>
                           );
@@ -1905,9 +2038,19 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                             d.name.toLowerCase() === cut.name.toLowerCase()
                         );
                         const isSavCut = isSavingsDeduction(cut);
-                        const activeCutVal = isSavCut
+                        const rawCutVal = isSavCut
                           ? getSavingsCutRateForDate(cut, date).rate
                           : cut.amount;
+                        const baseCurr = (currency || 'GHS').toUpperCase();
+                        const activeCutVal =
+                          cut.type === 'fixed' && activeIncomeCurrency !== baseCurr
+                            ? convertCurrency2dp(
+                                rawCutVal,
+                                baseCurr,
+                                activeIncomeCurrency,
+                                fxSnapshot
+                              ).convertedAmount
+                            : rawCutVal;
                         return (
                           <button
                             key={cut.id}
@@ -1924,7 +2067,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                             {isSavCut ? `${selectedDraftQuarter}: ` : ''}
                             {cut.type === 'percentage'
                               ? `${activeCutVal}%`
-                              : `${currency} ${activeCutVal}`}
+                              : formatAmount(activeCutVal, activeIncomeCurrency)}
                             )
                           </button>
                         );
@@ -1961,17 +2104,40 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                                   <span className="font-display text-xs font-semibold text-slate-900 break-words">
                                     {ded.name}
                                   </span>
-                                  <span className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-700 break-words">
-                                    {isSav
-                                      ? `${selectedDraftQuarter} Rate (${ded.value}${
-                                          ded.type === 'percentage' ? '%' : ''
-                                        }) · Savings Splits`
-                                      : `Expense · ${ded.expenseCategory || 'General'}${
-                                          ded.expenseSubcategory
-                                            ? ` → ${ded.expenseSubcategory}`
-                                            : ''
-                                        }`}
-                                  </span>
+                                  {isSav ? (
+                                    <span className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-700 break-words">
+                                      {selectedDraftQuarter} Rate ({ded.value}
+                                      {ded.type === 'percentage' ? '%' : ''}) · Savings Splits
+                                    </span>
+                                  ) : (
+                                    (() => {
+                                      const subLabel =
+                                        ded.expenseSubcategory ||
+                                        ded.expenseCategory ||
+                                        'General';
+                                      const subColor =
+                                        resolveIntuitiveSubcategoryColor(
+                                          ded.expenseSubcategory,
+                                          ded.expenseCategory,
+                                          settings,
+                                          expenses
+                                        );
+                                      const badgeStyle =
+                                        getSubcategoryBadgeStyle(subColor);
+                                      return (
+                                        <span
+                                          style={badgeStyle}
+                                          className="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[10px] font-semibold break-words"
+                                        >
+                                          <span
+                                            className="h-2 w-2 rounded-full shrink-0"
+                                            style={{ backgroundColor: subColor }}
+                                          />
+                                          {subLabel}
+                                        </span>
+                                      );
+                                    })()
+                                  )}
                                 </div>
                                 <button
                                   type="button"
@@ -2948,15 +3114,41 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                                           {isSav ? ` · ${getQuarterFromDate(inc.date)}` : ''}
                                         </span>
                                       </div>
-                                      <span className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-700 break-words">
-                                        {isSav
-                                          ? 'Transfer → Savings Splits'
-                                          : `Expense · ${ded.expenseCategory || 'General'}${
-                                              ded.expenseSubcategory
-                                                ? ` → ${ded.expenseSubcategory}`
-                                                : ''
-                                            }`}
-                                      </span>
+                                      {isSav ? (
+                                        <span className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-700 break-words">
+                                          Transfer → Savings Splits
+                                        </span>
+                                      ) : (
+                                        (() => {
+                                          const subLabel =
+                                            ded.expenseSubcategory ||
+                                            ded.expenseCategory ||
+                                            'General';
+                                          const subColor =
+                                            resolveIntuitiveSubcategoryColor(
+                                              ded.expenseSubcategory,
+                                              ded.expenseCategory,
+                                              settings,
+                                              expenses
+                                            );
+                                          const badgeStyle =
+                                            getSubcategoryBadgeStyle(subColor);
+                                          return (
+                                            <span
+                                              style={badgeStyle}
+                                              className="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[10px] font-semibold break-words"
+                                            >
+                                              <span
+                                                className="h-2 w-2 rounded-full shrink-0"
+                                                style={{
+                                                  backgroundColor: subColor,
+                                                }}
+                                              />
+                                              {subLabel}
+                                            </span>
+                                          );
+                                        })()
+                                      )}
                                     </div>
 
                                     <div className="flex items-center gap-2.5 shrink-0">

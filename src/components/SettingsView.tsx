@@ -2389,21 +2389,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                                   <span className="font-display text-sm font-semibold text-slate-900 break-words">
                                     {cut.name}
                                   </span>
-                                  <span
-                                    className={`rounded-md px-2 py-0.5 text-[10px] font-medium break-words ${
-                                      isSavings
-                                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                        : 'bg-rose-50 text-rose-700 border border-rose-200'
-                                    }`}
-                                  >
-                                    {isSavings
-                                      ? 'Transfer → Savings Splits'
-                                      : `Expense · ${resolvedExp?.category || 'General'}${
-                                          resolvedExp?.subcategory
-                                            ? ` → ${resolvedExp.subcategory}`
-                                            : ''
-                                        }`}
-                                  </span>
+                                  {isSavings ? (
+                                    <span className="rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 text-[10px] font-medium break-words">
+                                      Transfer → Savings Splits
+                                    </span>
+                                  ) : (
+                                    (() => {
+                                      const subLabel =
+                                        resolvedExp?.subcategory ||
+                                        resolvedExp?.category ||
+                                        'General';
+                                      const subColor =
+                                        resolveIntuitiveSubcategoryColor(
+                                          resolvedExp?.subcategory,
+                                          resolvedExp?.category,
+                                          {
+                                            expenseCategoryPreferences:
+                                              expensePrefs,
+                                          },
+                                          expenses
+                                        );
+                                      const badgeStyle =
+                                        getSubcategoryBadgeStyle(subColor);
+                                      return (
+                                        <span
+                                          style={badgeStyle}
+                                          className="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[10px] font-semibold break-words"
+                                        >
+                                          <span
+                                            className="h-2 w-2 rounded-full shrink-0"
+                                            style={{ backgroundColor: subColor }}
+                                          />
+                                          {subLabel}
+                                        </span>
+                                      );
+                                    })()
+                                  )}
                                 </div>
                               </div>
                             </div>

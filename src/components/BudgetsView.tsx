@@ -19,6 +19,7 @@ import {
   mapToCurrencyBucketTotals,
   formatTotalByCurrencyMode,
   getSecondaryCurrencyModeCaption,
+  getSubcategoryBadgeStyle,
 } from '../lib/calculations.ts';
 import {
   evaluateAllBudgets,
@@ -153,9 +154,9 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
   >('all');
   const [showArchivedCycles, setShowArchivedCycles] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [expandedBudgetIds, setExpandedBudgetIds] = useState<Set<string>>(
-    new Set()
-  );
+  const [selectedBudgetModalId, setSelectedBudgetModalId] = useState<
+    string | null
+  >(null);
   const [pendingDeleteBudget, setPendingDeleteBudget] =
     useState<FinancialBudget | null>(null);
 
@@ -1195,360 +1196,412 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5 sm:gap-4">
           {filteredEvaluatedBudgets.map((eb) => {
             const { budget, periodWindow } = eb;
-            const isExpanded = expandedBudgetIds.has(budget.id);
             const isOver = eb.status === 'exceeded';
             const isWarn =
               eb.status === 'warning' || eb.status === 'at_limit';
+            const alertMarkPct = Math.min(
+              100,
+              Math.max(0, eb.alertThresholdPercent)
+            );
+            const fillPct = Math.min(
+              100,
+              Math.max(0, eb.usagePercentage)
+            );
 
             return (
               <div
                 key={budget.id}
-                className={`rounded-xl border bg-white p-3.5 sm:p-5 space-y-3.5 transition-colors ${
+                role="button"
+                tabIndex={0}
+                onClick={() => setSelectedBudgetModalId(budget.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setSelectedBudgetModalId(budget.id);
+                  }
+                }}
+                className={`group cursor-pointer rounded-xl border bg-white p-4 sm:p-5 space-y-2.5 text-left transition-all hover:shadow-md focus:outline-none focus:ring-2 focus:ring-slate-900/20 ${
                   isOver
-                    ? 'border-rose-300'
+                    ? 'border-rose-300 hover:border-rose-400'
                     : isWarn
-                    ? 'border-amber-300'
-                    : 'border-slate-200'
+                    ? 'border-amber-300 hover:border-amber-400'
+                    : 'border-slate-200 hover:border-slate-300'
                 }`}
               >
-                {/* Card Top Header — Clean & Mobile Fitted (No Single/Multiple Description) */}
-                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 border-b border-slate-100 pb-3">
-                  <div className="min-w-0 space-y-1">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <h3 className="font-display text-sm sm:text-base font-bold text-slate-900 break-words">
-                        {budget.name}
-                      </h3>
-                      <span
-                        className={`rounded px-2 py-0.5 font-mono text-[10px] font-bold uppercase ${
-                          isOver
-                            ? 'bg-rose-100 text-rose-700'
-                            : isWarn
-                            ? 'bg-amber-100 text-amber-800'
-                            : 'bg-emerald-50 text-emerald-700'
-                        }`}
-                      >
-                        {isOver
-                          ? `Exceeded (${eb.usagePercentage}%)`
-                          : eb.status === 'at_limit'
-                          ? 'At Limit (100%)'
-                          : isWarn
-                          ? `Warning (${eb.usagePercentage}%)`
-                          : `Healthy (${eb.usagePercentage}%)`}
-                      </span>
-                      {budget.isArchivedPeriod && (
-                        <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-600">
-                          Past Cycle
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
-                      <span className="font-semibold text-slate-700">
-                        {periodWindow.periodBadge}
-                      </span>
-                      <span>·</span>
-                      <span className="font-mono">{periodWindow.label}</span>
-                      {eb.linkedAccount && (
-                        <>
-                          <span>·</span>
-                          <span className="font-medium text-slate-700">
-                            {eb.linkedAccount.name}
-                          </span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-1.5 self-start shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => handleOpenEdit(budget)}
-                      className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPendingDeleteBudget(budget)}
-                      className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-100"
-                    >
-                      Delete
-                    </button>
-                  </div>
+                {/* Budget Name */}
+                <div className="font-display text-sm sm:text-base font-bold text-slate-900 truncate">
+                  {budget.name}
                 </div>
 
-                {/* 3-Column Metrics: Budget Limit, Spent (%), Residual Available (%) */}
-                <div className="grid grid-cols-3 gap-1.5 sm:gap-2 rounded-xl border border-slate-100 bg-slate-50/70 p-2.5 sm:p-3">
-                  <div className="min-w-0">
-                    <div className="text-[10px] sm:text-[11px] text-slate-500 truncate">
-                      Limit
-                    </div>
-                    <div className="mt-0.5 font-mono text-xs sm:text-sm font-bold text-slate-900 tabular-nums break-words">
-                      {formatAmount(eb.budgetLimit, budget.currency)}
-                    </div>
-                    {budget.currency !== currency && (
-                      <div className="font-mono text-[10px] text-slate-400 tabular-nums truncate">
-                        ≈ {formatAmount(eb.budgetLimitBase, currency)}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="min-w-0">
-                    <div className="text-[10px] sm:text-[11px] text-slate-500 truncate">
-                      Spent ({eb.usagePercentage}%)
-                    </div>
-                    <div className="mt-0.5 font-mono text-xs sm:text-sm font-bold text-rose-600 tabular-nums break-words">
-                      -{formatAmount(eb.spentAmount, budget.currency)}
-                    </div>
-                    {budget.currency !== currency && (
-                      <div className="font-mono text-[10px] text-slate-400 tabular-nums truncate">
-                        ≈ -{formatAmount(eb.spentAmountBase, currency)}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="min-w-0">
-                    <div className="text-[10px] sm:text-[11px] text-slate-500 truncate">
-                      {eb.residualAmount < 0
-                        ? `Over (+${eb.overagePercent}%)`
-                        : `Residual (${eb.residualPercent}%)`}
-                    </div>
-                    <div
-                      className={`mt-0.5 font-mono text-xs sm:text-sm font-bold tabular-nums break-words ${
-                        eb.residualAmount < 0
-                          ? 'text-rose-600'
-                          : 'text-emerald-700'
-                      }`}
-                    >
-                      {eb.residualAmount < 0
-                        ? `-${formatAmount(
-                            Math.abs(eb.residualAmount),
-                            budget.currency
-                          )}`
-                        : `+${formatAmount(eb.residualAmount, budget.currency)}`}
-                    </div>
-                    {budget.currency !== currency && (
-                      <div className="font-mono text-[10px] text-slate-400 tabular-nums truncate">
-                        ≈{' '}
-                        {formatAmount(
-                          Math.abs(eb.residualAmountBase),
-                          currency
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Progress & Residual Visual Bar */}
+                {/* Progress Bar Container with Top Row, Bar + Alert Mark, and Bottom Row */}
                 <div className="space-y-1.5">
-                  <div className="flex flex-wrap items-center justify-between gap-1 text-[11px]">
-                    <span className="font-semibold text-slate-700">
-                      Progress:{' '}
-                      <span
-                        className={`font-mono font-bold ${
-                          isOver
-                            ? 'text-rose-600'
-                            : isWarn
-                            ? 'text-amber-700'
-                            : 'text-slate-900'
-                        }`}
-                      >
-                        {eb.usagePercentage}%
-                      </span>
+                  {/* Top of the Bar: Top-Left = Start Period, Middle = Percentage, Top-Right = End Period */}
+                  <div className="grid grid-cols-3 items-center text-[11px] font-mono tabular-nums">
+                    <span className="text-left text-slate-500 truncate">
+                      {periodWindow.startYmd}
                     </span>
                     <span
-                      className={`font-mono font-semibold ${
-                        eb.residualAmount < 0
+                      className={`text-center font-bold ${
+                        isOver
                           ? 'text-rose-600'
-                          : 'text-emerald-700'
+                          : isWarn
+                          ? 'text-amber-600'
+                          : 'text-slate-900'
                       }`}
                     >
-                      {eb.residualAmount < 0
-                        ? `Over by ${formatAmount(
-                            eb.overageAmount,
-                            budget.currency
-                          )}`
-                        : `Residual: ${eb.residualPercent}% (${formatAmount(
-                            eb.residualAmount,
-                            budget.currency
-                          )})`}
+                      {eb.usagePercentage}%
+                    </span>
+                    <span className="text-right text-slate-500 truncate">
+                      {periodWindow.endYmd}
                     </span>
                   </div>
 
-                  {/* Multi-Segment Subcategory Spend + Residual Runway Bar */}
-                  <div className="relative h-3.5 sm:h-4 w-full overflow-hidden rounded-lg border border-slate-200 bg-emerald-50/70 flex">
-                    {eb.subcategoryBreakdowns.map((subItem) => {
-                      const widthPct =
-                        eb.budgetLimit > 0
-                          ? Math.min(
-                              100,
-                              Math.max(
-                                0,
-                                (subItem.spentAmount / eb.budgetLimit) * 100
-                              )
-                            )
-                          : 0;
-                      if (widthPct <= 0) return null;
-                      return (
-                        <div
-                          key={subItem.subcategory}
-                          style={{
-                            width: `${widthPct}%`,
-                            backgroundColor: isOver
-                              ? '#e11d48'
-                              : subItem.color,
-                          }}
-                          className="h-full transition-all border-r border-white/40 last:border-r-0"
-                          title={`${subItem.subcategory}: ${formatAmount(
-                            subItem.spentAmount,
-                            budget.currency
-                          )} (${subItem.shareOfBudgetPercent}%)`}
-                        />
-                      );
-                    })}
+                  {/* Progress Bar with Alert Mark inside the bar */}
+                  <div className="relative h-3.5 w-full overflow-hidden rounded-full bg-slate-100 border border-slate-200/80">
+                    {/* Progress Fill */}
+                    <div
+                      className={`h-full transition-all duration-300 ${
+                        isOver
+                          ? 'bg-rose-600'
+                          : isWarn
+                          ? 'bg-amber-500'
+                          : 'bg-emerald-600'
+                      }`}
+                      style={{ width: `${fillPct}%` }}
+                    />
 
-                    {/* Residual Visual Segment */}
-                    {eb.residualPercent > 0 && (
-                      <div
-                        style={{ width: `${eb.residualPercent}%` }}
-                        className="h-full flex items-center justify-end pr-1.5 bg-emerald-100/60 text-[9px] font-mono font-bold text-emerald-800 overflow-hidden whitespace-nowrap"
-                        title={`Residual Available: ${formatAmount(
-                          eb.residualAmount,
-                          budget.currency
-                        )} (${eb.residualPercent}%)`}
-                      >
-                        {eb.residualPercent >= 20
-                          ? `${eb.residualPercent}% left`
-                          : ''}
-                      </div>
-                    )}
+                    {/* Alert Mark within the bar */}
+                    <div
+                      className="pointer-events-none absolute inset-y-0 z-10 w-0.5 bg-slate-900/85 shadow-[0_0_0_1px_rgba(255,255,255,0.85)]"
+                      style={{ left: `${alertMarkPct}%` }}
+                      title={`Alert mark: ${eb.alertThresholdPercent}%`}
+                    />
+                  </div>
+
+                  {/* Right beneath the Bar: Bottom-Left = Starting Currency 0.00, Middle = Spent Currency, Bottom-Right = Budget Amount */}
+                  <div className="grid grid-cols-3 items-center text-[11px] font-mono tabular-nums">
+                    <span className="text-left text-slate-500 truncate">
+                      {formatAmount(0, budget.currency)}
+                    </span>
+                    <span
+                      className={`text-center font-bold truncate ${
+                        isOver
+                          ? 'text-rose-600'
+                          : isWarn
+                          ? 'text-amber-600'
+                          : 'text-slate-800'
+                      }`}
+                    >
+                      {formatAmount(eb.spentAmount, budget.currency)}
+                    </span>
+                    <span className="text-right font-semibold text-slate-900 truncate">
+                      {formatAmount(eb.budgetLimit, budget.currency)}
+                    </span>
                   </div>
                 </div>
 
-                {/* Footer: Toggle View Expenses (Includes Subcategory Breakdown + Recorded Expenses) */}
-                <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
-                  <span className="text-[11px] text-slate-500">
-                    {eb.matchedExpenses.length}{' '}
-                    {eb.matchedExpenses.length === 1
-                      ? 'expense recorded'
-                      : 'expenses recorded'}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setExpandedBudgetIds((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(budget.id)) next.delete(budget.id);
-                        else next.add(budget.id);
-                        return next;
-                      })
-                    }
-                    className="text-xs font-semibold text-slate-700 hover:text-slate-900 underline"
+                {/* Beneath that, on its left: Residual Amount */}
+                <div className="pt-0.5 text-left">
+                  <span
+                    className={`font-mono text-xs font-bold tabular-nums ${
+                      eb.residualAmount < 0
+                        ? 'text-rose-600'
+                        : 'text-emerald-700'
+                    }`}
                   >
-                    {isExpanded ? 'Hide Expenses' : 'View Expenses'}
-                  </button>
+                    Residual:{' '}
+                    {eb.residualAmount < 0
+                      ? `-${formatAmount(
+                          Math.abs(eb.residualAmount),
+                          budget.currency
+                        )}`
+                      : formatAmount(eb.residualAmount, budget.currency)}
+                  </span>
                 </div>
-
-                {/* Expanded View Expenses Panel: Subcategory Breakdown + Matching Expense Records */}
-                {isExpanded && (
-                  <div className="space-y-3 pt-2.5 border-t border-slate-100">
-                    {/* 1. Subcategory Breakdown */}
-                    <div className="space-y-1.5">
-                      <div className="text-[11px] font-bold text-slate-700">
-                        Subcategory Breakdown
-                      </div>
-                      <div className="space-y-1.5">
-                        {eb.subcategoryBreakdowns.map((subItem) => {
-                          const subWidth = Math.min(
-                            100,
-                            Math.max(0, subItem.shareOfBudgetPercent)
-                          );
-                          return (
-                            <div
-                              key={subItem.subcategory}
-                              className="rounded-lg border border-slate-100 bg-slate-50/70 px-2.5 py-2 space-y-1"
-                            >
-                              <div className="flex items-center justify-between gap-2 text-xs">
-                                <div className="flex items-center gap-1.5 min-w-0">
-                                  <span
-                                    className="h-2.5 w-2.5 rounded-full shrink-0"
-                                    style={{ backgroundColor: subItem.color }}
-                                  />
-                                  <span className="font-semibold text-slate-800 truncate">
-                                    {subItem.subcategory}
-                                  </span>
-                                  <span className="font-mono text-[10px] text-slate-400 shrink-0">
-                                    ({subItem.transactionCount})
-                                  </span>
-                                </div>
-                                <div className="font-mono text-xs font-semibold text-slate-900 shrink-0 tabular-nums">
-                                  {formatAmount(
-                                    subItem.spentAmount,
-                                    budget.currency
-                                  )}{' '}
-                                  <span className="text-[10px] text-slate-500">
-                                    ({subItem.shareOfBudgetPercent}%)
-                                  </span>
-                                </div>
-                              </div>
-                              <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200/70">
-                                <div
-                                  className="h-full rounded-full transition-all"
-                                  style={{
-                                    width: `${subWidth}%`,
-                                    backgroundColor: subItem.color,
-                                  }}
-                                />
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {/* 2. Matching Expense Records */}
-                    <div className="space-y-1.5">
-                      <div className="text-[11px] font-bold text-slate-700">
-                        Recorded Expenses ({eb.matchedExpenses.length})
-                      </div>
-                      {eb.matchedExpenses.length === 0 ? (
-                        <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
-                          No expenses recorded in this period yet.
-                        </div>
-                      ) : (
-                        <div className="space-y-1.5 max-h-48 overflow-y-auto">
-                          {eb.matchedExpenses.map((exp) => (
-                            <div
-                              key={exp.id}
-                              className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs"
-                            >
-                              <div className="min-w-0">
-                                <div className="font-medium text-slate-800 truncate">
-                                  {exp.recipient || exp.subcategory || exp.category}
-                                </div>
-                                <div className="font-mono text-[10px] text-slate-500 truncate">
-                                  {exp.date} · {exp.subcategory || exp.category}
-                                </div>
-                              </div>
-                              <div className="font-mono font-semibold text-rose-600 shrink-0 tabular-nums">
-                                -
-                                {formatAmount(
-                                  exp.originalAmount ?? exp.amount,
-                                  exp.currency || currency
-                                )}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
               </div>
             );
           })}
         </div>
       )}
+
+      {/* Pop-Up Budget Options Modal */}
+      {(() => {
+        if (!selectedBudgetModalId) return null;
+        const selectedEb =
+          evaluatedBudgets.find(
+            (item) => item.budget.id === selectedBudgetModalId
+          ) || null;
+        if (!selectedEb) return null;
+
+        const { budget, periodWindow } = selectedEb;
+        const isOver = selectedEb.status === 'exceeded';
+        const isWarn =
+          selectedEb.status === 'warning' || selectedEb.status === 'at_limit';
+        const alertMarkPct = Math.min(
+          100,
+          Math.max(0, selectedEb.alertThresholdPercent)
+        );
+        const fillPct = Math.min(
+          100,
+          Math.max(0, selectedEb.usagePercentage)
+        );
+
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-3 sm:p-4 backdrop-blur-[2px]"
+            onClick={() => setSelectedBudgetModalId(null)}
+          >
+            <div
+              className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 sm:p-5 shadow-2xl space-y-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Modal Header */}
+              <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3">
+                <div className="min-w-0">
+                  <h3 className="font-display text-base sm:text-lg font-bold text-slate-900 break-words">
+                    {budget.name}
+                  </h3>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    {periodWindow.label} • Alert at {selectedEb.alertThresholdPercent}%
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedBudgetModalId(null)}
+                  className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50 shrink-0"
+                >
+                  Close
+                </button>
+              </div>
+
+              {/* Progress Bar Summary inside Modal */}
+              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2">
+                <div className="grid grid-cols-3 items-center text-[11px] font-mono tabular-nums">
+                  <span className="text-left text-slate-500">
+                    {periodWindow.startYmd}
+                  </span>
+                  <span
+                    className={`text-center font-bold ${
+                      isOver
+                        ? 'text-rose-600'
+                        : isWarn
+                        ? 'text-amber-600'
+                        : 'text-slate-900'
+                    }`}
+                  >
+                    {selectedEb.usagePercentage}%
+                  </span>
+                  <span className="text-right text-slate-500">
+                    {periodWindow.endYmd}
+                  </span>
+                </div>
+
+                <div className="relative h-3.5 w-full overflow-hidden rounded-full bg-slate-200/80 border border-slate-300/70">
+                  <div
+                    className={`h-full transition-all duration-300 ${
+                      isOver
+                        ? 'bg-rose-600'
+                        : isWarn
+                        ? 'bg-amber-500'
+                        : 'bg-emerald-600'
+                    }`}
+                    style={{ width: `${fillPct}%` }}
+                  />
+                  <div
+                    className="pointer-events-none absolute inset-y-0 z-10 w-0.5 bg-slate-900/85 shadow-[0_0_0_1px_rgba(255,255,255,0.85)]"
+                    style={{ left: `${alertMarkPct}%` }}
+                  />
+                </div>
+
+                <div className="grid grid-cols-3 items-center text-[11px] font-mono tabular-nums">
+                  <span className="text-left text-slate-500">
+                    {formatAmount(0, budget.currency)}
+                  </span>
+                  <span className="text-center font-bold text-slate-900">
+                    {formatAmount(selectedEb.spentAmount, budget.currency)}
+                  </span>
+                  <span className="text-right font-semibold text-slate-900">
+                    {formatAmount(selectedEb.budgetLimit, budget.currency)}
+                  </span>
+                </div>
+
+                <div className="pt-0.5 text-left">
+                  <span
+                    className={`font-mono text-xs font-bold tabular-nums ${
+                      selectedEb.residualAmount < 0
+                        ? 'text-rose-600'
+                        : 'text-emerald-700'
+                    }`}
+                  >
+                    Residual:{' '}
+                    {selectedEb.residualAmount < 0
+                      ? `-${formatAmount(
+                          Math.abs(selectedEb.residualAmount),
+                          budget.currency
+                        )}`
+                      : formatAmount(selectedEb.residualAmount, budget.currency)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Account Chosen */}
+              <div className="rounded-xl border border-slate-200 bg-white p-3 flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-slate-500">
+                  Accounts Chosen
+                </span>
+                <span className="text-xs font-bold text-slate-900">
+                  {selectedEb.linkedAccount
+                    ? `${selectedEb.linkedAccount.name} (${getAccountCurrency(
+                        selectedEb.linkedAccount,
+                        currency
+                      )})`
+                    : 'All Accounts'}
+                </span>
+              </div>
+
+              {/* Selected Subcategories */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-800">
+                    Selected Subcategory ({selectedEb.subcategoryBreakdowns.length})
+                  </span>
+                  <span className="text-[11px] text-slate-500">
+                    Spent / Share of Budget
+                  </span>
+                </div>
+                <div className="space-y-1.5">
+                  {selectedEb.subcategoryBreakdowns.map((subItem) => {
+                    const badgeStyle = getSubcategoryBadgeStyle(subItem.color);
+                    const subWidth = Math.min(
+                      100,
+                      Math.max(0, subItem.shareOfBudgetPercent)
+                    );
+                    return (
+                      <div
+                        key={subItem.subcategory}
+                        className="rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2 space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between gap-2 text-xs">
+                          <span
+                            className="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-semibold"
+                            style={badgeStyle}
+                          >
+                            <span
+                              className="h-2 w-2 rounded-full shrink-0"
+                              style={{ backgroundColor: subItem.color }}
+                            />
+                            {subItem.subcategory}
+                          </span>
+                          <span className="font-mono text-xs font-bold text-slate-900 tabular-nums">
+                            {formatAmount(subItem.spentAmount, budget.currency)}{' '}
+                            <span className="text-slate-500 font-normal">
+                              ({subItem.shareOfBudgetPercent}%)
+                            </span>
+                          </span>
+                        </div>
+                        <div className="h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all"
+                            style={{
+                              width: `${subWidth}%`,
+                              backgroundColor: subItem.color,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* History of Transactions */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-800">
+                    History of Transactions ({selectedEb.matchedExpenses.length})
+                  </span>
+                  <span className="text-[11px] text-slate-500">
+                    {periodWindow.startYmd} to {periodWindow.endYmd}
+                  </span>
+                </div>
+                {selectedEb.matchedExpenses.length === 0 ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 text-center">
+                    No transactions recorded for this budget period.
+                  </div>
+                ) : (
+                  <div className="max-h-52 overflow-y-auto divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white">
+                    {selectedEb.matchedExpenses.map((exp) => {
+                      const subColor = resolveIntuitiveSubcategoryColor(
+                        exp.subcategory || exp.category,
+                        exp.category,
+                        settings,
+                        expenses
+                      );
+                      const subBadge = getSubcategoryBadgeStyle(subColor);
+                      return (
+                        <div
+                          key={exp.id}
+                          className="flex items-center justify-between gap-2 px-3 py-2 text-xs"
+                        >
+                          <div className="min-w-0">
+                            <div className="font-semibold text-slate-800 truncate">
+                              {exp.recipient || exp.subcategory || exp.category}
+                            </div>
+                            <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
+                              <span className="font-mono">{exp.date}</span>
+                              <span
+                                className="inline-flex items-center gap-1 rounded border px-1.5 py-0.2 text-[10px] font-semibold"
+                                style={subBadge}
+                              >
+                                <span
+                                  className="h-1.5 w-1.5 rounded-full"
+                                  style={{ backgroundColor: subColor }}
+                                />
+                                {exp.subcategory || exp.category}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="font-mono font-bold text-rose-600 tabular-nums shrink-0">
+                            -
+                            {formatAmount(
+                              exp.originalAmount ?? exp.amount,
+                              exp.currency || currency
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Action Footer: Edit Budget & Delete Budget */}
+              <div className="grid grid-cols-2 gap-2.5 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedBudgetModalId(null);
+                    handleOpenEdit(budget);
+                  }}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-800 hover:bg-slate-50 text-center"
+                >
+                  Edit Budget
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedBudgetModalId(null);
+                    setPendingDeleteBudget(budget);
+                  }}
+                  className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 text-center"
+                >
+                  Delete Budget
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Delete Confirmation Modal */}
       <ConfirmDeleteModal

@@ -19,7 +19,6 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  activeTab = 'dashboard',
   isSidebarOpen = false,
   onToggleSidebar,
   timeRange = 'all',
@@ -27,29 +26,20 @@ export const Header: React.FC<HeaderProps> = ({
   isMobileDateFilterOpen = false,
   onToggleMobileDateFilter,
 }) => {
-  const currentNav =
-    NAV_ITEMS.find((item) => item.id === activeTab) || NAV_ITEMS[0];
-
   return (
     <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/95 backdrop-blur-md">
-      <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-2 px-3 sm:px-6 lg:px-8">
-        {/* Left: App Brand & Active View Context */}
-        <div className="flex items-center gap-2.5 min-w-0">
+      <div className="mx-auto flex h-12 sm:h-14 max-w-7xl items-center justify-between gap-2 px-3 sm:px-6 lg:px-8">
+        {/* Left: App Brand Name Only (No Menu Option Description) */}
+        <div className="flex items-center gap-2 min-w-0">
           <div
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white font-display font-bold text-sm shadow-xs"
+            className="flex h-7 w-7 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-lg text-white font-display font-bold text-xs sm:text-sm shadow-xs"
             style={{ backgroundColor: 'var(--app-accent)' }}
           >
             S
           </div>
-          <div className="min-w-0 flex items-center gap-2">
-            <span className="font-display text-sm sm:text-base font-extrabold tracking-tight text-slate-900 truncate">
-              Save N Know
-            </span>
-            <span className="text-slate-300 font-light">/</span>
-            <span className="font-display text-xs sm:text-sm font-semibold text-slate-600 truncate">
-              {currentNav.shortLabel}
-            </span>
-          </div>
+          <span className="font-display text-sm sm:text-base font-extrabold tracking-tight text-slate-900 truncate">
+            Save N Know
+          </span>
         </div>
 
         {/* Right: Desktop Inline Date Filter + Mobile Date Filter Pill + Top-Right Menu Trigger */}
@@ -104,7 +94,7 @@ export const Header: React.FC<HeaderProps> = ({
               type="button"
               onClick={onToggleMobileDateFilter}
               aria-expanded={isMobileDateFilterOpen}
-              className={`md:hidden flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition-colors ${
+              className={`md:hidden flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] font-bold transition-colors ${
                 timeRange !== 'all' || isMobileDateFilterOpen
                   ? 'border-slate-900 bg-slate-900 text-white'
                   : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
@@ -124,9 +114,11 @@ export const Header: React.FC<HeaderProps> = ({
                   d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
                 />
               </svg>
-              <span>{getPresetLabel(timeRange)}</span>
+              <span className="max-w-[96px] truncate">
+                {getPresetLabel(timeRange)}
+              </span>
               <svg
-                className={`h-3 w-3 transition-transform ${
+                className={`h-3 w-3 shrink-0 transition-transform ${
                   isMobileDateFilterOpen ? 'rotate-180' : ''
                 }`}
                 fill="none"
@@ -150,7 +142,7 @@ export const Header: React.FC<HeaderProps> = ({
               onClick={onToggleSidebar}
               aria-label="Toggle Menu"
               aria-expanded={isSidebarOpen}
-              className={`flex items-center gap-1.5 rounded-lg border px-2.5 sm:px-3 py-1.5 text-xs font-bold transition-colors ${
+              className={`flex items-center gap-1.5 rounded-lg border px-2.5 sm:px-3 py-1.5 text-[11px] sm:text-xs font-bold transition-colors ${
                 isSidebarOpen
                   ? 'border-slate-900 bg-slate-900 text-white'
                   : 'border-slate-200 bg-white text-slate-800 hover:bg-slate-50'

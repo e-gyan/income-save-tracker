@@ -72,13 +72,7 @@ interface AccountsViewProps {
   openTransferTrigger?: number;
 }
 
-const CAUSE_PRESETS = [
-  'Treasury Bond',
-  'Mutual Funds',
-  'Buying of Lands',
-  'Fixed Deposit',
-  'Equity / ETF',
-];
+const CAUSE_PRESETS: string[] = [];
 
 const ADD_NEW_TYPE_VALUE = '__ADD_NEW_ACCOUNT_TYPE__';
 
@@ -160,7 +154,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
   // Account creation form state
   const [name, setName] = useState('');
   const [institution, setInstitution] = useState('');
-  const [type, setType] = useState('Operating Account');
+  const [type, setType] = useState('');
   const [isAddingCreateType, setIsAddingCreateType] = useState(false);
   const [newCreateTypeInput, setNewCreateTypeInput] = useState('');
   const [accountCurrency, setAccountCurrency] = useState<string>(currency || 'GHS');
@@ -1174,6 +1168,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                     }}
                     className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
                   >
+                    <option value="">Select Account Type...</option>
                     {accountTypeOptions.map((opt) => (
                       <option key={opt} value={opt}>
                         {opt}
