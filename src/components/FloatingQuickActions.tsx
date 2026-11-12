@@ -6,7 +6,11 @@ import {
   FinancialAccount,
   AccountTransfer,
   UserSettings,
+  FinancialBudget,
 } from '../types/finance.ts';
+import {
+  checkSpendAgainstBudgetsAndAccount,
+} from '../lib/budgetCalculations.ts';
 import {
   formatAmount,
   getQuarterFromDate,
@@ -41,6 +45,8 @@ interface FloatingQuickActionsProps {
   incomes: IncomeReceipt[];
   expenses: FlexibleExpense[];
   accounts: FinancialAccount[];
+  transfers?: AccountTransfer[];
+  budgets?: FinancialBudget[];
   settings: UserSettings;
   currency: string;
   onAddIncome: (
@@ -63,6 +69,8 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
   incomes,
   expenses,
   accounts,
+  transfers = [],
+  budgets = [],
   settings,
   currency,
   onAddIncome,
@@ -489,39 +497,126 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
       {/* Floating Bottom-Right + Button and Pop-Up Menu Right On Top */}
       <div
         ref={menuContainerRef}
-        className="fixed bottom-6 right-6 z-40 flex flex-col items-end"
+        className="fixed bottom-5 right-5 sm:bottom-6 sm:right-6 z-40 flex flex-col items-end"
       >
         {isMenuOpen && (
-          <div className="mb-3 w-56 rounded-2xl border border-slate-200 bg-white p-2 shadow-2xl space-y-1">
-            <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-              Quick Record
+          <div className="mb-3 w-64 rounded-2xl border-2 border-slate-200 bg-white p-2.5 shadow-2xl space-y-1.5">
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-100">
+              <span className="font-display text-xs font-extrabold uppercase tracking-wider text-slate-900">
+                Quick Record
+              </span>
+              
             </div>
 
             <button
               type="button"
               onClick={handleOpenTransferModal}
-              className="w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-left text-xs font-semibold text-slate-800 hover:bg-slate-100 transition-colors"
+              className="w-full flex items-center justify-between gap-3 rounded-xl px-2.5 py-2.5 text-left hover:bg-slate-100 transition-colors group"
             >
-              <span>Transfer Fund</span>
-              <span className="text-[11px] font-normal text-slate-400">⇄</span>
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-300 bg-slate-100 text-slate-900 group-hover:bg-slate-900 group-hover:text-white transition-colors">
+                  <svg
+                    className="h-4.5 w-4.5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2.75}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"
+                    />
+                  </svg>
+                </span>
+                <div className="min-w-0">
+                  <div className="font-display text-sm font-extrabold text-slate-900 leading-tight">
+                    Transfer Fund
+                  </div>
+                  
+                </div>
+              </div>
+              <svg
+                className="h-4 w-4 text-slate-400 group-hover:text-slate-900 shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2.75}
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
             </button>
 
             <button
               type="button"
               onClick={handleOpenIncomeModal}
-              className="w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-left text-xs font-semibold text-slate-800 hover:bg-slate-100 transition-colors"
+              className="w-full flex items-center justify-between gap-3 rounded-xl px-2.5 py-2.5 text-left hover:bg-emerald-50/80 transition-colors group"
             >
-              <span>Income</span>
-              <span className="text-[11px] font-mono text-emerald-700">+</span>
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-emerald-300 bg-emerald-50 text-emerald-700 group-hover:bg-emerald-600 group-hover:text-white transition-colors">
+                  <svg
+                    className="h-5 w-5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={3}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 5v14m-7-7h14"
+                    />
+                  </svg>
+                </span>
+                <div className="min-w-0">
+                  <div className="font-display text-sm font-extrabold text-slate-900 leading-tight">
+                    Income
+                  </div>
+                </div>
+              </div>
+              <svg
+                className="h-4 w-4 text-slate-400 group-hover:text-emerald-700 shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2.75}
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
             </button>
 
             <button
               type="button"
               onClick={handleOpenExpenseModal}
-              className="w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-left text-xs font-semibold text-slate-800 hover:bg-slate-100 transition-colors"
+              className="w-full flex items-center justify-between gap-3 rounded-xl px-2.5 py-2.5 text-left hover:bg-rose-50/80 transition-colors group"
             >
-              <span>Expense</span>
-              <span className="text-[11px] font-mono text-rose-700">−</span>
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-rose-300 bg-rose-50 text-rose-700 group-hover:bg-rose-600 group-hover:text-white transition-colors">
+                  <svg
+                    className="h-5 w-5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={3}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 12H5" />
+                  </svg>
+                </span>
+                <div className="min-w-0">
+                  <div className="font-display text-sm font-extrabold text-slate-900 leading-tight">
+                    Expense
+                  </div>
+                </div>
+              </div>
+              <svg
+                className="h-4 w-4 text-slate-400 group-hover:text-rose-700 shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2.75}
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
             </button>
 
             <div className="border-t border-slate-100 my-1 pt-1">
@@ -531,10 +626,33 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                   setIsMenuOpen(false);
                   onOpenDeductionAgent();
                 }}
-                className="w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100 transition-colors"
+                className="w-full flex items-center justify-between gap-3 rounded-xl px-2.5 py-2.5 text-left hover:bg-slate-100 transition-colors group"
               >
-                <span>Deduction Assistant</span>
-                <span className="text-[10px] font-mono text-slate-400">AI</span>
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-300 bg-slate-900 text-white">
+                    <svg
+                      className="h-4.5 w-4.5"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2.5}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M13 10V3L4 14h7v7l9-11h-7z"
+                      />
+                    </svg>
+                  </span>
+                  <div className="min-w-0">
+                    <div className="font-display text-sm font-extrabold text-slate-900 leading-tight">
+                      App Assistant
+                    </div>
+                  </div>
+                </div>
+                <span className="rounded-md bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] font-extrabold text-white shrink-0">
+                  AI
+                </span>
               </button>
             </div>
           </div>
@@ -546,16 +664,16 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
           aria-label="Quick Record Actions"
           aria-expanded={isMenuOpen}
           style={{ backgroundColor: 'var(--app-accent)' }}
-          className="h-13 w-13 rounded-full text-white shadow-xl hover:opacity-95 focus:outline-none flex items-center justify-center transition-transform duration-150 active:scale-95"
+          className="h-14 w-14 rounded-full text-white shadow-2xl ring-2 ring-white/90 hover:opacity-95 focus:outline-none flex items-center justify-center transition-transform duration-150 active:scale-95"
         >
           <svg
-            className={`h-6 w-6 transition-transform duration-150 ${
+            className={`h-7 w-7 transition-transform duration-150 ${
               isMenuOpen ? 'rotate-45' : ''
             }`}
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
-            strokeWidth={2.5}
+            strokeWidth={3.25}
           >
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14m-7-7h14" />
           </svg>
@@ -574,28 +692,28 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
           >
             <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
               <div>
-                <h3 className="font-display text-base font-semibold text-slate-900">
+                <h3 className="font-display text-base font-extrabold text-slate-900">
                   Transfer Fund
                 </h3>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs font-semibold text-slate-500">
                   Move funds between operating accounts and savings vaults
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={() => {
                     setActiveModal(null);
                     onNavigateToExpandedForm('accounts', 'transfer');
                   }}
-                  className="text-[11px] font-medium text-slate-500 hover:text-slate-900 underline"
+                  className="text-xs font-bold text-slate-600 hover:text-slate-900 underline"
                 >
                   Full View
                 </button>
                 <button
                   type="button"
                   onClick={() => setActiveModal(null)}
-                  className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                  className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-bold text-slate-700 hover:bg-slate-100"
                 >
                   Close
                 </button>
@@ -707,14 +825,14 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                 <button
                   type="button"
                   onClick={() => setActiveModal(null)}
-                  className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                  className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmittingTransfer}
-                  className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+                  className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-extrabold text-white hover:bg-slate-800 disabled:opacity-50"
                 >
                   {isSubmittingTransfer ? 'Transferring...' : 'Record Transfer'}
                 </button>
@@ -736,28 +854,28 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
           >
             <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
               <div>
-                <h3 className="font-display text-base font-semibold text-slate-900">
+                <h3 className="font-display text-base font-extrabold text-slate-900">
                   Record Income ({activeIncQuarter})
                 </h3>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs font-semibold text-slate-500">
                   Suggested deductions are matched to your history and {activeIncQuarter} rates
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={() => {
                     setActiveModal(null);
                     onNavigateToExpandedForm('income_log', 'income');
                   }}
-                  className="text-[11px] font-medium text-slate-500 hover:text-slate-900 underline"
+                  className="text-xs font-bold text-slate-600 hover:text-slate-900 underline"
                 >
                   Full View
                 </button>
                 <button
                   type="button"
                   onClick={() => setActiveModal(null)}
-                  className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                  className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-bold text-slate-700 hover:bg-slate-100"
                 >
                   Close
                 </button>
@@ -1120,14 +1238,14 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                 <button
                   type="button"
                   onClick={() => setActiveModal(null)}
-                  className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                  className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmittingInc}
-                  className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+                  className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-extrabold text-white hover:bg-slate-800 disabled:opacity-50"
                 >
                   {isSubmittingInc ? 'Recording...' : 'Record Income'}
                 </button>
@@ -1149,28 +1267,28 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
           >
             <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
               <div>
-                <h3 className="font-display text-base font-semibold text-slate-900">
+                <h3 className="font-display text-base font-extrabold text-slate-900">
                   Record Expense
                 </h3>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs font-semibold text-slate-500">
                   Log an expense directly to your selected account and category
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={() => {
                     setActiveModal(null);
                     onNavigateToExpandedForm('flexible_expenses', 'expense');
                   }}
-                  className="text-[11px] font-medium text-slate-500 hover:text-slate-900 underline"
+                  className="text-xs font-bold text-slate-600 hover:text-slate-900 underline"
                 >
                   Full View
                 </button>
                 <button
                   type="button"
                   onClick={() => setActiveModal(null)}
-                  className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                  className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-bold text-slate-700 hover:bg-slate-100"
                 >
                   Close
                 </button>
@@ -1311,6 +1429,125 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                 );
               })()}
 
+              {/* Real-Time Budget & Account Spend Check in Quick Record */}
+              {(() => {
+                const rawExpAmt = parseFloat(expAmount) || 0;
+                if (rawExpAmt <= 0) return null;
+                const spendEval = checkSpendAgainstBudgetsAndAccount({
+                  date: expDate,
+                  accountId: expAccountId,
+                  category: expCategory,
+                  subcategory: expSubcategory,
+                  amount: rawExpAmt,
+                  currency: expCurrency,
+                  budgets,
+                  expenses,
+                  incomes,
+                  accounts,
+                  transfers,
+                  settings,
+                  fxSnapshot,
+                });
+
+                return (
+                  <div className="space-y-2">
+                    {spendEval.accountCheck && (
+                      <div
+                        className={`flex flex-wrap items-center justify-between gap-1.5 rounded-lg border px-3 py-2 text-xs ${
+                          spendEval.accountCheck.status === 'overdrawn'
+                            ? 'border-rose-300 bg-rose-50 text-rose-900'
+                            : spendEval.accountCheck.status === 'low_balance'
+                            ? 'border-amber-300 bg-amber-50 text-amber-900'
+                            : 'border-emerald-200 bg-emerald-50/70 text-emerald-900'
+                        }`}
+                      >
+                        <span className="font-bold">
+                          {spendEval.accountCheck.status === 'overdrawn'
+                            ? `Account Alert: Overdraws ${spendEval.accountCheck.account.name}`
+                            : spendEval.accountCheck.status === 'low_balance'
+                            ? `Account Warning: ≥80% of ${spendEval.accountCheck.account.name}`
+                            : `${spendEval.accountCheck.account.name} Balance OK`}
+                        </span>
+                        <span className="font-mono text-[11px] font-bold tabular-nums">
+                          After:{' '}
+                          {formatAmount(
+                            spendEval.accountCheck.projectedBalance,
+                            spendEval.accountCheck.accountCurrency
+                          )}
+                        </span>
+                      </div>
+                    )}
+
+                    {spendEval.budgetChecks.map((bc) => {
+                      const isOver = bc.projectedStatus === 'exceeded';
+                      const isWarn =
+                        bc.projectedStatus === 'warning' ||
+                        bc.projectedStatus === 'at_limit';
+                      const clampedPct = Math.min(
+                        100,
+                        Math.max(0, bc.projectedPercentage)
+                      );
+                      const residualPct = Math.max(
+                        0,
+                        roundTo2Decimals(100 - clampedPct)
+                      );
+                      return (
+                        <div
+                          key={bc.budget.id}
+                          className={`rounded-lg border px-3 py-2 space-y-1 text-xs ${
+                            isOver
+                              ? 'border-rose-300 bg-rose-50 text-rose-900'
+                              : isWarn
+                              ? 'border-amber-300 bg-amber-50 text-amber-900'
+                              : 'border-emerald-200 bg-emerald-50/70 text-emerald-900'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-bold truncate">
+                              {isOver
+                                ? `Exceeds "${bc.budget.name}"`
+                                : isWarn
+                                ? `Near "${bc.budget.name}" Limit`
+                                : `Within "${bc.budget.name}"`}
+                            </span>
+                            <span className="font-mono text-[11px] font-bold shrink-0 tabular-nums">
+                              {bc.projectedPercentage}% ·{' '}
+                              {bc.projectedResidual < 0
+                                ? `Over by ${formatAmount(
+                                    Math.abs(bc.projectedResidual),
+                                    bc.budget.currency
+                                  )}`
+                                : `Residual: ${formatAmount(
+                                    bc.projectedResidual,
+                                    bc.budget.currency
+                                  )}`}
+                            </span>
+                          </div>
+                          <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/80 flex">
+                            <div
+                              style={{ width: `${clampedPct}%` }}
+                              className={`h-full ${
+                                isOver
+                                  ? 'bg-rose-600'
+                                  : isWarn
+                                  ? 'bg-amber-500'
+                                  : 'bg-emerald-600'
+                              }`}
+                            />
+                            {residualPct > 0 && (
+                              <div
+                                style={{ width: `${residualPct}%` }}
+                                className="h-full bg-emerald-100/70"
+                              />
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">
                   Note (Optional)
@@ -1328,14 +1565,14 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                 <button
                   type="button"
                   onClick={() => setActiveModal(null)}
-                  className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                  className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmittingExp}
-                  className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+                  className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-extrabold text-white hover:bg-slate-800 disabled:opacity-50"
                 >
                   {isSubmittingExp ? 'Recording...' : 'Record Expense'}
                 </button>

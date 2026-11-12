@@ -901,11 +901,22 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
       {isTransferOpen && accounts.length >= 2 && (() => {
         const sourceAcc = accounts.find((a) => a.id === transferSourceId);
         const destAcc = accounts.find((a) => a.id === effectiveTransferDestId);
+        const sourceSummary = summaries.find((s) => s.account.id === transferSourceId);
         const sourceCurr = getAccountCurrency(sourceAcc, currency);
         const destCurr = getAccountCurrency(destAcc, currency);
         const rawTransferVal = parseFloat(transferAmount) || 0;
         const destConv = convertCurrency2dp(rawTransferVal, sourceCurr, destCurr, fxSnapshot);
         const baseConv = convertCurrency2dp(rawTransferVal, sourceCurr, currency, fxSnapshot);
+        const currentSourceBal = sourceSummary
+          ? sourceSummary.nativeCurrentCashBalance ?? sourceSummary.currentCashBalance
+          : 0;
+        const projectedSourceBal = Math.round((currentSourceBal - rawTransferVal) * 100) / 100;
+        const isSourceOverdrawn = rawTransferVal > 0 && projectedSourceBal < 0;
+        const isSourceWarning =
+          !isSourceOverdrawn &&
+          rawTransferVal > 0 &&
+          currentSourceBal > 0 &&
+          rawTransferVal / currentSourceBal >= 0.8;
 
         return (
           <form
@@ -1015,6 +1026,31 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                 />
               </div>
             </div>
+
+            {rawTransferVal > 0 && sourceAcc && (
+              <div
+                className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs ${
+                  isSourceOverdrawn
+                    ? 'border-rose-300 bg-rose-50/90 text-rose-800'
+                    : isSourceWarning
+                    ? 'border-amber-200 bg-amber-50/80 text-amber-800'
+                    : 'border-emerald-200/80 bg-emerald-50/60 text-emerald-800'
+                }`}
+              >
+                <span className="font-semibold">
+                  {sourceAcc.name} Balance Check:{' '}
+                  {isSourceOverdrawn
+                    ? 'Exceeds Available Balance'
+                    : isSourceWarning
+                    ? 'Near Balance Limit'
+                    : 'Sufficient Balance'}
+                </span>
+                <span className="font-mono font-bold tabular-nums">
+                  Available: {formatAmount(currentSourceBal, sourceCurr)} → After:{' '}
+                  {formatAmount(projectedSourceBal, sourceCurr)}
+                </span>
+              </div>
+            )}
 
             {(sourceCurr !== destCurr || sourceCurr !== currency) && rawTransferVal > 0 && (
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs">

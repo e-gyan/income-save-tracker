@@ -1,0 +1,962 @@
+/**
+ * Budget Evaluation, Subcategory Residual Visuals, and Real-Time Spend & Account Check Engine
+ */
+
+import {
+  FinancialBudget,
+  FlexibleExpense,
+  IncomeReceipt,
+  FinancialAccount,
+  AccountTransfer,
+  UserSettings,
+} from '../types/finance.ts';
+import {
+  calculateAccountSummaries,
+  getIncomeDeductionExpenses,
+  resolveIntuitiveSubcategoryColor,
+} from './calculations.ts';
+import {
+  convertCurrency2dp,
+  getAccountCurrency,
+  getAccountNativeBalance,
+  roundTo2Decimals,
+  MarketFxSnapshot,
+} from './currencyService.ts';
+import { parseLocalCalendarDate } from './dateFilters.ts';
+
+export type BudgetHealthStatus = 'healthy' | 'warning' | 'at_limit' | 'exceeded';
+
+export interface BudgetPeriodWindow {
+  startDate: Date;
+  endDate: Date;
+  startYmd: string;
+  endYmd: string;
+  label: string;
+  periodBadge: string;
+  daysRemaining: number;
+  totalDays: number;
+}
+
+export interface BudgetSubcategoryBreakdown {
+  subcategory: string;
+  color: string;
+  spentAmount: number; // In budget.currency
+  spentAmountBase: number; // In settings.currency
+  shareOfBudgetPercent: number; // % of total budget limit consumed by this subcategory
+  shareOfSpentPercent: number; // % of total spent consumed by this subcategory
+  transactionCount: number;
+}
+
+export interface EvaluatedBudget {
+  budget: FinancialBudget;
+  periodWindow: BudgetPeriodWindow;
+  budgetLimit: number; // In budget.currency
+  budgetLimitBase: number; // In settings.currency
+  spentAmount: number; // In budget.currency
+  spentAmountBase: number; // In settings.currency
+  residualAmount: number; // budgetLimit - spentAmount (negative when exceeded)
+  residualAmountBase: number; // budgetLimitBase - spentAmountBase
+  usagePercentage: number; // (spentAmount / budgetLimit) * 100
+  clampedProgressPercent: number; // 0..100
+  residualPercent: number; // 100 - clampedProgressPercent
+  overageAmount: number; // max(0, spentAmount - budgetLimit)
+  overagePercent: number; // max(0, usagePercentage - 100)
+  alertThresholdPercent: number;
+  status: BudgetHealthStatus;
+  subcategoryBreakdowns: BudgetSubcategoryBreakdown[];
+  matchedExpenses: FlexibleExpense[];
+  linkedAccount?: FinancialAccount;
+}
+
+export interface SpendBudgetCheckItem {
+  budget: FinancialBudget;
+  periodLabel: string;
+  budgetLimit: number;
+  spentBefore: number;
+  additionalSpend: number;
+  projectedSpent: number;
+  residualBefore: number;
+  projectedResidual: number;
+  percentageBefore: number;
+  projectedPercentage: number;
+  statusBefore: BudgetHealthStatus;
+  projectedStatus: BudgetHealthStatus;
+}
+
+export interface SpendAccountCheckResult {
+  account: FinancialAccount;
+  accountCurrency: string;
+  balanceBefore: number;
+  spendInAccountCurrency: number;
+  projectedBalance: number;
+  status: 'sufficient' | 'low_balance' | 'overdrawn';
+  custodianAccount?: FinancialAccount;
+  custodianCurrency?: string;
+  custodianBalanceBefore?: number;
+  custodianProjectedBalance?: number;
+}
+
+export interface SpendCheckEvaluation {
+  accountCheck: SpendAccountCheckResult | null;
+  budgetChecks: SpendBudgetCheckItem[];
+  hasOverdrawnAccount: boolean;
+  hasLowBalanceAccount: boolean;
+  hasExceededBudget: boolean;
+  hasWarningBudget: boolean;
+}
+
+function toYmd(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function formatShortDate(d: Date): string {
+  return d.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+/**
+ * Computes the exact start and end dates for a recurring period ('weekly', 'monthly', or 'yearly')
+ * relative to a given reference date.
+ */
+export function computeRecurringPeriodBounds(
+  periodType: 'weekly' | 'monthly' | 'yearly',
+  referenceDate: Date = new Date()
+): { startDate: Date; endDate: Date; startYmd: string; endYmd: string; periodBadge: string } {
+  const refDay = new Date(
+    referenceDate.getFullYear(),
+    referenceDate.getMonth(),
+    referenceDate.getDate(),
+    0,
+    0,
+    0,
+    0
+  );
+
+  let startDate: Date;
+  let endDate: Date;
+  let periodBadge = 'Monthly';
+
+  if (periodType === 'weekly') {
+    periodBadge = 'Weekly';
+    const dayOfWeek = refDay.getDay(); // 0 (Sun) .. 6 (Sat)
+    const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    startDate = new Date(refDay);
+    startDate.setDate(refDay.getDate() + diffToMonday);
+    startDate.setHours(0, 0, 0, 0);
+
+    endDate = new Date(startDate);
+    endDate.setDate(startDate.getDate() + 6);
+    endDate.setHours(23, 59, 59, 999);
+  } else if (periodType === 'yearly') {
+    periodBadge = 'Yearly';
+    startDate = new Date(refDay.getFullYear(), 0, 1, 0, 0, 0, 0);
+    endDate = new Date(refDay.getFullYear(), 11, 31, 23, 59, 59, 999);
+  } else {
+    periodBadge = 'Monthly';
+    startDate = new Date(refDay.getFullYear(), refDay.getMonth(), 1, 0, 0, 0, 0);
+    endDate = new Date(
+      refDay.getFullYear(),
+      refDay.getMonth() + 1,
+      0,
+      23,
+      59,
+      59,
+      999
+    );
+  }
+
+  return {
+    startDate,
+    endDate,
+    startYmd: toYmd(startDate),
+    endYmd: toYmd(endDate),
+    periodBadge,
+  };
+}
+
+/**
+ * Resolves the active start and end calendar dates for a budget:
+ * - 'weekly': Monday 00:00:00 through Sunday 23:59:59 (or locked activePeriodStart..activePeriodEnd)
+ * - 'monthly': 1st of month through last day of month (or locked activePeriodStart..activePeriodEnd)
+ * - 'yearly': Jan 1 through Dec 31 of the year (or locked activePeriodStart..activePeriodEnd)
+ * - 'custom': budget.customStartDate through budget.customEndDate
+ */
+export function resolveBudgetPeriodWindow(
+  budget: FinancialBudget,
+  referenceDate: Date = new Date()
+): BudgetPeriodWindow {
+  const refDay = new Date(
+    referenceDate.getFullYear(),
+    referenceDate.getMonth(),
+    referenceDate.getDate(),
+    0,
+    0,
+    0,
+    0
+  );
+
+  let startDate: Date;
+  let endDate: Date;
+  let periodBadge = 'Monthly';
+
+  if (budget.periodType === 'custom') {
+    periodBadge = 'Custom Period';
+    const parsedStart = budget.customStartDate
+      ? parseLocalCalendarDate(budget.customStartDate)
+      : null;
+    const parsedEnd = budget.customEndDate
+      ? parseLocalCalendarDate(budget.customEndDate)
+      : null;
+
+    startDate = parsedStart
+      ? new Date(
+          parsedStart.getFullYear(),
+          parsedStart.getMonth(),
+          parsedStart.getDate(),
+          0,
+          0,
+          0,
+          0
+        )
+      : new Date(refDay.getFullYear(), refDay.getMonth(), 1, 0, 0, 0, 0);
+
+    endDate = parsedEnd
+      ? new Date(
+          parsedEnd.getFullYear(),
+          parsedEnd.getMonth(),
+          parsedEnd.getDate(),
+          23,
+          59,
+          59,
+          999
+        )
+      : new Date(refDay.getFullYear(), refDay.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    if (endDate.getTime() < startDate.getTime()) {
+      const temp = startDate;
+      startDate = endDate;
+      endDate = new Date(
+        temp.getFullYear(),
+        temp.getMonth(),
+        temp.getDate(),
+        23,
+        59,
+        59,
+        999
+      );
+    }
+  } else {
+    const recurringType: 'weekly' | 'monthly' | 'yearly' =
+      budget.periodType === 'weekly' || budget.periodType === 'yearly'
+        ? budget.periodType
+        : 'monthly';
+    const computed = computeRecurringPeriodBounds(recurringType, refDay);
+    periodBadge = computed.periodBadge;
+
+    const lockedStart = budget.activePeriodStart
+      ? parseLocalCalendarDate(budget.activePeriodStart)
+      : null;
+    const lockedEnd = budget.activePeriodEnd
+      ? parseLocalCalendarDate(budget.activePeriodEnd)
+      : null;
+
+    if (lockedStart && lockedEnd) {
+      startDate = new Date(
+        lockedStart.getFullYear(),
+        lockedStart.getMonth(),
+        lockedStart.getDate(),
+        0,
+        0,
+        0,
+        0
+      );
+      endDate = new Date(
+        lockedEnd.getFullYear(),
+        lockedEnd.getMonth(),
+        lockedEnd.getDate(),
+        23,
+        59,
+        59,
+        999
+      );
+    } else {
+      startDate = computed.startDate;
+      endDate = computed.endDate;
+    }
+  }
+
+  const endMidnight = new Date(
+    endDate.getFullYear(),
+    endDate.getMonth(),
+    endDate.getDate(),
+    0,
+    0,
+    0,
+    0
+  );
+  const startMidnight = new Date(
+    startDate.getFullYear(),
+    startDate.getMonth(),
+    startDate.getDate(),
+    0,
+    0,
+    0,
+    0
+  );
+
+  const totalDays = Math.max(
+    1,
+    Math.round(
+      (endMidnight.getTime() - startMidnight.getTime()) / (1000 * 60 * 60 * 24)
+    ) + 1
+  );
+  const daysRemaining = Math.max(
+    0,
+    Math.round((endMidnight.getTime() - refDay.getTime()) / (1000 * 60 * 60 * 24)) +
+      1
+  );
+
+  return {
+    startDate,
+    endDate,
+    startYmd: toYmd(startDate),
+    endYmd: toYmd(endDate),
+    label: `${formatShortDate(startDate)} – ${formatShortDate(endDate)}`,
+    periodBadge,
+    daysRemaining,
+    totalDays,
+  };
+}
+
+/**
+ * Automatically reconciles and recreates recurring budgets ('weekly', 'monthly', 'yearly')
+ * when their specified period has elapsed, ensuring a fresh budget instance is created
+ * for the current time period while archiving the completed cycle.
+ */
+export function reconcileRecurringBudgets(
+  budgets: FinancialBudget[],
+  referenceDate: Date = new Date()
+): {
+  nextBudgets: FinancialBudget[];
+  changedBudgets: FinancialBudget[];
+  hasChanges: boolean;
+} {
+  const todayYmd = toYmd(referenceDate);
+  const nowIso = referenceDate.toISOString();
+  const nextBudgets: FinancialBudget[] = [];
+  const changedBudgets: FinancialBudget[] = [];
+  const newlyCreatedBudgets: FinancialBudget[] = [];
+
+  for (let i = 0; i < budgets.length; i++) {
+    const b = budgets[i];
+    if (b.periodType === 'custom' || b.isArchivedPeriod) {
+      nextBudgets.push(b);
+      continue;
+    }
+
+    const recurringType: 'weekly' | 'monthly' | 'yearly' =
+      b.periodType === 'weekly' || b.periodType === 'yearly'
+        ? b.periodType
+        : 'monthly';
+    const currentBounds = computeRecurringPeriodBounds(
+      recurringType,
+      referenceDate
+    );
+
+    // Determine the budget's assigned period bounds
+    let assignedStart = b.activePeriodStart;
+    let assignedEnd = b.activePeriodEnd;
+
+    if (!assignedStart || !assignedEnd) {
+      const createdDate = b.createdAt
+        ? parseLocalCalendarDate(b.createdAt.substring(0, 10))
+        : null;
+      const initialBounds = computeRecurringPeriodBounds(
+        recurringType,
+        createdDate || referenceDate
+      );
+      assignedStart = initialBounds.startYmd;
+      assignedEnd = initialBounds.endYmd;
+    }
+
+    // If the assigned period has elapsed (todayYmd > assignedEnd), archive this cycle and recreate for the current period
+    if (todayYmd > assignedEnd) {
+      const archivedBudget: FinancialBudget = {
+        ...b,
+        activePeriodStart: assignedStart,
+        activePeriodEnd: assignedEnd,
+        isArchivedPeriod: true,
+        updatedAt: nowIso,
+      };
+      nextBudgets.push(archivedBudget);
+      changedBudgets.push(archivedBudget);
+
+      const seriesRootId = b.parentRecurringBudgetId || b.id;
+      const alreadyRecreated =
+        budgets.some(
+          (other) =>
+            !other.isArchivedPeriod &&
+            other.periodType === b.periodType &&
+            other.activePeriodStart === currentBounds.startYmd &&
+            other.activePeriodEnd === currentBounds.endYmd &&
+            (other.parentRecurringBudgetId === seriesRootId ||
+              other.name.toLowerCase() === b.name.toLowerCase())
+        ) ||
+        newlyCreatedBudgets.some(
+          (nb) =>
+            nb.periodType === b.periodType &&
+            nb.activePeriodStart === currentBounds.startYmd &&
+            nb.activePeriodEnd === currentBounds.endYmd &&
+            nb.parentRecurringBudgetId === seriesRootId
+        );
+
+      if (!alreadyRecreated) {
+        const recreatedBudget: FinancialBudget = {
+          ...b,
+          id: `bgt_rec_${Date.now()}_${i}`,
+          activePeriodStart: currentBounds.startYmd,
+          activePeriodEnd: currentBounds.endYmd,
+          parentRecurringBudgetId: seriesRootId,
+          isArchivedPeriod: false,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        newlyCreatedBudgets.push(recreatedBudget);
+        changedBudgets.push(recreatedBudget);
+      }
+    } else if (
+      b.activePeriodStart !== assignedStart ||
+      b.activePeriodEnd !== assignedEnd
+    ) {
+      const stampedBudget: FinancialBudget = {
+        ...b,
+        activePeriodStart: assignedStart,
+        activePeriodEnd: assignedEnd,
+      };
+      nextBudgets.push(stampedBudget);
+      changedBudgets.push(stampedBudget);
+    } else {
+      nextBudgets.push(b);
+    }
+  }
+
+  const combined = [...newlyCreatedBudgets, ...nextBudgets];
+  return {
+    nextBudgets: combined,
+    changedBudgets,
+    hasChanges: changedBudgets.length > 0,
+  };
+}
+
+export function isDateWithinBudgetWindow(
+  dateStr: string | undefined | null,
+  window: BudgetPeriodWindow
+): boolean {
+  if (!dateStr) return false;
+  const parsed = parseLocalCalendarDate(dateStr);
+  if (!parsed) return false;
+  const t = parsed.getTime();
+  return t >= window.startDate.getTime() && t <= window.endDate.getTime();
+}
+
+export function normalizeSubcategoryKey(sub?: string): string {
+  return (sub || '').trim().toLowerCase();
+}
+
+function getExpenseAmountInCurrency(
+  exp: FlexibleExpense,
+  targetCurrency: string,
+  baseCurrency: string,
+  accounts: FinancialAccount[],
+  fxSnapshot?: MarketFxSnapshot
+): number {
+  const matchedAcc = exp.accountId
+    ? accounts.find((a) => a.id === exp.accountId)
+    : undefined;
+  const expCurr = (
+    exp.currency || getAccountCurrency(matchedAcc, baseCurrency)
+  ).toUpperCase();
+  const rawNativeAmt =
+    exp.originalAmount !== undefined && exp.originalAmount > 0
+      ? Number(exp.originalAmount)
+      : Number(exp.amount || 0);
+
+  if (expCurr === targetCurrency.toUpperCase()) {
+    return roundTo2Decimals(rawNativeAmt);
+  }
+  return convertCurrency2dp(rawNativeAmt, expCurr, targetCurrency, fxSnapshot)
+    .convertedAmount;
+}
+
+export function evaluateBudgetProgress(
+  budget: FinancialBudget,
+  expenses: FlexibleExpense[],
+  incomes: IncomeReceipt[],
+  accounts: FinancialAccount[],
+  settings: UserSettings,
+  fxSnapshot?: MarketFxSnapshot,
+  referenceDate: Date = new Date()
+): EvaluatedBudget {
+  const baseCurrency = (settings.currency || 'GHS').toUpperCase();
+  const budgetCurrency = (budget.currency || baseCurrency).toUpperCase();
+  const periodWindow = resolveBudgetPeriodWindow(budget, referenceDate);
+
+  // Include both standalone expenses and non-savings income deduction expenses
+  const deductionExpenses = getIncomeDeductionExpenses(
+    incomes,
+    settings,
+    accounts,
+    expenses
+  );
+  const standaloneExpenses = expenses.filter(
+    (e) => !e.id.startsWith('exp_cut_') && !e.id.startsWith('exp_ded_')
+  );
+  const allExpenses = [...standaloneExpenses, ...deductionExpenses];
+
+  const targetSubMap = new Map<string, string>();
+  for (const sub of budget.subcategories || []) {
+    const trimmed = sub.trim();
+    if (trimmed) {
+      targetSubMap.set(normalizeSubcategoryKey(trimmed), trimmed);
+    }
+  }
+
+  const matchedExpenses: FlexibleExpense[] = [];
+  const subSpentMap = new Map<
+    string,
+    { spent: number; spentBase: number; count: number; categoryHint?: string }
+  >();
+
+  for (const [, canonicalSub] of targetSubMap.entries()) {
+    subSpentMap.set(normalizeSubcategoryKey(canonicalSub), {
+      spent: 0,
+      spentBase: 0,
+      count: 0,
+    });
+  }
+
+  for (const exp of allExpenses) {
+    if (exp.vaultAction === 'credit') continue;
+    if (!isDateWithinBudgetWindow(exp.date, periodWindow)) continue;
+
+    if (budget.accountId && exp.accountId !== budget.accountId) {
+      continue;
+    }
+
+    const expSubKey = normalizeSubcategoryKey(exp.subcategory);
+    const expCatKey = normalizeSubcategoryKey(exp.category);
+
+    // Match either exact subcategory or fallback to category if subcategory matches
+    const matchedKey = targetSubMap.has(expSubKey)
+      ? expSubKey
+      : !expSubKey && targetSubMap.has(expCatKey)
+      ? expCatKey
+      : null;
+
+    if (!matchedKey) continue;
+
+    matchedExpenses.push(exp);
+
+    const amtInBudgetCurr = getExpenseAmountInCurrency(
+      exp,
+      budgetCurrency,
+      baseCurrency,
+      accounts,
+      fxSnapshot
+    );
+    const amtInBaseCurr = getExpenseAmountInCurrency(
+      exp,
+      baseCurrency,
+      baseCurrency,
+      accounts,
+      fxSnapshot
+    );
+
+    const bucket = subSpentMap.get(matchedKey) || {
+      spent: 0,
+      spentBase: 0,
+      count: 0,
+    };
+    bucket.spent = roundTo2Decimals(bucket.spent + amtInBudgetCurr);
+    bucket.spentBase = roundTo2Decimals(bucket.spentBase + amtInBaseCurr);
+    bucket.count += 1;
+    if (exp.category && !bucket.categoryHint) {
+      bucket.categoryHint = exp.category;
+    }
+    subSpentMap.set(matchedKey, bucket);
+  }
+
+  const budgetLimit = roundTo2Decimals(Math.max(0, Number(budget.amount || 0)));
+  const budgetLimitBase =
+    budgetCurrency === baseCurrency
+      ? budgetLimit
+      : convertCurrency2dp(budgetLimit, budgetCurrency, baseCurrency, fxSnapshot)
+          .convertedAmount;
+
+  let spentAmount = 0;
+  let spentAmountBase = 0;
+  for (const item of subSpentMap.values()) {
+    spentAmount += item.spent;
+    spentAmountBase += item.spentBase;
+  }
+  spentAmount = roundTo2Decimals(spentAmount);
+  spentAmountBase = roundTo2Decimals(spentAmountBase);
+
+  const residualAmount = roundTo2Decimals(budgetLimit - spentAmount);
+  const residualAmountBase = roundTo2Decimals(budgetLimitBase - spentAmountBase);
+  const usagePercentage =
+    budgetLimit > 0 ? roundTo2Decimals((spentAmount / budgetLimit) * 100) : 0;
+  const clampedProgressPercent = Math.min(100, Math.max(0, usagePercentage));
+  const residualPercent = Math.max(
+    0,
+    roundTo2Decimals(100 - clampedProgressPercent)
+  );
+  const overageAmount =
+    spentAmount > budgetLimit ? roundTo2Decimals(spentAmount - budgetLimit) : 0;
+  const overagePercent =
+    usagePercentage > 100 ? roundTo2Decimals(usagePercentage - 100) : 0;
+
+  const alertThresholdPercent = Math.min(
+    100,
+    Math.max(1, Number(budget.alertThresholdPercent ?? 80))
+  );
+
+  let status: BudgetHealthStatus = 'healthy';
+  if (budgetLimit > 0 && spentAmount > budgetLimit) {
+    status = 'exceeded';
+  } else if (budgetLimit > 0 && spentAmount === budgetLimit) {
+    status = 'at_limit';
+  } else if (usagePercentage >= alertThresholdPercent) {
+    status = 'warning';
+  }
+
+  const subcategoryBreakdowns: BudgetSubcategoryBreakdown[] = Array.from(
+    targetSubMap.entries()
+  ).map(([key, canonicalName]) => {
+    const stat = subSpentMap.get(key) || { spent: 0, spentBase: 0, count: 0 };
+    const color = resolveIntuitiveSubcategoryColor(
+      canonicalName,
+      stat.categoryHint || budget.categories?.[0] || '',
+      settings,
+      expenses
+    );
+    const shareOfBudgetPercent =
+      budgetLimit > 0
+        ? roundTo2Decimals((stat.spent / budgetLimit) * 100)
+        : 0;
+    const shareOfSpentPercent =
+      spentAmount > 0
+        ? roundTo2Decimals((stat.spent / spentAmount) * 100)
+        : 0;
+
+    return {
+      subcategory: canonicalName,
+      color,
+      spentAmount: stat.spent,
+      spentAmountBase: stat.spentBase,
+      shareOfBudgetPercent,
+      shareOfSpentPercent,
+      transactionCount: stat.count,
+    };
+  });
+
+  matchedExpenses.sort(
+    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+  );
+
+  const linkedAccount = budget.accountId
+    ? accounts.find((a) => a.id === budget.accountId)
+    : undefined;
+
+  return {
+    budget,
+    periodWindow,
+    budgetLimit,
+    budgetLimitBase,
+    spentAmount,
+    spentAmountBase,
+    residualAmount,
+    residualAmountBase,
+    usagePercentage,
+    clampedProgressPercent,
+    residualPercent,
+    overageAmount,
+    overagePercent,
+    alertThresholdPercent,
+    status,
+    subcategoryBreakdowns,
+    matchedExpenses,
+    linkedAccount,
+  };
+}
+
+export function evaluateAllBudgets(
+  budgets: FinancialBudget[],
+  expenses: FlexibleExpense[],
+  incomes: IncomeReceipt[],
+  accounts: FinancialAccount[],
+  settings: UserSettings,
+  fxSnapshot?: MarketFxSnapshot,
+  referenceDate: Date = new Date(),
+  includeArchived: boolean = false
+): EvaluatedBudget[] {
+  return budgets
+    .filter((b) => includeArchived || !b.isArchivedPeriod)
+    .map((b) =>
+      evaluateBudgetProgress(
+        b,
+        expenses,
+        incomes,
+        accounts,
+        settings,
+        fxSnapshot,
+        referenceDate
+      )
+    );
+}
+
+/**
+ * Real-time spend validation against both the selected Account (and its attached Main Account)
+ * and any Budgets covering the selected Subcategory & Date.
+ */
+export function checkSpendAgainstBudgetsAndAccount(params: {
+  date: string;
+  accountId: string;
+  category?: string;
+  subcategory?: string;
+  amount: number;
+  currency: string;
+  budgets: FinancialBudget[];
+  expenses: FlexibleExpense[];
+  incomes: IncomeReceipt[];
+  accounts: FinancialAccount[];
+  transfers: AccountTransfer[];
+  settings: UserSettings;
+  fxSnapshot?: MarketFxSnapshot;
+}): SpendCheckEvaluation {
+  const {
+    date,
+    accountId,
+    category,
+    subcategory,
+    amount,
+    currency: spendCurrency,
+    budgets,
+    expenses,
+    incomes,
+    accounts,
+    transfers,
+    settings,
+    fxSnapshot,
+  } = params;
+
+  const baseCurrency = (settings.currency || 'GHS').toUpperCase();
+  const cleanAmount = roundTo2Decimals(Math.max(0, Number(amount || 0)));
+
+  // 1. Account Balance Check
+  let accountCheck: SpendAccountCheckResult | null = null;
+  const selectedAccount = accounts.find((a) => a.id === accountId);
+
+  if (selectedAccount) {
+    const { summaries } = calculateAccountSummaries(
+      accounts,
+      incomes,
+      expenses,
+      settings,
+      transfers,
+      fxSnapshot
+    );
+    const accSummary = summaries.find((s) => s.account.id === selectedAccount.id);
+    const accCurr = getAccountCurrency(selectedAccount, baseCurrency);
+    const nativeBalObj = getAccountNativeBalance(
+      accSummary?.currentCashBalance ?? 0,
+      selectedAccount,
+      baseCurrency,
+      fxSnapshot
+    );
+    const balanceBefore =
+      accSummary?.nativeCurrentCashBalance !== undefined
+        ? accSummary.nativeCurrentCashBalance
+        : nativeBalObj.amount;
+
+    const spendInAccountCurrency =
+      spendCurrency.toUpperCase() === accCurr.toUpperCase()
+        ? cleanAmount
+        : convertCurrency2dp(cleanAmount, spendCurrency, accCurr, fxSnapshot)
+            .convertedAmount;
+
+    const projectedBalance = roundTo2Decimals(
+      balanceBefore - spendInAccountCurrency
+    );
+
+    let accStatus: 'sufficient' | 'low_balance' | 'overdrawn' = 'sufficient';
+    if (cleanAmount > 0 && projectedBalance < 0) {
+      accStatus = 'overdrawn';
+    } else if (
+      cleanAmount > 0 &&
+      balanceBefore > 0 &&
+      spendInAccountCurrency / balanceBefore >= 0.8
+    ) {
+      accStatus = 'low_balance';
+    }
+
+    // Check attached Main Account if this is a virtual account
+    let custodianAccount: FinancialAccount | undefined;
+    let custodianCurrency: string | undefined;
+    let custodianBalanceBefore: number | undefined;
+    let custodianProjectedBalance: number | undefined;
+
+    if (selectedAccount.isVirtual && selectedAccount.custodianAccountId) {
+      const custAcc = accounts.find(
+        (a) => a.id === selectedAccount.custodianAccountId
+      );
+      if (custAcc) {
+        custodianAccount = custAcc;
+        const custSummary = summaries.find((s) => s.account.id === custAcc.id);
+        custodianCurrency = getAccountCurrency(custAcc, baseCurrency);
+        const custNativeBal =
+          custSummary?.nativeCurrentCashBalance ??
+          getAccountNativeBalance(
+            custSummary?.currentCashBalance ?? 0,
+            custAcc,
+            baseCurrency,
+            fxSnapshot
+          ).amount;
+        custodianBalanceBefore = custNativeBal;
+        const spendInCustCurr =
+          spendCurrency.toUpperCase() === custodianCurrency.toUpperCase()
+            ? cleanAmount
+            : convertCurrency2dp(
+                cleanAmount,
+                spendCurrency,
+                custodianCurrency,
+                fxSnapshot
+              ).convertedAmount;
+        custodianProjectedBalance = roundTo2Decimals(
+          custNativeBal - spendInCustCurr
+        );
+        if (cleanAmount > 0 && custodianProjectedBalance < 0) {
+          accStatus = 'overdrawn';
+        }
+      }
+    }
+
+    accountCheck = {
+      account: selectedAccount,
+      accountCurrency: accCurr,
+      balanceBefore,
+      spendInAccountCurrency,
+      projectedBalance,
+      status: accStatus,
+      custodianAccount,
+      custodianCurrency,
+      custodianBalanceBefore,
+      custodianProjectedBalance,
+    };
+  }
+
+  // 2. Budget Checks for the selected Subcategory & Date
+  const refDate = (date ? parseLocalCalendarDate(date) : null) || new Date();
+  const subKey = normalizeSubcategoryKey(subcategory);
+  const catKey = normalizeSubcategoryKey(category);
+
+  const budgetChecks: SpendBudgetCheckItem[] = [];
+
+  if (subKey || catKey) {
+    for (const budget of budgets) {
+      if (budget.isArchivedPeriod) continue;
+      // Check if budget tracks this subcategory
+      const tracksSub = (budget.subcategories || []).some((s) => {
+        const k = normalizeSubcategoryKey(s);
+        return (subKey && k === subKey) || (!subKey && catKey && k === catKey);
+      });
+      if (!tracksSub) continue;
+
+      // If budget is scoped to a specific account, check account match
+      if (budget.accountId && accountId && budget.accountId !== accountId) {
+        continue;
+      }
+
+      const evaluated = evaluateBudgetProgress(
+        budget,
+        expenses,
+        incomes,
+        accounts,
+        settings,
+        fxSnapshot,
+        refDate
+      );
+
+      // Verify the expense date falls inside the budget's period window
+      if (date && !isDateWithinBudgetWindow(date, evaluated.periodWindow)) {
+        continue;
+      }
+
+      const budgetCurr = (budget.currency || baseCurrency).toUpperCase();
+      const additionalSpend =
+        spendCurrency.toUpperCase() === budgetCurr
+          ? cleanAmount
+          : convertCurrency2dp(cleanAmount, spendCurrency, budgetCurr, fxSnapshot)
+              .convertedAmount;
+
+      const spentBefore = evaluated.spentAmount;
+      const projectedSpent = roundTo2Decimals(spentBefore + additionalSpend);
+      const residualBefore = evaluated.residualAmount;
+      const projectedResidual = roundTo2Decimals(
+        evaluated.budgetLimit - projectedSpent
+      );
+      const percentageBefore = evaluated.usagePercentage;
+      const projectedPercentage =
+        evaluated.budgetLimit > 0
+          ? roundTo2Decimals((projectedSpent / evaluated.budgetLimit) * 100)
+          : 0;
+
+      let projectedStatus: BudgetHealthStatus = 'healthy';
+      if (evaluated.budgetLimit > 0 && projectedSpent > evaluated.budgetLimit) {
+        projectedStatus = 'exceeded';
+      } else if (
+        evaluated.budgetLimit > 0 &&
+        projectedSpent === evaluated.budgetLimit
+      ) {
+        projectedStatus = 'at_limit';
+      } else if (projectedPercentage >= evaluated.alertThresholdPercent) {
+        projectedStatus = 'warning';
+      }
+
+      budgetChecks.push({
+        budget,
+        periodLabel: `${evaluated.periodWindow.periodBadge} (${evaluated.periodWindow.label})`,
+        budgetLimit: evaluated.budgetLimit,
+        spentBefore,
+        additionalSpend,
+        projectedSpent,
+        residualBefore,
+        projectedResidual,
+        percentageBefore,
+        projectedPercentage,
+        statusBefore: evaluated.status,
+        projectedStatus,
+      });
+    }
+  }
+
+  return {
+    accountCheck,
+    budgetChecks,
+    hasOverdrawnAccount: accountCheck?.status === 'overdrawn',
+    hasLowBalanceAccount: accountCheck?.status === 'low_balance',
+    hasExceededBudget: budgetChecks.some(
+      (b) => b.projectedStatus === 'exceeded'
+    ),
+    hasWarningBudget: budgetChecks.some(
+      (b) =>
+        b.projectedStatus === 'warning' || b.projectedStatus === 'at_limit'
+    ),
+  };
+}

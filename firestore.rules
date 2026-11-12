@@ -150,6 +150,31 @@ service cloud.firestore {
              (!('snapshotData' in data) || (data.snapshotData is string && data.snapshotData.size() <= 500000));
     }
 
+    // Validation for FinancialBudget
+    function isValidFinancialBudget(data, userId) {
+      return data.keys().hasAll(['userId', 'name', 'periodType', 'scopeType', 'subcategoriesJson', 'currency', 'amount']) &&
+             data.userId == userId &&
+             data.name is string && data.name.size() <= 150 &&
+             data.periodType is string && data.periodType.size() <= 20 &&
+             data.scopeType is string && data.scopeType.size() <= 20 &&
+             data.subcategoriesJson is string && data.subcategoriesJson.size() <= 10000 &&
+             data.currency is string && data.currency.size() <= 10 &&
+             data.amount is number && data.amount >= 0 &&
+             (!('customStartDate' in data) || (data.customStartDate is string && data.customStartDate.size() <= 30)) &&
+             (!('customEndDate' in data) || (data.customEndDate is string && data.customEndDate.size() <= 30)) &&
+             (!('activePeriodStart' in data) || (data.activePeriodStart is string && data.activePeriodStart.size() <= 30)) &&
+             (!('activePeriodEnd' in data) || (data.activePeriodEnd is string && data.activePeriodEnd.size() <= 30)) &&
+             (!('parentRecurringBudgetId' in data) || (data.parentRecurringBudgetId is string && data.parentRecurringBudgetId.size() <= 128)) &&
+             (!('isArchivedPeriod' in data) || (data.isArchivedPeriod is bool)) &&
+             (!('categoriesJson' in data) || (data.categoriesJson is string && data.categoriesJson.size() <= 5000)) &&
+             (!('accountId' in data) || (data.accountId is string && data.accountId.size() <= 128)) &&
+             (!('alertThresholdPercent' in data) || (data.alertThresholdPercent is number && data.alertThresholdPercent >= 1 && data.alertThresholdPercent <= 100)) &&
+             (!('color' in data) || (data.color is string && data.color.size() <= 30)) &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 50)) &&
+             (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 50));
+    }
+
     // Match /users/{userId} hierarchy
     match /users/{userId} {
       allow get: if isOwner(userId) && isValidId(userId);
@@ -218,6 +243,17 @@ service cloud.firestore {
                          isValidAccountTransfer(incoming(), userId) &&
                          incoming().userId == existing().userId;
         allow delete: if isOwner(userId) && isValidId(userId) && isValidId(transferId);
+      }
+
+      // Budgets
+      match /budgets/{budgetId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(budgetId);
+        allow list: if isOwner(userId) && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(userId) && isValidId(budgetId) && isValidFinancialBudget(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(userId) && isValidId(budgetId) &&
+                         isValidFinancialBudget(incoming(), userId) &&
+                         incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(budgetId);
       }
 
       // Revisions (Progressive Version Control)

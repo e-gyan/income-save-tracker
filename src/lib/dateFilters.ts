@@ -1,9 +1,30 @@
 /**
- * Date filtering engine with accurate local calendar date comparison:
- * ALL, 1D (Today), 7D, 14D, 1M (30d), 3M (90d), 1Y (365d).
+ * Redesigned Date Filtering Engine with Accurate Local Calendar Date Comparison:
+ * - Last 7 days ('7d')
+ * - This month ('this_month')
+ * - Last 31 days ('31d')
+ * - Last month ('last_month')
+ * - This year ('this_year')
+ * - Last 365 days ('365d')
+ * - Last year ('last_year')
+ * Plus 'all' (All Time) to reset/show all records.
  */
 
-export type TimeRangePreset = 'all' | '1d' | '7d' | '14d' | '1m' | '3m' | '1y';
+export type TimeRangePreset =
+  | 'all'
+  | '7d'
+  | 'this_month'
+  | '31d'
+  | 'last_month'
+  | 'this_year'
+  | '365d'
+  | 'last_year'
+  // Legacy compatibility aliases
+  | '1d'
+  | '14d'
+  | '1m'
+  | '3m'
+  | '1y';
 
 export interface TimeRangeOption {
   id: TimeRangePreset;
@@ -12,14 +33,22 @@ export interface TimeRangeOption {
   days?: number;
 }
 
+/**
+ * The 7 primary redesigned date filters requested by the user.
+ */
+export const REDESIGNED_DATE_FILTER_OPTIONS: TimeRangeOption[] = [
+  { id: '7d', label: 'Last 7 days', shortLabel: '7D', days: 7 },
+  { id: 'this_month', label: 'This month', shortLabel: 'This Mo' },
+  { id: '31d', label: 'Last 31 days', shortLabel: '31D', days: 31 },
+  { id: 'last_month', label: 'Last month', shortLabel: 'Last Mo' },
+  { id: 'this_year', label: 'This year', shortLabel: 'This Yr' },
+  { id: '365d', label: 'Last 365 days', shortLabel: '365D', days: 365 },
+  { id: 'last_year', label: 'Last year', shortLabel: 'Last Yr' },
+];
+
 export const TIME_RANGE_OPTIONS: TimeRangeOption[] = [
-  { id: 'all', label: 'All Time', shortLabel: 'ALL' },
-  { id: '1d', label: 'Today', shortLabel: '1D', days: 1 },
-  { id: '7d', label: '7 Days', shortLabel: '7D', days: 7 },
-  { id: '14d', label: '14 Days', shortLabel: '14D', days: 14 },
-  { id: '1m', label: '1 Month', shortLabel: '1M', days: 30 },
-  { id: '3m', label: '3 Months', shortLabel: '3M', days: 90 },
-  { id: '1y', label: '1 Year', shortLabel: '1Y', days: 365 },
+  { id: 'all', label: 'All Time', shortLabel: 'All' },
+  ...REDESIGNED_DATE_FILTER_OPTIONS,
 ];
 
 /**
@@ -37,7 +66,15 @@ export function parseLocalCalendarDate(dateString: string): Date | null {
   }
   const parsed = new Date(trimmed);
   if (isNaN(parsed.getTime())) return null;
-  return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate(), 0, 0, 0, 0);
+  return new Date(
+    parsed.getFullYear(),
+    parsed.getMonth(),
+    parsed.getDate(),
+    0,
+    0,
+    0,
+    0
+  );
 }
 
 /**
@@ -68,24 +105,38 @@ export function isDateInPreset(
   const diffMs = refDay.getTime() - itemDay.getTime();
   const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
 
-  // Allow today (diffDays === 0) or future-dated entries made today (diffDays <= 0 for current day)
-  if (diffDays < 0) {
-    return false;
-  }
-
   switch (preset) {
+    case '7d':
+      return diffDays >= 0 && diffDays <= 6;
+    case 'this_month':
+      return (
+        itemDay.getFullYear() === refDay.getFullYear() &&
+        itemDay.getMonth() === refDay.getMonth()
+      );
+    case '31d':
+    case '1m':
+      return diffDays >= 0 && diffDays <= 30;
+    case 'last_month': {
+      const prevMonth = new Date(refDay.getFullYear(), refDay.getMonth() - 1, 1);
+      return (
+        itemDay.getFullYear() === prevMonth.getFullYear() &&
+        itemDay.getMonth() === prevMonth.getMonth()
+      );
+    }
+    case 'this_year':
+      return itemDay.getFullYear() === refDay.getFullYear();
+    case '365d':
+    case '1y':
+      return diffDays >= 0 && diffDays <= 364;
+    case 'last_year':
+      return itemDay.getFullYear() === refDay.getFullYear() - 1;
+    // Legacy compatibility fallbacks
     case '1d':
       return diffDays === 0;
-    case '7d':
-      return diffDays <= 6;
     case '14d':
-      return diffDays <= 13;
-    case '1m':
-      return diffDays <= 29;
+      return diffDays >= 0 && diffDays <= 13;
     case '3m':
-      return diffDays <= 89;
-    case '1y':
-      return diffDays <= 364;
+      return diffDays >= 0 && diffDays <= 89;
     default:
       return true;
   }
@@ -96,6 +147,11 @@ export function getPresetLabel(preset: TimeRangePreset): string {
   return match ? match.label : 'All Time';
 }
 
+export function getPresetShortLabel(preset: TimeRangePreset): string {
+  const match = TIME_RANGE_OPTIONS.find((o) => o.id === preset);
+  return match ? match.shortLabel : 'All';
+}
+
 export function getPresetRangeDescription(
   preset: TimeRangePreset,
   referenceDate: Date = new Date()
@@ -103,29 +159,64 @@ export function getPresetRangeDescription(
   if (preset === 'all') return 'All records';
 
   const formatShortDate = (d: Date) =>
-    d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    d.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
 
   const endStr = formatShortDate(referenceDate);
   const start = new Date(referenceDate);
 
   switch (preset) {
-    case '1d':
-      return `Today (${endStr})`;
     case '7d':
       start.setDate(start.getDate() - 6);
       return `${formatShortDate(start)} – ${endStr}`;
-    case '14d':
-      start.setDate(start.getDate() - 13);
-      return `${formatShortDate(start)} – ${endStr}`;
+    case 'this_month': {
+      const monthStart = new Date(
+        referenceDate.getFullYear(),
+        referenceDate.getMonth(),
+        1
+      );
+      const monthEnd = new Date(
+        referenceDate.getFullYear(),
+        referenceDate.getMonth() + 1,
+        0
+      );
+      return `${formatShortDate(monthStart)} – ${formatShortDate(monthEnd)}`;
+    }
+    case '31d':
     case '1m':
-      start.setDate(start.getDate() - 29);
+      start.setDate(start.getDate() - 30);
       return `${formatShortDate(start)} – ${endStr}`;
-    case '3m':
-      start.setDate(start.getDate() - 89);
-      return `${formatShortDate(start)} – ${endStr}`;
+    case 'last_month': {
+      const lastMonthStart = new Date(
+        referenceDate.getFullYear(),
+        referenceDate.getMonth() - 1,
+        1
+      );
+      const lastMonthEnd = new Date(
+        referenceDate.getFullYear(),
+        referenceDate.getMonth(),
+        0
+      );
+      return `${formatShortDate(lastMonthStart)} – ${formatShortDate(lastMonthEnd)}`;
+    }
+    case 'this_year': {
+      const yearStart = new Date(referenceDate.getFullYear(), 0, 1);
+      const yearEnd = new Date(referenceDate.getFullYear(), 11, 31);
+      return `${formatShortDate(yearStart)} – ${formatShortDate(yearEnd)}`;
+    }
+    case '365d':
     case '1y':
       start.setDate(start.getDate() - 364);
       return `${formatShortDate(start)} – ${endStr}`;
+    case 'last_year': {
+      const prevYear = referenceDate.getFullYear() - 1;
+      const prevYearStart = new Date(prevYear, 0, 1);
+      const prevYearEnd = new Date(prevYear, 11, 31);
+      return `${formatShortDate(prevYearStart)} – ${formatShortDate(prevYearEnd)}`;
+    }
     default:
       return 'All Time';
   }

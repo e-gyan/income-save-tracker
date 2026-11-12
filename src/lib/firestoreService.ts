@@ -23,6 +23,7 @@ import {
   RevisionEntry,
   FinancialAccount,
   AccountTransfer,
+  FinancialBudget,
 } from '../types/finance.ts';
 import {
   DEFAULT_USER_SETTINGS,
@@ -74,6 +75,7 @@ export function clearUnassignedLocalData(): void {
       'transfers',
       'revisions',
       'accounts',
+      'budgets',
       'settings',
     ];
     for (const k of keysToRemove) {
@@ -775,12 +777,178 @@ export async function recordRevision(userId: string, revision: RevisionEntry): P
   }
 }
 
+// ==================== FINANCIAL BUDGETS ====================
+
+export function subscribeToBudgets(
+  userId: string,
+  onData: (budgets: FinancialBudget[]) => void
+) {
+  const path = `users/${userId}/budgets`;
+  const q = query(collection(db, 'users', userId, 'budgets'));
+
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const items: FinancialBudget[] = [];
+      snapshot.forEach((d) => {
+        const item = d.data();
+        let parsedSubs: string[] = [];
+        let parsedCats: string[] = [];
+        if (item.subcategoriesJson) {
+          try {
+            const arr = JSON.parse(item.subcategoriesJson);
+            if (Array.isArray(arr)) parsedSubs = arr.map(String).filter(Boolean);
+          } catch {
+            parsedSubs = [];
+          }
+        } else if (Array.isArray(item.subcategories)) {
+          parsedSubs = item.subcategories.map(String).filter(Boolean);
+        }
+        if (item.categoriesJson) {
+          try {
+            const arr = JSON.parse(item.categoriesJson);
+            if (Array.isArray(arr)) parsedCats = arr.map(String).filter(Boolean);
+          } catch {
+            parsedCats = [];
+          }
+        }
+        items.push({
+          id: d.id,
+          userId,
+          name: item.name || 'Budget',
+          periodType:
+            item.periodType === 'weekly' ||
+            item.periodType === 'yearly' ||
+            item.periodType === 'custom'
+              ? item.periodType
+              : 'monthly',
+          customStartDate: item.customStartDate || undefined,
+          customEndDate: item.customEndDate || undefined,
+          activePeriodStart: item.activePeriodStart || undefined,
+          activePeriodEnd: item.activePeriodEnd || undefined,
+          parentRecurringBudgetId: item.parentRecurringBudgetId || undefined,
+          isArchivedPeriod:
+            item.isArchivedPeriod !== undefined
+              ? Boolean(item.isArchivedPeriod)
+              : undefined,
+          scopeType: item.scopeType === 'multiple' ? 'multiple' : 'single',
+          subcategories: parsedSubs,
+          categories: parsedCats.length > 0 ? parsedCats : undefined,
+          accountId: item.accountId || undefined,
+          currency: item.currency || 'GHS',
+          amount: Math.round(Number(item.amount || 0) * 100) / 100,
+          alertThresholdPercent:
+            item.alertThresholdPercent !== undefined
+              ? Math.min(100, Math.max(1, Number(item.alertThresholdPercent)))
+              : 80,
+          color: item.color || undefined,
+          notes: item.notes || undefined,
+          createdAt: item.createdAt || new Date().toISOString(),
+          updatedAt: item.updatedAt || new Date().toISOString(),
+        });
+      });
+      onData(items);
+    },
+    (error) => {
+      if (isFirestoreOffline(error)) {
+        console.warn(`Firestore subscription offline on ${path}:`, error?.message || error);
+        return;
+      }
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
+  );
+}
+
+export async function saveFinancialBudget(
+  userId: string,
+  budget: FinancialBudget
+): Promise<void> {
+  const path = `users/${userId}/budgets/${budget.id}`;
+  try {
+    const docData: any = {
+      userId,
+      name: String(budget.name || 'Budget').slice(0, 150),
+      periodType:
+        budget.periodType === 'weekly' ||
+        budget.periodType === 'yearly' ||
+        budget.periodType === 'custom'
+          ? budget.periodType
+          : 'monthly',
+      scopeType: budget.scopeType === 'multiple' ? 'multiple' : 'single',
+      subcategoriesJson: JSON.stringify(budget.subcategories || []).slice(0, 9500),
+      currency: String(budget.currency || 'GHS').slice(0, 10),
+      amount: Math.max(0, Math.round(Number(budget.amount || 0) * 100) / 100),
+      alertThresholdPercent: Math.min(
+        100,
+        Math.max(1, Number(budget.alertThresholdPercent ?? 80))
+      ),
+      createdAt: budget.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    if (budget.customStartDate) {
+      docData.customStartDate = String(budget.customStartDate).slice(0, 30);
+    }
+    if (budget.customEndDate) {
+      docData.customEndDate = String(budget.customEndDate).slice(0, 30);
+    }
+    if (budget.activePeriodStart) {
+      docData.activePeriodStart = String(budget.activePeriodStart).slice(0, 30);
+    }
+    if (budget.activePeriodEnd) {
+      docData.activePeriodEnd = String(budget.activePeriodEnd).slice(0, 30);
+    }
+    if (budget.parentRecurringBudgetId) {
+      docData.parentRecurringBudgetId = String(budget.parentRecurringBudgetId).slice(0, 128);
+    }
+    if (budget.isArchivedPeriod !== undefined) {
+      docData.isArchivedPeriod = Boolean(budget.isArchivedPeriod);
+    }
+    if (budget.categories && budget.categories.length > 0) {
+      docData.categoriesJson = JSON.stringify(budget.categories).slice(0, 4800);
+    }
+    if (budget.accountId) {
+      docData.accountId = String(budget.accountId).slice(0, 128);
+    }
+    if (budget.color) {
+      docData.color = String(budget.color).slice(0, 30);
+    }
+    if (budget.notes) {
+      docData.notes = String(budget.notes).slice(0, 500);
+    }
+
+    await setDoc(doc(db, 'users', userId, 'budgets', budget.id), docData);
+  } catch (error) {
+    if (isFirestoreOffline(error)) {
+      console.warn(`Firestore write offline on ${path}:`, (error as any)?.message || error);
+      return;
+    }
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function deleteFinancialBudget(
+  userId: string,
+  budgetId: string
+): Promise<void> {
+  const path = `users/${userId}/budgets/${budgetId}`;
+  try {
+    await deleteDoc(doc(db, 'users', userId, 'budgets', budgetId));
+  } catch (error) {
+    if (isFirestoreOffline(error)) {
+      console.warn(`Firestore delete offline on ${path}:`, (error as any)?.message || error);
+      return;
+    }
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
 // ==================== CLEAN SHEET WIPE ====================
 
 export async function clearAllTransactionsAndTransfers(userId: string): Promise<void> {
   setLocalData('incomes', [], userId);
   setLocalData('expenses', [], userId);
   setLocalData('transfers', [], userId);
+  setLocalData('budgets', [], userId);
   setLocalData('revisions', [], userId);
 
   const localAccounts = getLocalData<FinancialAccount[]>('accounts', DEFAULT_FINANCIAL_ACCOUNTS, userId);
@@ -803,6 +971,11 @@ export async function clearAllTransactionsAndTransfers(userId: string): Promise<
 
     const transSnap = await getDocs(collection(db, 'users', userId, 'transfers'));
     for (const d of transSnap.docs) {
+      await deleteDoc(d.ref).catch(() => {});
+    }
+
+    const budSnap = await getDocs(collection(db, 'users', userId, 'budgets'));
+    for (const d of budSnap.docs) {
       await deleteDoc(d.ref).catch(() => {});
     }
 

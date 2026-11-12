@@ -111,6 +111,17 @@ function getPreviousYearMonth(ym: string): string {
   return `${y}-${String(m - 1).padStart(2, '0')}`;
 }
 
+function formatCompactBarAmount(val: number): string {
+  const abs = Math.abs(val);
+  if (abs >= 1_000_000) {
+    return `${(val / 1_000_000).toFixed(1)}M`;
+  }
+  if (abs >= 1_000) {
+    return `${(val / 1_000).toFixed(1)}k`;
+  }
+  return val.toFixed(0);
+}
+
 export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   incomes,
   expenses,
@@ -923,28 +934,28 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   return (
     <div className="space-y-6">
       {/* Page Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 pb-4">
-        <div className="flex items-center gap-2.5 min-w-0">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200/80 pb-4">
+        <div className="flex flex-wrap items-center gap-2 min-w-0">
           <h1 className="font-display text-xl sm:text-2xl font-bold tracking-tight text-slate-900 break-words">
             Analytics & Insights
           </h1>
-          <span className="text-xs font-medium text-slate-500">
-            · {getPresetLabel(timeRange)}
+          <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
+            {getPresetLabel(timeRange)}
           </span>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
           <button
             type="button"
             onClick={() => onNavigateToTab('flexible_expenses')}
-            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+            className="rounded-lg border border-slate-200 bg-white px-3 py-2 sm:py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 text-center whitespace-nowrap"
           >
             + Record Expense
           </button>
           <button
             type="button"
             onClick={() => onNavigateToTab('income_log')}
-            className="rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-slate-800 whitespace-nowrap"
+            className="rounded-lg bg-slate-900 px-3.5 py-2 sm:py-1.5 text-xs font-semibold text-white hover:bg-slate-800 text-center whitespace-nowrap"
           >
             + Record Income
           </button>
@@ -1209,11 +1220,11 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           <div className="rounded-xl border border-slate-200/90 bg-white p-4 sm:p-5">
             <div
               onClick={() => setIsPieSectionCollapsed((prev) => !prev)}
-              className={`flex flex-wrap items-center justify-between gap-3 cursor-pointer select-none ${
+              className={`flex items-start justify-between gap-3 cursor-pointer select-none ${
                 isPieSectionCollapsed ? '' : 'border-b border-slate-100 pb-3.5 mb-4'
               }`}
             >
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span
                     className="h-2.5 w-2.5 rounded-full shrink-0"
@@ -1228,77 +1239,75 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                 </p>
               </div>
 
-              <div
-                className="flex flex-wrap items-center gap-2 shrink-0"
-                onClick={(e) => e.stopPropagation()}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsPieSectionCollapsed((prev) => !prev);
+                }}
+                className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 shrink-0"
               >
-                {/* Quarter Filter Pills */}
-                <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-0.5">
-                  {(['ALL', 'Q1', 'Q2', 'Q3', 'Q4'] as const).map((qTab) => (
-                    <button
-                      key={qTab}
-                      type="button"
-                      onClick={() => setSelectedPieQuarter(qTab)}
-                      className={`rounded-md px-2 py-1 text-[11px] font-semibold transition-colors ${
-                        selectedPieQuarter === qTab
-                          ? 'bg-slate-900 text-white'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      {qTab === 'ALL' ? 'All Quarters' : qTab}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Breakdown Mode Toggle */}
-                <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-0.5">
-                  <button
-                    type="button"
-                    onClick={() => setPieDetailMode('detailed')}
-                    className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                      pieDetailMode === 'detailed'
-                        ? 'bg-slate-900 text-white'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Vaults vs. Expenses
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPieDetailMode('summary')}
-                    className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                      pieDetailMode === 'summary'
-                        ? 'bg-slate-900 text-white'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Summary Split
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setIsPieSectionCollapsed((prev) => !prev)}
-                  className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                <span>{isPieSectionCollapsed ? 'Expand' : 'Collapse'}</span>
+                <svg
+                  className={`h-3.5 w-3.5 text-slate-500 transition-transform ${
+                    isPieSectionCollapsed ? '' : 'rotate-180'
+                  }`}
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
                 >
-                  <span>{isPieSectionCollapsed ? 'Expand' : 'Collapse'}</span>
-                  <svg
-                    className={`h-3.5 w-3.5 text-slate-500 transition-transform ${
-                      isPieSectionCollapsed ? '' : 'rotate-180'
-                    }`}
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-              </div>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
             </div>
 
             {!isPieSectionCollapsed && (
               <div className="space-y-5">
+                {/* Mobile-Safe Filter Bar: Quarter Filter Pills + Breakdown Mode Toggle */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="grid grid-cols-5 sm:flex items-center gap-1 rounded-lg bg-slate-100 p-1 w-full sm:w-auto">
+                    {(['ALL', 'Q1', 'Q2', 'Q3', 'Q4'] as const).map((qTab) => (
+                      <button
+                        key={qTab}
+                        type="button"
+                        onClick={() => setSelectedPieQuarter(qTab)}
+                        className={`rounded-md px-2 py-1 text-[11px] font-semibold transition-colors text-center ${
+                          selectedPieQuarter === qTab
+                            ? 'bg-slate-900 text-white'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        {qTab === 'ALL' ? 'All' : qTab}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:flex items-center gap-1 rounded-lg bg-slate-100 p-1 w-full sm:w-auto">
+                    <button
+                      type="button"
+                      onClick={() => setPieDetailMode('detailed')}
+                      className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors text-center ${
+                        pieDetailMode === 'detailed'
+                          ? 'bg-slate-900 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Vaults vs. Expenses
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPieDetailMode('summary')}
+                      className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors text-center ${
+                        pieDetailMode === 'summary'
+                          ? 'bg-slate-900 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Summary Split
+                    </button>
+                  </div>
+                </div>
                 {/* Main Pie Chart + Legend Breakdown */}
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
                   {/* Left: SVG Pie Chart & Active Slice Readout */}
@@ -1443,13 +1452,13 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                               item.amount > 0 && setHoveredSliceId(item.id)
                             }
                             onMouseLeave={() => setHoveredSliceId(null)}
-                            className={`flex items-center justify-between gap-3 px-3.5 py-2.5 text-xs transition-colors ${
+                            className={`flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-3 px-3.5 py-2.5 text-xs transition-colors ${
                               isHovered ? 'bg-slate-50' : ''
                             }`}
                           >
-                            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                            <div className="flex items-start sm:items-center gap-2.5 min-w-0 flex-1">
                               <span
-                                className="h-3 w-3 rounded-sm shrink-0"
+                                className="mt-0.5 sm:mt-0 h-3 w-3 rounded-sm shrink-0"
                                 style={{ backgroundColor: item.color }}
                               />
                               <div className="min-w-0 flex-1">
@@ -1466,7 +1475,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                               </div>
                             </div>
 
-                            <div className="text-right font-mono tabular-nums shrink-0">
+                            <div className="pl-5 sm:pl-0 sm:text-right font-mono tabular-nums shrink-0 flex sm:block items-baseline justify-between gap-2">
                               <div className="font-semibold text-slate-900">
                                 {formatAmount(item.amount, currency)}
                               </div>
@@ -1820,7 +1829,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
 
             {/* RIGHT (7 cols): Interactive Bar Chart (Records / Months / Quarters) */}
             <div className="lg:col-span-7 rounded-xl border border-slate-200/80 bg-slate-50/40 p-4 space-y-3 min-w-0">
-              <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <span className="font-display text-xs font-semibold text-slate-900 break-words">
                   {trendMode === 'records'
                     ? 'Income Records vs Savings & Expenses'
@@ -1829,13 +1838,13 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                     : 'Quarterly Inflow vs Outflow'}
                 </span>
 
-                <div className="flex items-center gap-1 rounded-lg bg-slate-200/70 p-0.5">
+                <div className="grid grid-cols-3 sm:flex items-center gap-1 rounded-lg bg-slate-200/70 p-0.5 w-full sm:w-auto">
                   {(['records', 'months', 'quarters'] as const).map((mode) => (
                     <button
                       key={mode}
                       type="button"
                       onClick={() => setTrendMode(mode)}
-                      className={`rounded-md px-2 py-1 text-[11px] font-medium capitalize transition-colors ${
+                      className={`rounded-md px-2 py-1 text-[11px] font-medium capitalize transition-colors text-center ${
                         trendMode === mode
                           ? 'bg-slate-900 text-white'
                           : 'text-slate-600 hover:text-slate-900'
@@ -2097,11 +2106,11 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           <div className="rounded-xl border border-slate-200/90 bg-white p-4 sm:p-5">
             <div
               onClick={() => setIsMoMCategoriesCollapsed((prev) => !prev)}
-              className={`flex flex-wrap items-center justify-between gap-3 cursor-pointer select-none ${
+              className={`flex items-start justify-between gap-3 cursor-pointer select-none ${
                 isMoMCategoriesCollapsed ? '' : 'border-b border-slate-100 pb-3.5 mb-4'
               }`}
             >
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <h2 className="font-display text-base font-semibold text-slate-900 break-words">
                   Month-over-Month Category Spending
                 </h2>
@@ -2110,85 +2119,83 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                 </p>
               </div>
 
-              <div
-                className="flex flex-wrap items-center gap-2 shrink-0"
-                onClick={(e) => e.stopPropagation()}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsMoMCategoriesCollapsed((prev) => !prev);
+                }}
+                className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 whitespace-nowrap shrink-0"
               >
-                {/* Creeping Filter Toggle */}
-                <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-0.5">
-                  <button
-                    type="button"
-                    onClick={() => setMomFilterCreepingOnly(false)}
-                    className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 ${
-                      !momFilterCreepingOnly
-                        ? 'bg-slate-900 text-white'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    All Categories ({activeCategories.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMomFilterCreepingOnly(true)}
-                    className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 ${
-                      momFilterCreepingOnly
-                        ? 'bg-rose-600 text-white'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Creeping Up ({creepingCategories.length})
-                  </button>
-                </div>
-
-                {/* Bar Chart Orientation Mode */}
-                <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-0.5">
-                  <button
-                    type="button"
-                    onClick={() => setMomChartMode('by_category')}
-                    className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 ${
-                      momChartMode === 'by_category'
-                        ? 'bg-slate-900 text-white'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    By Category
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMomChartMode('by_month')}
-                    className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 ${
-                      momChartMode === 'by_month'
-                        ? 'bg-slate-900 text-white'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    By Month
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setIsMoMCategoriesCollapsed((prev) => !prev)}
-                  className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 whitespace-nowrap shrink-0"
+                <span>{isMoMCategoriesCollapsed ? 'Expand' : 'Collapse'}</span>
+                <svg
+                  className={`h-3.5 w-3.5 text-slate-500 transition-transform ${
+                    isMoMCategoriesCollapsed ? '' : 'rotate-180'
+                  }`}
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
                 >
-                  <span>{isMoMCategoriesCollapsed ? 'Expand' : 'Collapse'}</span>
-                  <svg
-                    className={`h-3.5 w-3.5 text-slate-500 transition-transform ${
-                      isMoMCategoriesCollapsed ? '' : 'rotate-180'
-                    }`}
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-              </div>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
             </div>
 
             {!isMoMCategoriesCollapsed && (
               <div className="space-y-4">
+                {/* Mobile-Safe Control Bar: Creeping Filter Toggle + Orientation Mode */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="grid grid-cols-2 sm:flex items-center gap-1 rounded-lg bg-slate-100 p-1 w-full sm:w-auto">
+                    <button
+                      type="button"
+                      onClick={() => setMomFilterCreepingOnly(false)}
+                      className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors text-center whitespace-nowrap ${
+                        !momFilterCreepingOnly
+                          ? 'bg-slate-900 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      All Categories ({activeCategories.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMomFilterCreepingOnly(true)}
+                      className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors text-center whitespace-nowrap ${
+                        momFilterCreepingOnly
+                          ? 'bg-rose-600 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Creeping Up ({creepingCategories.length})
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:flex items-center gap-1 rounded-lg bg-slate-100 p-1 w-full sm:w-auto">
+                    <button
+                      type="button"
+                      onClick={() => setMomChartMode('by_category')}
+                      className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors text-center whitespace-nowrap ${
+                        momChartMode === 'by_category'
+                          ? 'bg-slate-900 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      By Category
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMomChartMode('by_month')}
+                      className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors text-center whitespace-nowrap ${
+                        momChartMode === 'by_month'
+                          ? 'bg-slate-900 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      By Month
+                    </button>
+                  </div>
+                </div>
                 {/* 3-Metric Creeping Expense Summary Row */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 rounded-xl border border-slate-200/80 bg-slate-50/40 p-3.5">
                   <div>
@@ -2289,8 +2296,8 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                           key={cat.category}
                           className="rounded-xl border border-slate-200/80 bg-white p-3.5 space-y-3 flex flex-col justify-between"
                         >
-                          {/* Category Header & MoM Delta Indicator */}
-                          <div className="flex items-start justify-between gap-2">
+                          {/* Category Header & MoM Delta Indicator — Mobile-Safe Stacked Layout */}
+                          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2">
                                 <span
@@ -2312,7 +2319,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                               </div>
                             </div>
 
-                            <div className="text-right font-mono tabular-nums shrink-0">
+                            <div className="pl-4 sm:pl-0 sm:text-right font-mono tabular-nums shrink-0 flex sm:block flex-wrap items-baseline justify-between gap-2 border-t border-slate-100 pt-1.5 sm:border-0 sm:pt-0">
                               <div
                                 className={`text-xs font-semibold ${
                                   cat.deltaAmount > 0
@@ -2340,7 +2347,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                           </div>
 
                           {/* Multi-Month Vertical Bar Chart for this Category */}
-                          <div className="relative rounded-lg border border-slate-100 bg-slate-50/70 px-3 pt-5 pb-2">
+                          <div className="relative rounded-lg border border-slate-100 bg-slate-50/70 px-2.5 sm:px-3 pt-5 pb-2">
                             {/* Dashed Monthly Average Reference Line */}
                             {cat.avgMonthly > 0 && (
                               <div
@@ -2350,7 +2357,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                               />
                             )}
 
-                            <div className="flex items-end justify-between gap-2 h-24">
+                            <div className="flex items-end justify-between gap-1.5 sm:gap-2 h-24">
                               {cat.series.map((pt, mIdx) => {
                                 const isLatest = mIdx === cat.series.length - 1;
                                 const heightPct =
@@ -2376,9 +2383,18 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                                     onMouseLeave={() => setHoveredMoMBar(null)}
                                   >
                                     <span className="font-mono text-[9px] text-slate-500 tabular-nums mb-1 truncate max-w-full">
-                                      {pt.amount > 0
-                                        ? formatAmount(pt.amount, currency)
-                                        : '—'}
+                                      {pt.amount > 0 ? (
+                                        <>
+                                          <span className="sm:hidden">
+                                            {formatCompactBarAmount(pt.amount)}
+                                          </span>
+                                          <span className="hidden sm:inline">
+                                            {formatAmount(pt.amount, currency)}
+                                          </span>
+                                        </>
+                                      ) : (
+                                        '—'
+                                      )}
                                     </span>
                                     <div className="w-full flex items-end justify-center flex-1">
                                       <div
@@ -2398,7 +2414,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                                       />
                                     </div>
                                     <span
-                                      className={`mt-1.5 font-mono text-[10px] tabular-nums truncate ${
+                                      className={`mt-1.5 font-mono text-[9px] sm:text-[10px] tabular-nums truncate max-w-full ${
                                         isLatest
                                           ? 'font-semibold text-slate-900'
                                           : 'text-slate-500'
@@ -2517,11 +2533,11 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       <div className="rounded-xl border border-slate-200/90 bg-white p-4 sm:p-5">
         <div
           onClick={() => setIsExpenseCategoriesCollapsed((prev) => !prev)}
-          className={`flex flex-wrap items-center justify-between gap-3 cursor-pointer select-none ${
+          className={`flex items-start justify-between gap-3 cursor-pointer select-none ${
             isExpenseCategoriesCollapsed ? '' : 'border-b border-slate-100 pb-3.5 mb-4'
           }`}
         >
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h2 className="font-display text-base font-semibold text-slate-900 break-words">
               Expenses by Category & Subcategory ({analytics.expenseCategoriesList.length})
             </h2>
@@ -2530,23 +2546,45 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             </p>
           </div>
 
-          <div
-            className="flex flex-wrap items-center gap-2 shrink-0"
-            onClick={(e) => e.stopPropagation()}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsExpenseCategoriesCollapsed((prev) => !prev);
+            }}
+            className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 shrink-0"
           >
-            <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-0.5">
+            <span>{isExpenseCategoriesCollapsed ? 'Expand' : 'Collapse'}</span>
+            <svg
+              className={`h-3.5 w-3.5 text-slate-500 transition-transform ${
+                isExpenseCategoriesCollapsed ? '' : 'rotate-180'
+              }`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+        </div>
+
+        {!isExpenseCategoriesCollapsed && (
+          <div className="space-y-4">
+            {/* Mobile-Safe Expense Source Filter Bar */}
+            <div className="grid grid-cols-3 sm:inline-flex items-center gap-1 rounded-lg bg-slate-100 p-1 w-full sm:w-auto">
               {(
                 [
                   { id: 'all', label: 'All Expenses' },
                   { id: 'recorded', label: 'Recorded' },
-                  { id: 'deductions', label: 'Income Deductions' },
+                  { id: 'deductions', label: 'Deductions' },
                 ] as const
               ).map((tab) => (
                 <button
                   key={tab.id}
                   type="button"
                   onClick={() => setExpenseFilterMode(tab.id)}
-                  className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+                  className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors text-center ${
                     expenseFilterMode === tab.id
                       ? 'bg-slate-900 text-white'
                       : 'text-slate-600 hover:text-slate-900'
@@ -2556,30 +2594,6 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                 </button>
               ))}
             </div>
-
-            <button
-              type="button"
-              onClick={() => setIsExpenseCategoriesCollapsed((prev) => !prev)}
-              className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
-            >
-              <span>{isExpenseCategoriesCollapsed ? 'Expand' : 'Collapse'}</span>
-              <svg
-                className={`h-3.5 w-3.5 text-slate-500 transition-transform ${
-                  isExpenseCategoriesCollapsed ? '' : 'rotate-180'
-                }`}
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={2}
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
-          </div>
-        </div>
-
-        {!isExpenseCategoriesCollapsed && (
-          <div className="space-y-4">
             {/* Multi-Category Stacked Distribution Bar */}
             {analytics.filteredExpenseSum > 0 && (
               <div className="space-y-2 rounded-xl border border-slate-200/80 bg-slate-50/50 p-3.5">
@@ -2653,7 +2667,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                       className="rounded-xl border border-slate-200/80 bg-slate-50/40 p-3.5 space-y-2.5 flex flex-col justify-between"
                     >
                       <div className="space-y-2">
-                        <div className="flex items-start justify-between gap-2">
+                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-1.5 sm:gap-2">
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
                               <span
@@ -2677,7 +2691,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                             </div>
                           </div>
 
-                          <div className="text-right font-mono tabular-nums shrink-0">
+                          <div className="pl-4 sm:pl-0 sm:text-right font-mono tabular-nums shrink-0 flex sm:block flex-wrap items-baseline justify-between gap-2">
                             <div className="text-sm font-semibold text-rose-600">
                               -{formatAmount(cat.total, currency)}
                             </div>
@@ -3130,7 +3144,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                       key={src.source}
                       className="rounded-lg border border-slate-200/80 bg-slate-50/40 p-3.5 space-y-2"
                     >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                         <div className="flex items-center gap-2 min-w-0">
                           <span
                             className="h-2.5 w-2.5 rounded-full shrink-0"
@@ -3140,12 +3154,12 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                             {src.source}
                           </span>
                           <span className="text-xs text-slate-400">·</span>
-                          <span className="text-xs text-slate-500">
+                          <span className="text-xs text-slate-500 shrink-0">
                             {src.count} {src.count === 1 ? 'record' : 'records'}
                           </span>
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-3 font-mono text-xs tabular-nums">
+                        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-x-3 gap-y-1 pl-4 sm:pl-0 font-mono text-xs tabular-nums">
                           <span className="font-semibold text-slate-900">
                             {formatAmount(src.gross, currency)} ({formatPercent(sharePct)})
                           </span>

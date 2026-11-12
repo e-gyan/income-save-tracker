@@ -15,6 +15,7 @@ import {
   FinancialAccount,
   AccountTransfer,
   SavingsBucket,
+  FinancialBudget,
   ThemeMode,
   AppColorTheme,
 } from './types/finance.ts';
@@ -28,6 +29,11 @@ import {
   buildDefaultDeductionsForIncome,
   resolveIntuitiveSubcategoryColor,
 } from './lib/calculations.ts';
+import {
+  evaluateAllBudgets,
+  computeRecurringPeriodBounds,
+  reconcileRecurringBudgets,
+} from './lib/budgetCalculations.ts';
 import {
   applyColorThemeToDocument,
   getPersistedColorTheme,
@@ -50,6 +56,9 @@ import {
   subscribeToTransfers,
   saveAccountTransfer,
   deleteAccountTransfer,
+  subscribeToBudgets,
+  saveFinancialBudget,
+  deleteFinancialBudget,
   clearAllTransactionsAndTransfers,
   getLocalData,
   setLocalData,
@@ -63,6 +72,7 @@ import { SettingsView } from './components/SettingsView.tsx';
 import { IncomeLogView } from './components/IncomeLogView.tsx';
 import { FlexibleExpensesView } from './components/FlexibleExpensesView.tsx';
 import { AccountsView } from './components/AccountsView.tsx';
+import { BudgetsView } from './components/BudgetsView.tsx';
 import { DashboardView } from './components/DashboardView.tsx';
 import { AnalyticsView } from './components/AnalyticsView.tsx';
 import { CleanSheetModal } from './components/CleanSheetModal.tsx';
@@ -74,6 +84,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>('income_log');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isMobileDateFilterOpen, setIsMobileDateFilterOpen] = useState(false);
   const [timeRange, setTimeRange] = useState<TimeRangePreset>('all');
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -88,6 +99,7 @@ export default function App() {
   const [transfers, setTransfers] = useState<AccountTransfer[]>([]);
   const [incomes, setIncomes] = useState<IncomeReceipt[]>([]);
   const [expenses, setExpenses] = useState<FlexibleExpense[]>([]);
+  const [budgets, setBudgets] = useState<FinancialBudget[]>([]);
 
   const effectiveUserId = currentUser?.uid || 'guest_user';
 
@@ -185,6 +197,9 @@ export default function App() {
           );
           setAccounts(cachedAccounts);
 
+          const cachedBudgets = getLocalData<FinancialBudget[]>('budgets', [], uid);
+          setBudgets(cachedBudgets);
+
           const guestIncomes = getLocalData<IncomeReceipt[]>('incomes', [], 'guest_user');
           if (guestIncomes.length > 0 && cachedIncomes.length === 0) {
             const migrated = guestIncomes.map((inc) => ({ ...inc, userId: uid }));
@@ -255,12 +270,19 @@ export default function App() {
             setLocalData('transfers', items, uid);
           });
           unsubs.push(unsubTransfers);
+
+          const unsubBudgets = subscribeToBudgets(uid, (items) => {
+            setBudgets(items);
+            setLocalData('budgets', items, uid);
+          });
+          unsubs.push(unsubBudgets);
         } else {
           // Signed Out: Keep all records attached to the signed-in account and clear signed-out view
           clearUnassignedLocalData();
           setIncomes([]);
           setExpenses([]);
           setTransfers([]);
+          setBudgets([]);
           setAccounts(DEFAULT_FINANCIAL_ACCOUNTS);
           setSettings((prev) => ({
             ...DEFAULT_USER_SETTINGS,
@@ -291,10 +313,12 @@ export default function App() {
       setIncomes([]);
       setExpenses([]);
       setTransfers([]);
+      setBudgets([]);
 
       setLocalData('incomes', [], effectiveUserId);
       setLocalData('expenses', [], effectiveUserId);
       setLocalData('transfers', [], effectiveUserId);
+      setLocalData('budgets', [], effectiveUserId);
 
       const zeroedAccounts = accounts.map((a) => ({ ...a, initialBalance: 0 }));
       setAccounts(zeroedAccounts);
@@ -708,6 +732,89 @@ export default function App() {
     })();
   };
 
+  // Automatically recreate recurring budgets (weekly, monthly, yearly) when their active period elapses
+  useEffect(() => {
+    if (budgets.length === 0) return;
+    const { nextBudgets, changedBudgets, hasChanges } =
+      reconcileRecurringBudgets(budgets);
+    if (!hasChanges) return;
+
+    setBudgets(nextBudgets);
+    setLocalData('budgets', nextBudgets, effectiveUserId);
+
+    if (currentUser) {
+      const uid = currentUser.uid;
+      for (const cb of changedBudgets) {
+        saveFinancialBudget(uid, cb).catch((err) =>
+          console.error('Recurring budget rollover save error:', err)
+        );
+      }
+    }
+  }, [budgets, effectiveUserId, currentUser]);
+
+  const handleSaveBudget = async (
+    budgetData: Omit<FinancialBudget, 'id' | 'createdAt' | 'updatedAt' | 'userId'> & {
+      id?: string;
+      createdAt?: string;
+    }
+  ) => {
+    const nowIso = new Date().toISOString();
+    let activePeriodStart = budgetData.activePeriodStart;
+    let activePeriodEnd = budgetData.activePeriodEnd;
+
+    if (budgetData.periodType !== 'custom') {
+      const bounds = computeRecurringPeriodBounds(budgetData.periodType);
+      activePeriodStart = bounds.startYmd;
+      activePeriodEnd = bounds.endYmd;
+    } else {
+      activePeriodStart = undefined;
+      activePeriodEnd = undefined;
+    }
+
+    const budgetWithUser: FinancialBudget = {
+      ...budgetData,
+      id: budgetData.id || `bgt_${Date.now()}`,
+      userId: effectiveUserId,
+      activePeriodStart,
+      activePeriodEnd,
+      isArchivedPeriod: false,
+      createdAt: budgetData.createdAt || nowIso,
+      updatedAt: nowIso,
+    };
+    const exists = budgets.some((b) => b.id === budgetWithUser.id);
+    const nextBudgets = exists
+      ? budgets.map((b) => (b.id === budgetWithUser.id ? budgetWithUser : b))
+      : [budgetWithUser, ...budgets];
+    setBudgets(nextBudgets);
+    setLocalData('budgets', nextBudgets, effectiveUserId);
+
+    (async () => {
+      try {
+        if (currentUser) {
+          await saveFinancialBudget(effectiveUserId, budgetWithUser);
+        }
+      } catch (err) {
+        console.error('Budget save error:', err);
+      }
+    })();
+  };
+
+  const handleDeleteBudget = async (budgetId: string) => {
+    const nextBudgets = budgets.filter((b) => b.id !== budgetId);
+    setBudgets(nextBudgets);
+    setLocalData('budgets', nextBudgets, effectiveUserId);
+
+    (async () => {
+      try {
+        if (currentUser) {
+          await deleteFinancialBudget(effectiveUserId, budgetId);
+        }
+      } catch (err) {
+        console.error('Budget delete error:', err);
+      }
+    })();
+  };
+
   const handleImportRecords = async (payload: {
     incomes: Omit<IncomeReceipt, 'id' | 'createdAt' | 'updatedAt' | 'userId'>[];
     expenses: Omit<FlexibleExpense, 'id' | 'createdAt' | 'userId'>[];
@@ -904,6 +1011,22 @@ export default function App() {
     }));
   }, [activeAccounts, timeRange]);
 
+  const budgetAlertsCount = useMemo(() => {
+    const evaluations = evaluateAllBudgets(
+      budgets,
+      expenses,
+      incomes,
+      activeAccounts,
+      settings
+    );
+    return evaluations.filter(
+      (ev) =>
+        ev.status === 'exceeded' ||
+        ev.status === 'at_limit' ||
+        ev.status === 'warning'
+    ).length;
+  }, [budgets, expenses, incomes, activeAccounts, settings]);
+
   if (isLoading) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-slate-50 text-slate-500 font-mono text-xs">
@@ -914,40 +1037,53 @@ export default function App() {
 
   return (
     <div className="h-screen w-full max-w-full overflow-hidden bg-slate-50 text-slate-900 flex flex-col font-sans">
-      {/* Static Top Header & Sub-Header (Locked at Top of Viewport) */}
+      {/* Static Top Header & Collapsible Mobile Date Filter (Locked at Top of Viewport) */}
       <div className="shrink-0 z-40 bg-white/95 backdrop-blur-md shadow-2xs">
         <div
           className="h-1 w-full transition-colors duration-200"
           style={{ backgroundColor: 'var(--app-accent)' }}
         />
         <Header
-          currentUser={currentUser}
           activeTab={activeTab}
-          onTabChange={setActiveTab}
-          themeMode={settings.themeMode || 'light'}
-          onThemeModeChange={handleThemeModeChange}
-          colorTheme={settings.colorTheme || 'emerald'}
-          onColorThemeChange={handleColorThemeChange}
+          isSidebarOpen={isMenuOpen}
+          onToggleSidebar={() => setIsMenuOpen((prev) => !prev)}
+          timeRange={timeRange}
+          onSelectTimeRange={setTimeRange}
+          isMobileDateFilterOpen={isMobileDateFilterOpen}
+          onToggleMobileDateFilter={() =>
+            setIsMobileDateFilterOpen((prev) => !prev)
+          }
         />
 
         <Navigation
-          activeTab={activeTab}
           timeRange={timeRange}
-          onSelectTimeRange={setTimeRange}
-          onCleanSheet={() => setIsCleanSheetModalOpen(true)}
-          isMenuOpen={isMenuOpen}
-          onToggleMenu={() => setIsMenuOpen((prev) => !prev)}
-          recordsCount={filteredIncomes.length}
+          onSelectTimeRange={(range) => {
+            setTimeRange(range);
+            setIsMobileDateFilterOpen(false);
+          }}
+          isOpenOnMobile={isMobileDateFilterOpen}
         />
       </div>
 
-      {/* Collapsible Auto-Closing Left Menu Drawer */}
+      {/* Collapsible Top-Right Menu Drawer */}
       <Sidebar
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
         isOpen={isMenuOpen}
+        activeTab={activeTab}
+        onSelectTab={(tab) => {
+          setActiveTab(tab);
+          setIsMenuOpen(false);
+        }}
         onClose={() => setIsMenuOpen(false)}
+        themeMode={settings.themeMode || 'light'}
+        onThemeModeChange={handleThemeModeChange}
+        colorTheme={settings.colorTheme || 'emerald'}
+        onColorThemeChange={handleColorThemeChange}
+        timeRange={timeRange}
+        onSelectTimeRange={setTimeRange}
         accountsCount={activeAccounts.length}
+        budgetsCount={budgets.filter((b) => !b.isArchivedPeriod).length}
+        budgetAlertsCount={budgetAlertsCount}
+        onReset={() => setIsCleanSheetModalOpen(true)}
       />
 
       {/* Scrollable Main Workspace */}
@@ -994,11 +1130,27 @@ export default function App() {
                 transfers={filteredTransfers}
                 settings={settings}
                 accounts={filteredAccounts}
+                budgets={budgets}
                 currency={settings.currency}
                 onAddExpenses={handleAddExpenses}
                 onDeleteExpense={handleDeleteExpense}
                 onNavigateToTab={setActiveTab}
                 expandFormTrigger={expandExpenseTrigger}
+              />
+            )}
+
+            {activeTab === 'budgets' && (
+              <BudgetsView
+                budgets={budgets}
+                expenses={expenses}
+                incomes={incomes}
+                transfers={transfers}
+                accounts={activeAccounts}
+                settings={settings}
+                currency={settings.currency}
+                onSaveBudget={handleSaveBudget}
+                onDeleteBudget={handleDeleteBudget}
+                onNavigateToTab={setActiveTab}
               />
             )}
 
@@ -1058,6 +1210,8 @@ export default function App() {
         incomes={incomes}
         expenses={expenses}
         accounts={activeAccounts}
+        budgets={budgets}
+        transfers={transfers}
         settings={settings}
         currency={settings.currency}
         onAddIncome={handleAddIncome}

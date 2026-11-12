@@ -6,7 +6,11 @@ import {
   FinancialAccount,
   AccountTransfer,
   ExpenseCategoryPreference,
+  FinancialBudget,
 } from '../types/finance.ts';
+import {
+  checkSpendAgainstBudgetsAndAccount,
+} from '../lib/budgetCalculations.ts';
 import {
   formatAmount,
   calculateAccountSummaries,
@@ -55,6 +59,7 @@ interface FlexibleExpensesViewProps {
   settings: UserSettings;
   accounts?: FinancialAccount[];
   transfers?: AccountTransfer[];
+  budgets?: FinancialBudget[];
   currency: string;
   onAddExpenses: (
     items: Omit<FlexibleExpense, 'id' | 'createdAt' | 'userId'>[]
@@ -78,6 +83,7 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
   settings,
   accounts = DEFAULT_FINANCIAL_ACCOUNTS,
   transfers = [],
+  budgets = [],
   currency,
   onAddExpenses,
   onDeleteExpense,
@@ -893,6 +899,199 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
                         </span>
                       </div>
                     )}
+
+                    {/* Real-Time Budget & Account Spend Check Alerts */}
+                    {rawRowAmt > 0 &&
+                      (() => {
+                        const spendEval = checkSpendAgainstBudgetsAndAccount({
+                          date: row.date || batchDate,
+                          accountId: row.accountId,
+                          category: row.category,
+                          subcategory: row.subcategory,
+                          amount: rawRowAmt,
+                          currency: rowCurr,
+                          budgets,
+                          expenses,
+                          incomes,
+                          accounts,
+                          transfers,
+                          settings,
+                          fxSnapshot,
+                        });
+
+                        return (
+                          <div className="space-y-2">
+                            {/* Account Balance Check Alert */}
+                            {spendEval.accountCheck && (
+                              <div
+                                className={`flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 rounded-lg border px-3 py-2 text-xs ${
+                                  spendEval.accountCheck.status === 'overdrawn'
+                                    ? 'border-rose-300 bg-rose-50 text-rose-900'
+                                    : spendEval.accountCheck.status ===
+                                      'low_balance'
+                                    ? 'border-amber-300 bg-amber-50 text-amber-900'
+                                    : 'border-emerald-200 bg-emerald-50/70 text-emerald-900'
+                                }`}
+                              >
+                                <div className="font-medium">
+                                  {spendEval.accountCheck.status ===
+                                  'overdrawn' ? (
+                                    <span className="font-bold text-rose-700">
+                                      Account Alert: Spending exceeds{' '}
+                                      {spendEval.accountCheck.account.name}{' '}
+                                      balance!
+                                    </span>
+                                  ) : spendEval.accountCheck.status ===
+                                    'low_balance' ? (
+                                    <span className="font-bold text-amber-800">
+                                      Account Warning: Uses ≥80% of{' '}
+                                      {spendEval.accountCheck.account.name}{' '}
+                                      balance.
+                                    </span>
+                                  ) : (
+                                    <span className="font-semibold text-emerald-800">
+                                      Account Check:{' '}
+                                      {spendEval.accountCheck.account.name} has
+                                      sufficient funds.
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="font-mono text-[11px] font-semibold tabular-nums">
+                                  After Spend:{' '}
+                                  <span
+                                    className={
+                                      spendEval.accountCheck.projectedBalance <
+                                      0
+                                        ? 'text-rose-600 font-bold'
+                                        : 'text-emerald-700 font-bold'
+                                    }
+                                  >
+                                    {formatAmount(
+                                      spendEval.accountCheck.projectedBalance,
+                                      spendEval.accountCheck.accountCurrency
+                                    )}
+                                  </span>
+                                  {spendEval.accountCheck.custodianAccount &&
+                                    spendEval.accountCheck
+                                      .custodianProjectedBalance !==
+                                      undefined && (
+                                      <span className="ml-2 text-slate-600">
+                                        (Main{' '}
+                                        {
+                                          spendEval.accountCheck
+                                            .custodianAccount.name
+                                        }
+                                        :{' '}
+                                        {formatAmount(
+                                          spendEval.accountCheck
+                                            .custodianProjectedBalance,
+                                          spendEval.accountCheck
+                                            .custodianCurrency || currency
+                                        )}
+                                        )
+                                      </span>
+                                    )}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Matching Subcategory Budget Checks */}
+                            {spendEval.budgetChecks.map((bc) => {
+                              const isOver = bc.projectedStatus === 'exceeded';
+                              const isWarn =
+                                bc.projectedStatus === 'warning' ||
+                                bc.projectedStatus === 'at_limit';
+                              const clampedPct = Math.min(
+                                100,
+                                Math.max(0, bc.projectedPercentage)
+                              );
+                              const residualPct = Math.max(
+                                0,
+                                roundTo2Decimals(100 - clampedPct)
+                              );
+
+                              return (
+                                <div
+                                  key={bc.budget.id}
+                                  className={`rounded-lg border px-3 py-2 space-y-1.5 text-xs ${
+                                    isOver
+                                      ? 'border-rose-300 bg-rose-50 text-rose-900'
+                                      : isWarn
+                                      ? 'border-amber-300 bg-amber-50 text-amber-900'
+                                      : 'border-emerald-200 bg-emerald-50/60 text-emerald-900'
+                                  }`}
+                                >
+                                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                                    <div className="font-bold">
+                                      {isOver
+                                        ? `Budget Alert: Exceeds "${bc.budget.name}"`
+                                        : isWarn
+                                        ? `Budget Warning: Near limit for "${bc.budget.name}"`
+                                        : `Budget Check: Within "${bc.budget.name}"`}{' '}
+                                      <span className="font-normal text-[11px] opacity-80">
+                                        ({bc.periodLabel})
+                                      </span>
+                                    </div>
+                                    <div className="font-mono text-[11px] font-bold tabular-nums">
+                                      {bc.percentageBefore}% →{' '}
+                                      <span
+                                        className={
+                                          isOver
+                                            ? 'text-rose-600'
+                                            : isWarn
+                                            ? 'text-amber-700'
+                                            : 'text-emerald-700'
+                                        }
+                                      >
+                                        {bc.projectedPercentage}% used
+                                      </span>{' '}
+                                      ·{' '}
+                                      {bc.projectedResidual < 0 ? (
+                                        <span className="text-rose-600">
+                                          Over by{' '}
+                                          {formatAmount(
+                                            Math.abs(bc.projectedResidual),
+                                            bc.budget.currency
+                                          )}
+                                        </span>
+                                      ) : (
+                                        <span className="text-emerald-700">
+                                          Residual:{' '}
+                                          {formatAmount(
+                                            bc.projectedResidual,
+                                            bc.budget.currency
+                                          )}{' '}
+                                          ({residualPct}%)
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {/* Inline Progress + Residual Bar */}
+                                  <div className="h-2 w-full overflow-hidden rounded-full bg-white/80 border border-black/10 flex">
+                                    <div
+                                      style={{ width: `${clampedPct}%` }}
+                                      className={`h-full transition-all ${
+                                        isOver
+                                          ? 'bg-rose-600'
+                                          : isWarn
+                                          ? 'bg-amber-500'
+                                          : 'bg-emerald-600'
+                                      }`}
+                                    />
+                                    {residualPct > 0 && (
+                                      <div
+                                        style={{ width: `${residualPct}%` }}
+                                        className="h-full bg-emerald-100/70"
+                                      />
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
 
                     {/* Row Notes */}
                     <div>

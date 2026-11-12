@@ -1168,6 +1168,110 @@ Each transfer: { "date": "YYYY-MM-DD", "fromAccount": "string", "toAccount": "st
   }
 });
 
+/**
+ * Backend Budget & Account Spend Verification Endpoint
+ */
+app.post('/api/budgets/evaluate', (req: Request, res: Response) => {
+  try {
+    const {
+      budgets = [],
+      expenses = [],
+      spendDraft = null,
+      baseCurrency = 'GHS',
+    } = req.body || {};
+
+    const upperBase = String(baseCurrency || 'GHS').toUpperCase();
+    const fallbackRates = buildFallbackRatesForBase(upperBase);
+
+    const convertAmt = (amt: number, fromCurr: string, toCurr: string): number => {
+      const f = String(fromCurr || upperBase).toUpperCase();
+      const t = String(toCurr || upperBase).toUpperCase();
+      if (f === t) return round2dp(amt);
+      const fromRate = fallbackRates[f] || 1;
+      const toRate = fallbackRates[t] || 1;
+      return round2dp((Number(amt || 0) / fromRate) * toRate);
+    };
+
+    const evaluated = (Array.isArray(budgets) ? budgets : []).map((b: any) => {
+      const budgetCurr = String(b.currency || upperBase).toUpperCase();
+      const subs: string[] = Array.isArray(b.subcategories)
+        ? b.subcategories.map((s: any) => String(s || '').trim().toLowerCase())
+        : [];
+      const limit = round2dp(Number(b.amount || 0));
+
+      let spent = 0;
+      for (const exp of Array.isArray(expenses) ? expenses : []) {
+        if (!exp || exp.vaultAction === 'credit') continue;
+        const expSub = String(exp.subcategory || '').trim().toLowerCase();
+        if (!subs.includes(expSub)) continue;
+        if (b.accountId && exp.accountId !== b.accountId) continue;
+        const rawAmt = Number(exp.originalAmount ?? exp.amount ?? 0);
+        const expCurr = String(exp.currency || upperBase).toUpperCase();
+        spent = round2dp(spent + convertAmt(rawAmt, expCurr, budgetCurr));
+      }
+
+      const residual = round2dp(limit - spent);
+      const percentage = limit > 0 ? round2dp((spent / limit) * 100) : 0;
+      const threshold = Number(b.alertThresholdPercent ?? 80);
+      const status =
+        limit > 0 && spent > limit
+          ? 'exceeded'
+          : limit > 0 && spent === limit
+          ? 'at_limit'
+          : percentage >= threshold
+          ? 'warning'
+          : 'healthy';
+
+      return {
+        budgetId: b.id,
+        name: b.name,
+        periodType: b.periodType || 'monthly',
+        scopeType: b.scopeType || (subs.length > 1 ? 'multiple' : 'single'),
+        currency: budgetCurr,
+        budgetLimit: limit,
+        spentAmount: spent,
+        residualAmount: residual,
+        usagePercentage: percentage,
+        status,
+        spendCheck: spendDraft
+          ? (() => {
+              const draftSub = String(spendDraft.subcategory || '')
+                .trim()
+                .toLowerCase();
+              if (!subs.includes(draftSub)) return null;
+              const addAmt = convertAmt(
+                Number(spendDraft.amount || 0),
+                String(spendDraft.currency || budgetCurr),
+                budgetCurr
+              );
+              const projectedSpent = round2dp(spent + addAmt);
+              const projectedResidual = round2dp(limit - projectedSpent);
+              const projectedPercentage =
+                limit > 0 ? round2dp((projectedSpent / limit) * 100) : 0;
+              return {
+                additionalSpend: addAmt,
+                projectedSpent,
+                projectedResidual,
+                projectedPercentage,
+                exceedsBudget: limit > 0 && projectedSpent > limit,
+              };
+            })()
+          : null,
+      };
+    });
+
+    return res.json({
+      success: true,
+      evaluatedBudgets: evaluated,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Budget evaluation failed.',
+    });
+  }
+});
+
 // Bind port 3000 immediately so container healthchecks succeed without waiting on Vite cold boot
 async function startServer() {
   if (process.env.NODE_ENV === 'production') {

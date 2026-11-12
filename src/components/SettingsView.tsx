@@ -1192,18 +1192,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
         {!isExpensePrefsCollapsed && (
           <div className="space-y-4">
-            <form onSubmit={handleAddCategory} className="flex flex-wrap gap-2">
+            <form onSubmit={handleAddCategory} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
               <input
                 type="text"
                 value={newCategoryName}
                 onChange={(e) => setNewCategoryName(e.target.value)}
                 placeholder="New expense category name (e.g. Giving and Speaking)..."
-                className="flex-1 min-w-[200px] rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
+                className="w-full sm:flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
               />
               <button
                 type="submit"
                 disabled={isSaving || !newCategoryName.trim()}
-                className="rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+                className="w-full sm:w-auto rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50 shrink-0"
               >
                 + Add Category
               </button>
@@ -1224,32 +1224,34 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       key={cat.id}
                       className="rounded-lg border border-slate-200/80 bg-slate-50/50 p-3.5 space-y-2.5"
                     >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                         {isEditingCat ? (
-                          <div className="flex items-center gap-1.5 flex-1">
+                          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-1.5 w-full">
                             <input
                               type="text"
                               value={editingCatName}
                               onChange={(e) => setEditingCatName(e.target.value)}
-                              className="flex-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-900"
+                              className="w-full sm:flex-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 sm:py-1 text-xs text-slate-900"
                             />
-                            <button
-                              type="button"
-                              onClick={() => handleSaveRenameCategory(cat.id)}
-                              className="rounded-md bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-white"
-                            >
-                              Save
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setEditingCatId(null)}
-                              className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600"
-                            >
-                              Cancel
-                            </button>
+                            <div className="flex items-center gap-1.5 justify-end">
+                              <button
+                                type="button"
+                                onClick={() => handleSaveRenameCategory(cat.id)}
+                                className="rounded-md bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-white"
+                              >
+                                Save
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingCatId(null)}
+                                className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600"
+                              >
+                                Cancel
+                              </button>
+                            </div>
                           </div>
                         ) : (
-                          <div className="flex items-center gap-2 min-w-0">
+                          <div className="flex flex-wrap items-center gap-2 min-w-0">
                             <span className="font-display text-xs font-semibold text-slate-900 break-words">
                               {cat.name}
                             </span>
@@ -1414,67 +1416,69 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         </div>
                       )}
 
-                      <div className="flex items-center gap-1.5">
-                        {(() => {
-                          const draftSub = (newSubcategoryMap[cat.id] || '').trim();
-                          const previewColor =
-                            newSubcategoryColorMap[cat.id] ||
-                            resolveIntuitiveSubcategoryColor(
-                              draftSub || cat.name,
-                              cat.name,
-                              { expenseCategoryPreferences: expensePrefs },
-                              expenses
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                          {(() => {
+                            const draftSub = (newSubcategoryMap[cat.id] || '').trim();
+                            const previewColor =
+                              newSubcategoryColorMap[cat.id] ||
+                              resolveIntuitiveSubcategoryColor(
+                                draftSub || cat.name,
+                                cat.name,
+                                { expenseCategoryPreferences: expensePrefs },
+                                expenses
+                              );
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const curIdx = EXPENSE_SUBCATEGORY_COLOR_PALETTE.findIndex(
+                                    (p) =>
+                                      p.hex.toLowerCase() === previewColor.toLowerCase()
+                                  );
+                                  const nextSwatch =
+                                    EXPENSE_SUBCATEGORY_COLOR_PALETTE[
+                                      (curIdx + 1) %
+                                        EXPENSE_SUBCATEGORY_COLOR_PALETTE.length
+                                    ];
+                                  setNewSubcategoryColorMap((prev) => ({
+                                    ...prev,
+                                    [cat.id]: nextSwatch.hex,
+                                  }));
+                                }}
+                                title="Intuitive subcategory color (tap to cycle)"
+                                className="flex h-8 w-8 sm:h-7 sm:w-7 items-center justify-center rounded-lg border border-slate-200 bg-white shrink-0 hover:bg-slate-50"
+                              >
+                                <span
+                                  className="h-3.5 w-3.5 rounded-full"
+                                  style={{ backgroundColor: previewColor }}
+                                />
+                              </button>
                             );
-                          return (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const curIdx = EXPENSE_SUBCATEGORY_COLOR_PALETTE.findIndex(
-                                  (p) =>
-                                    p.hex.toLowerCase() === previewColor.toLowerCase()
-                                );
-                                const nextSwatch =
-                                  EXPENSE_SUBCATEGORY_COLOR_PALETTE[
-                                    (curIdx + 1) %
-                                      EXPENSE_SUBCATEGORY_COLOR_PALETTE.length
-                                  ];
-                                setNewSubcategoryColorMap((prev) => ({
-                                  ...prev,
-                                  [cat.id]: nextSwatch.hex,
-                                }));
-                              }}
-                              title="Intuitive subcategory color (tap to cycle)"
-                              className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white shrink-0 hover:bg-slate-50"
-                            >
-                              <span
-                                className="h-3.5 w-3.5 rounded-full"
-                                style={{ backgroundColor: previewColor }}
-                              />
-                            </button>
-                          );
-                        })()}
-                        <input
-                          type="text"
-                          value={newSubcategoryMap[cat.id] || ''}
-                          onChange={(e) =>
-                            setNewSubcategoryMap((prev) => ({
-                              ...prev,
-                              [cat.id]: e.target.value,
-                            }))
-                          }
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              handleAddSubcategory(cat.id);
+                          })()}
+                          <input
+                            type="text"
+                            value={newSubcategoryMap[cat.id] || ''}
+                            onChange={(e) =>
+                              setNewSubcategoryMap((prev) => ({
+                                ...prev,
+                                [cat.id]: e.target.value,
+                              }))
                             }
-                          }}
-                          placeholder={`Add subcategory to ${cat.name}...`}
-                          className="flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
-                        />
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                handleAddSubcategory(cat.id);
+                              }
+                            }}
+                            placeholder={`Add subcategory to ${cat.name}...`}
+                            className="flex-1 min-w-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
+                          />
+                        </div>
                         <button
                           type="button"
                           onClick={() => handleAddSubcategory(cat.id)}
-                          className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 shrink-0"
+                          className="w-full sm:w-auto rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 shrink-0 text-center"
                         >
                           + Subcategory
                         </button>
@@ -1621,7 +1625,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </form>
 
             {/* Total Allocation Bar & Actions */}
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200/80 bg-slate-50 px-3.5 py-2.5 text-xs">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-xl border border-slate-200/80 bg-slate-50 px-3.5 py-2.5 text-xs">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-medium text-slate-700">
                   Total Vault Allocation:
@@ -1642,12 +1646,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 )}
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
                 <button
                   type="button"
                   onClick={handleResetDefaultVaultRates}
                   disabled={isSaving}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50 text-center"
                 >
                   Reset Defaults
                 </button>
@@ -1655,7 +1659,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   type="button"
                   onClick={handleSaveVaultRates}
                   disabled={isSaving}
-                  className="rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+                  className="rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50 text-center"
                 >
                   Save Vault Changes
                 </button>
@@ -1896,7 +1900,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               newCutName.trim().toLowerCase() === 'savings' ||
               newCutName.trim().toLowerCase().includes('saving') ? (
                 <div className="space-y-2.5 rounded-lg border border-slate-200 bg-slate-50/70 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <span className="text-xs font-semibold text-slate-800">
                       Quarterly Savings Rates (Auto-applied by Income Date)
                     </span>
@@ -1905,8 +1909,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       onChange={(val) =>
                         setNewCutType(val as 'percentage' | 'fixed')
                       }
-                      className="w-40"
-                      triggerClassName="py-1 px-2.5 text-[11px]"
+                      className="w-full sm:w-40"
+                      triggerClassName="py-1.5 sm:py-1 px-2.5 text-[11px]"
                       options={[
                         { value: 'percentage', label: 'Percentage (%)' },
                         { value: 'fixed', label: `Fixed (${currency})` },
@@ -2372,13 +2376,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                             </div>
                           </div>
                         ) : (
-                          <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                             <div className="flex items-start gap-2.5 min-w-0 flex-1">
                               <input
                                 type="checkbox"
                                 checked={cut.enabled}
                                 onChange={() => handleToggleCut(cut.id)}
-                                className="mt-0.5 h-4 w-4 rounded border-slate-300"
+                                className="mt-0.5 h-4 w-4 rounded border-slate-300 shrink-0"
                               />
                               <div className="min-w-0 flex-1">
                                 <div className="flex flex-wrap items-center gap-2">
@@ -2404,7 +2408,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                               </div>
                             </div>
 
-                            <div className="flex flex-wrap items-center gap-2 shrink-0">
+                            <div className="pl-6 sm:pl-0 flex flex-wrap items-center justify-between sm:justify-end gap-2 shrink-0">
                               <span className="rounded-md bg-slate-100 px-2.5 py-1 font-mono text-xs font-semibold text-slate-900 tabular-nums break-words">
                                 {isSavings
                                   ? formatSavingsCutRatesSummary(cut, currency)
@@ -2413,44 +2417,46 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                                   : formatAmount(cut.amount, currency)}
                               </span>
 
-                              {isConfirmingDel ? (
-                                <div className="flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5">
-                                  <span className="text-[11px] font-medium text-rose-800">
-                                    Delete?
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDeleteCut(cut.id)}
-                                    className="rounded bg-rose-600 px-2 py-0.5 text-[11px] font-semibold text-white"
-                                  >
-                                    Yes
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setConfirmDeleteCutId(null)}
-                                    className="rounded bg-white px-2 py-0.5 text-[11px] text-slate-600"
-                                  >
-                                    No
-                                  </button>
-                                </div>
-                              ) : (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleStartEditCut(cut)}
-                                    className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50"
-                                  >
-                                    Edit
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setConfirmDeleteCutId(cut.id)}
-                                    className="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-medium text-rose-600 hover:bg-rose-100"
-                                  >
-                                    Delete
-                                  </button>
-                                </>
-                              )}
+                              <div className="flex items-center gap-1.5">
+                                {isConfirmingDel ? (
+                                  <div className="flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5">
+                                    <span className="text-[11px] font-medium text-rose-800">
+                                      Delete?
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteCut(cut.id)}
+                                      className="rounded bg-rose-600 px-2 py-0.5 text-[11px] font-semibold text-white"
+                                    >
+                                      Yes
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteCutId(null)}
+                                      className="rounded bg-white px-2 py-0.5 text-[11px] text-slate-600"
+                                    >
+                                      No
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleStartEditCut(cut)}
+                                      className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50"
+                                    >
+                                      Edit
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteCutId(cut.id)}
+                                      className="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-medium text-rose-600 hover:bg-rose-100"
+                                    >
+                                      Delete
+                                    </button>
+                                  </>
+                                )}
+                              </div>
                             </div>
                           </div>
                         )}
@@ -2618,7 +2624,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
         {!isImportCollapsed && (
           <div className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-slate-300 bg-slate-50/70 p-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-dashed border-slate-300 bg-slate-50/70 p-4">
               <div className="space-y-1 min-w-0">
                 <div className="text-xs font-semibold text-slate-800">
                   Select File to Parse & Import
@@ -2628,15 +2634,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto shrink-0">
                 <button
                   type="button"
                   onClick={handleDownloadSampleCsv}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 sm:py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 text-center"
                 >
-                  Download CSV Template
+                  CSV Template
                 </button>
-                <label className="cursor-pointer rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800">
+                <label className="cursor-pointer rounded-lg bg-slate-900 px-3.5 py-2 sm:py-1.5 text-xs font-semibold text-white hover:bg-slate-800 text-center">
                   <span>{isParsingImport ? 'Parsing File...' : 'Choose File'}</span>
                   <input
                     type="file"
@@ -2663,23 +2669,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
             {parsedImport && (
               <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-4">
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                  <div>
-                    <div className="text-xs font-semibold text-slate-900">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 border-b border-slate-100 pb-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-slate-900 break-words">
                       Parsed Preview {importFileName ? `(${importFileName})` : ''}
                     </div>
                     <div className="text-[11px] text-slate-500">
                       Review extracted records before saving to your database
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
                     <button
                       type="button"
                       onClick={() => {
                         setParsedImport(null);
                         setImportFileName('');
                       }}
-                      className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 text-center"
                     >
                       Discard
                     </button>
@@ -2687,10 +2693,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       type="button"
                       onClick={handleConfirmSaveImport}
                       disabled={isSavingImport}
-                      className="rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                      className="rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50 text-center"
                     >
                       {isSavingImport
-                        ? 'Saving to Database...'
+                        ? 'Saving...'
                         : 'Save All to Database'}
                     </button>
                   </div>

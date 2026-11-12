@@ -457,6 +457,110 @@
         }
       },
       "required": ["userId", "date", "sourceAccountId", "destinationAccountId", "amount", "transferType"]
+    },
+    "FinancialBudget": {
+      "title": "FinancialBudget",
+      "description": "Recurring weekly, monthly, yearly, or custom-date spending budget tracking single or multiple expense subcategories",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner user ID"
+        },
+        "name": {
+          "type": "string",
+          "description": "Budget display name",
+          "maxLength": 150
+        },
+        "periodType": {
+          "type": "string",
+          "description": "Budget recurrence period: weekly, monthly, yearly, or custom",
+          "maxLength": 20
+        },
+        "customStartDate": {
+          "type": "string",
+          "description": "Custom period start date (YYYY-MM-DD)",
+          "maxLength": 30
+        },
+        "customEndDate": {
+          "type": "string",
+          "description": "Custom period end date (YYYY-MM-DD)",
+          "maxLength": 30
+        },
+        "activePeriodStart": {
+          "type": "string",
+          "description": "Start date of the active recurring cycle (YYYY-MM-DD)",
+          "maxLength": 30
+        },
+        "activePeriodEnd": {
+          "type": "string",
+          "description": "End date of the active recurring cycle (YYYY-MM-DD)",
+          "maxLength": 30
+        },
+        "parentRecurringBudgetId": {
+          "type": "string",
+          "description": "Parent recurring budget ID when recreated for a new cycle",
+          "maxLength": 128
+        },
+        "isArchivedPeriod": {
+          "type": "boolean",
+          "description": "Whether this recurring budget cycle has elapsed and been recreated"
+        },
+        "scopeType": {
+          "type": "string",
+          "description": "Whether budget tracks a single or multiple subcategories",
+          "maxLength": 20
+        },
+        "subcategoriesJson": {
+          "type": "string",
+          "description": "JSON stringified list of expense subcategories covered by this budget",
+          "maxLength": 10000
+        },
+        "categoriesJson": {
+          "type": "string",
+          "description": "Optional JSON stringified list of parent expense categories",
+          "maxLength": 5000
+        },
+        "accountId": {
+          "type": "string",
+          "description": "Optional linked account ID or empty for all accounts",
+          "maxLength": 128
+        },
+        "currency": {
+          "type": "string",
+          "description": "Currency code for this budget (e.g. GHS, USD, EUR)",
+          "maxLength": 10
+        },
+        "amount": {
+          "type": "number",
+          "description": "Budget limit amount in budget currency (2-point floating)"
+        },
+        "alertThresholdPercent": {
+          "type": "number",
+          "description": "Warning threshold percentage (default 80)"
+        },
+        "color": {
+          "type": "string",
+          "description": "Accent color hex code",
+          "maxLength": 30
+        },
+        "notes": {
+          "type": "string",
+          "description": "Optional budget notes",
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp"
+        }
+      },
+      "required": ["userId", "name", "periodType", "scopeType", "subcategoriesJson", "currency", "amount"]
     }
   },
   "firestore": {
@@ -487,6 +591,10 @@
     "/users/{userId}/transfers/{transferId}": {
       "schema": "AccountTransfer",
       "description": "Internal account transfers"
+    },
+    "/users/{userId}/budgets/{budgetId}": {
+      "schema": "FinancialBudget",
+      "description": "User recurring weekly, monthly, yearly, and custom period budgets"
     }
   }
 }

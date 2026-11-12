@@ -1,379 +1,187 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React from 'react';
+import { ActiveTab, NAV_ITEMS } from './Navigation.tsx';
 import {
-  User,
-  loginWithGoogle,
-  logoutUser,
-  getFirebaseAuthDiagnostic,
-  AuthDiagnosticInfo,
-} from '../lib/firebase.ts';
-import { ThemeMode, AppColorTheme } from '../types/finance.ts';
-import { APP_COLOR_THEMES, getColorThemeConfig } from '../lib/colorThemes.ts';
-import { APP_VERSION } from '../lib/calculations.ts';
-import { ActiveTab } from './Navigation.tsx';
+  TimeRangePreset,
+  TIME_RANGE_OPTIONS,
+  getPresetLabel,
+} from '../lib/dateFilters.ts';
+
+export const APP_VERSION = '3.5.0';
 
 interface HeaderProps {
-  currentUser: User | null;
-  activeTab: ActiveTab;
-  onTabChange: (tab: ActiveTab) => void;
-  themeMode?: ThemeMode;
-  onThemeModeChange?: (mode: ThemeMode) => void;
-  colorTheme?: AppColorTheme;
-  onColorThemeChange?: (colorTheme: AppColorTheme) => void;
+  activeTab?: ActiveTab;
+  isSidebarOpen?: boolean;
+  onToggleSidebar?: () => void;
+  timeRange?: TimeRangePreset;
+  onSelectTimeRange?: (range: TimeRangePreset) => void;
+  isMobileDateFilterOpen?: boolean;
+  onToggleMobileDateFilter?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  currentUser,
-  onTabChange,
-  themeMode = 'light',
-  onThemeModeChange,
-  colorTheme = 'emerald',
-  onColorThemeChange,
+  activeTab = 'dashboard',
+  isSidebarOpen = false,
+  onToggleSidebar,
+  timeRange = 'all',
+  onSelectTimeRange,
+  isMobileDateFilterOpen = false,
+  onToggleMobileDateFilter,
 }) => {
-  const [isPaletteOpen, setIsPaletteOpen] = useState(false);
-  const [authDiagnostic, setAuthDiagnostic] = useState<AuthDiagnosticInfo | null>(null);
-  const [copiedField, setCopiedField] = useState<string | null>(null);
-  const paletteRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (paletteRef.current && !paletteRef.current.contains(e.target as Node)) {
-        setIsPaletteOpen(false);
-      }
-    };
-    if (isPaletteOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isPaletteOpen]);
-
-  const handleAuthAction = async (useRedirect = false) => {
-    if (currentUser) {
-      await logoutUser();
-    } else {
-      setAuthDiagnostic(null);
-      try {
-        await loginWithGoogle(useRedirect);
-      } catch (err: unknown) {
-        const code = String((err as { code?: string })?.code || '');
-        if (
-          code !== 'auth/popup-closed-by-user' &&
-          code !== 'auth/cancelled-popup-request'
-        ) {
-          setAuthDiagnostic(getFirebaseAuthDiagnostic(err));
-        }
-      }
-    }
-  };
-
-  const handleCopyText = async (text: string, label: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedField(label);
-      setTimeout(() => setCopiedField(null), 1800);
-    } catch {
-      // Ignore clipboard failure
-    }
-  };
-
-  const cycleTheme = () => {
-    if (!onThemeModeChange) return;
-    const next: ThemeMode =
-      themeMode === 'light' ? 'dark' : themeMode === 'dark' ? 'system' : 'light';
-    onThemeModeChange(next);
-  };
-
-  const activeColorConfig = getColorThemeConfig(colorTheme);
+  const currentNav =
+    NAV_ITEMS.find((item) => item.id === activeTab) || NAV_ITEMS[0];
 
   return (
-    <header className="border-b border-slate-200/80 bg-white/95">
-      <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
+    <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/95 backdrop-blur-md">
+      <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-2 px-3 sm:px-6 lg:px-8">
+        {/* Left: App Brand & Active View Context */}
         <div className="flex items-center gap-2.5 min-w-0">
-          <button
-            type="button"
-            onClick={() => onTabChange('dashboard')}
-            className="flex items-center gap-2 font-display text-base sm:text-lg font-bold tracking-tight text-slate-900 text-left focus-visible:outline-none"
+          <div
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white font-display font-bold text-sm shadow-xs"
+            style={{ backgroundColor: 'var(--app-accent)' }}
           >
-            <span
-              className="h-2.5 w-2.5 rounded-full shrink-0 transition-colors"
-              style={{ backgroundColor: 'var(--app-accent)' }}
-            />
-            <span className="break-words">Save N Know</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => onTabChange('settings')}
-            className="rounded-md border border-slate-200 bg-slate-100/90 px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-600 hover:bg-slate-200/70 shrink-0"
-            title="Version Control"
-          >
-            v{APP_VERSION}
-          </button>
+            S
+          </div>
+          <div className="min-w-0 flex items-center gap-2">
+            <span className="font-display text-sm sm:text-base font-extrabold tracking-tight text-slate-900 truncate">
+              Save N Know
+            </span>
+            <span className="text-slate-300 font-light">/</span>
+            <span className="font-display text-xs sm:text-sm font-semibold text-slate-600 truncate">
+              {currentNav.shortLabel}
+            </span>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
-          {/* Functional App Color Picker */}
-          {onColorThemeChange && (
-            <div className="relative" ref={paletteRef}>
-              <button
-                type="button"
-                onClick={() => setIsPaletteOpen((prev) => !prev)}
-                className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
-                title="App Color Palette"
-              >
-                <span
-                  className="h-3 w-3 rounded-full shrink-0"
-                  style={{ backgroundColor: activeColorConfig.primary }}
-                />
-                <span className="hidden sm:inline">{activeColorConfig.name.split(' ')[0]}</span>
-              </button>
-
-              {isPaletteOpen && (
-                <div className="absolute right-0 mt-2 w-64 rounded-xl border border-slate-200 bg-white p-2.5 shadow-xl z-50 space-y-1.5">
-                  <div className="px-1.5 py-1 text-[11px] font-semibold text-slate-500">
-                    App Color Palette
-                  </div>
-                  <div className="grid grid-cols-1 gap-1">
-                    {APP_COLOR_THEMES.map((item) => {
-                      const isSelected = item.id === colorTheme;
-                      return (
-                        <button
-                          key={item.id}
-                          type="button"
-                          onClick={() => {
-                            onColorThemeChange(item.id);
-                            setIsPaletteOpen(false);
-                          }}
-                          className={`flex items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
-                            isSelected
-                              ? 'bg-slate-100 font-semibold text-slate-900'
-                              : 'text-slate-700 hover:bg-slate-50'
-                          }`}
-                        >
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span
-                              className="h-3 w-3 rounded-full shrink-0"
-                              style={{ backgroundColor: item.primary }}
-                            />
-                            <div className="truncate">
-                              <span className="text-slate-900">{item.name}</span>
-                              <span className="ml-1.5 text-[10px] text-slate-400">
-                                · {item.functionLabel}
-                              </span>
-                            </div>
-                          </div>
-                          {isSelected && (
-                            <span
-                              className="text-[11px] font-bold shrink-0"
-                              style={{ color: item.primary }}
-                            >
-                              ✓
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
+        {/* Right: Desktop Inline Date Filter + Mobile Date Filter Pill + Top-Right Menu Trigger */}
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {/* Desktop Inline Date Filter Segmented Bar */}
+          {onSelectTimeRange && (
+            <div className="hidden xl:flex items-center gap-0.5 rounded-lg border border-slate-200/90 bg-slate-100/80 p-0.5">
+              {TIME_RANGE_OPTIONS.map((opt) => {
+                const isSelected = timeRange === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => onSelectTimeRange(opt.id)}
+                    className={`rounded-md px-2 py-1 text-[11px] font-semibold transition-all whitespace-nowrap ${
+                      isSelected
+                        ? 'bg-slate-900 text-white shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                    }`}
+                    title={`Filter by ${opt.label}`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
             </div>
           )}
 
-          {/* Theme Mode Switcher */}
-          {onThemeModeChange && (
+          {/* Medium Desktop Select for Date Filter (md to xl) */}
+          {onSelectTimeRange && (
+            <div className="hidden md:flex xl:hidden items-center">
+              <select
+                value={timeRange}
+                onChange={(e) =>
+                  onSelectTimeRange(e.target.value as TimeRangePreset)
+                }
+                aria-label="Date Filter"
+                className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-slate-800 focus:border-slate-900 focus:outline-none"
+              >
+                {TIME_RANGE_OPTIONS.map((opt) => (
+                  <option key={opt.id} value={opt.id}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Mobile Compact Date Filter Trigger Button */}
+          {onToggleMobileDateFilter && (
             <button
               type="button"
-              onClick={cycleTheme}
-              className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
-              title="Switch Theme Mode"
+              onClick={onToggleMobileDateFilter}
+              aria-expanded={isMobileDateFilterOpen}
+              className={`md:hidden flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition-colors ${
+                timeRange !== 'all' || isMobileDateFilterOpen
+                  ? 'border-slate-900 bg-slate-900 text-white'
+                  : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+              }`}
+              title="Toggle Date Filter"
             >
-              {themeMode === 'dark' ? (
-                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-                </svg>
-              ) : themeMode === 'system' ? (
-                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                </svg>
-              ) : (
-                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-                </svg>
-              )}
-              <span className="hidden sm:inline capitalize">{themeMode}</span>
+              <svg
+                className="h-3.5 w-3.5 shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2.25}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                />
+              </svg>
+              <span>{getPresetLabel(timeRange)}</span>
+              <svg
+                className={`h-3 w-3 transition-transform ${
+                  isMobileDateFilterOpen ? 'rotate-180' : ''
+                }`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2.5}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M19 9l-7 7-7-7"
+                />
+              </svg>
             </button>
           )}
 
-          {currentUser ? (
-            <div className="flex items-center gap-2">
-              <span className="hidden md:inline text-xs text-slate-500 max-w-[160px] truncate">
-                {currentUser.email || currentUser.displayName}
-              </span>
-              <button
-                type="button"
-                onClick={() => handleAuthAction(false)}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900 whitespace-nowrap"
-              >
-                Sign Out
-              </button>
-            </div>
-          ) : (
+          {/* Top-Right Menu Button (Bundles Navigation, Color Theme, Mode, Login & Account Details) */}
+          {onToggleSidebar && (
             <button
               type="button"
-              onClick={() => handleAuthAction(false)}
-              className="rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-slate-800 whitespace-nowrap"
+              onClick={onToggleSidebar}
+              aria-label="Toggle Menu"
+              aria-expanded={isSidebarOpen}
+              className={`flex items-center gap-1.5 rounded-lg border px-2.5 sm:px-3 py-1.5 text-xs font-bold transition-colors ${
+                isSidebarOpen
+                  ? 'border-slate-900 bg-slate-900 text-white'
+                  : 'border-slate-200 bg-white text-slate-800 hover:bg-slate-50'
+              }`}
             >
-              Sign In
+              <span>Menu</span>
+              <svg
+                className="h-4 w-4 shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2.5}
+              >
+                {isSidebarOpen ? (
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                ) : (
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M4 6h16M4 12h16M4 18h16"
+                  />
+                )}
+              </svg>
             </button>
           )}
         </div>
       </div>
-
-      {/* Production Google Auth Setup / Diagnostic Modal */}
-      {authDiagnostic && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4"
-          onClick={() => setAuthDiagnostic(null)}
-        >
-          <div
-            className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-5 sm:p-6 shadow-2xl space-y-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3">
-              <div>
-                <h2 className="font-display text-base font-bold text-slate-900">
-                  {authDiagnostic.title}
-                </h2>
-                <p className="text-xs text-slate-500 mt-0.5 font-mono">
-                  {authDiagnostic.code} · Project: {authDiagnostic.projectId}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setAuthDiagnostic(null)}
-                className="rounded-md px-2 py-1 text-xs font-medium text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-              >
-                Close
-              </button>
-            </div>
-
-            <p className="text-xs text-slate-700 leading-relaxed break-words">
-              {authDiagnostic.summary}
-            </p>
-
-            {/* Quick Copy Domain & Redirect URIs for Render */}
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2.5 text-xs">
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="text-[11px] font-semibold text-slate-500">
-                    1. Firebase Authorized Domain
-                  </div>
-                  <div className="font-mono font-semibold text-slate-900 break-all">
-                    {authDiagnostic.currentHostname}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleCopyText(authDiagnostic.currentHostname, 'domain')
-                  }
-                  className="rounded border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100 shrink-0"
-                >
-                  {copiedField === 'domain' ? 'Copied' : 'Copy'}
-                </button>
-              </div>
-
-              <div className="border-t border-slate-200/70 pt-2 space-y-1.5">
-                <div className="text-[11px] font-semibold text-slate-500">
-                  2. OAuth 2.0 Authorized Redirect URIs
-                </div>
-                {authDiagnostic.requiredRedirectUris.map((uri, i) => (
-                  <div
-                    key={uri}
-                    className="flex items-center justify-between gap-2 rounded border border-slate-200/80 bg-white px-2.5 py-1.5"
-                  >
-                    <span className="font-mono text-[11px] text-slate-800 break-all">
-                      {uri}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => handleCopyText(uri, `uri-${i}`)}
-                      className="text-[11px] font-medium text-slate-600 hover:text-slate-900 shrink-0"
-                    >
-                      {copiedField === `uri-${i}` ? 'Copied' : 'Copy'}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <div className="text-xs font-semibold text-slate-800">
-                Steps to Authorize on Render:
-              </div>
-              <ol className="list-decimal list-inside space-y-1 text-xs text-slate-600 leading-relaxed">
-                <li className="break-words">
-                  In Firebase Console → Authentication → Settings → Authorized domains, add{' '}
-                  <span className="font-mono font-semibold text-slate-900">
-                    {authDiagnostic.currentHostname}
-                  </span>
-                  .
-                </li>
-                <li className="break-words">
-                  In Google Cloud Console → APIs & Services → Credentials (OAuth Client{' '}
-                  <span className="font-mono text-[11px]">
-                    {authDiagnostic.oAuthClientId}
-                  </span>
-                  ), add{' '}
-                  <span className="font-mono font-semibold text-slate-900">
-                    {authDiagnostic.currentOrigin}
-                  </span>{' '}
-                  under Authorized JavaScript origins.
-                </li>
-                <li className="break-words">
-                  Under Authorized redirect URIs, ensure the two URIs above are listed and save.
-                </li>
-              </ol>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3">
-              <div className="flex flex-wrap items-center gap-3">
-                <a
-                  href={authDiagnostic.firebaseAuthSettingsUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-xs font-semibold text-slate-700 hover:text-slate-900 underline underline-offset-2"
-                >
-                  Firebase Auth Settings ↗
-                </a>
-                <a
-                  href={authDiagnostic.gcpCredentialsUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-xs font-semibold text-slate-700 hover:text-slate-900 underline underline-offset-2"
-                >
-                  GCP OAuth Credentials ↗
-                </a>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleAuthAction(true)}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                >
-                  Sign In via Redirect
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setAuthDiagnostic(null)}
-                  className="rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
-                >
-                  Done
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </header>
   );
 };
