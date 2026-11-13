@@ -24,6 +24,20 @@
           "description": "Selected functional app color theme",
           "maxLength": 30
         },
+        "accountingFigureColorsEnabled": {
+          "type": "boolean",
+          "description": "Whether accounting figure colors override the app theme color for figures (positives emerald/green, negatives red)"
+        },
+        "positiveFigureColor": {
+          "type": "string",
+          "description": "Hex color for positive monetary figures (default #059669 Emerald)",
+          "maxLength": 20
+        },
+        "negativeFigureColor": {
+          "type": "string",
+          "description": "Hex color for negative monetary figures (default #e11d48 Crimson Red)",
+          "maxLength": 20
+        },
         "subscriptionFee": {
           "type": "number",
           "description": "Default fixed Subscription deduction per income receipt (default 85 GHS)"

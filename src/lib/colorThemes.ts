@@ -300,6 +300,148 @@ export function setPersistedThemeMode(mode: ThemeMode): void {
   }
 }
 
+export interface AccountingFigureColorPreset {
+  id: string;
+  label: string;
+  lightHex: string;
+  darkHex: string;
+}
+
+export const ACCOUNTING_POSITIVE_COLORS: AccountingFigureColorPreset[] = [
+  {
+    id: 'emerald',
+    label: 'Emerald',
+    lightHex: '#059669',
+    darkHex: '#34d399',
+  },
+  {
+    id: 'green',
+    label: 'Classic Green',
+    lightHex: '#16a34a',
+    darkHex: '#4ade80',
+  },
+  {
+    id: 'forest',
+    label: 'Forest Green',
+    lightHex: '#15803d',
+    darkHex: '#22c55e',
+  },
+  {
+    id: 'teal',
+    label: 'Teal Green',
+    lightHex: '#0d9488',
+    darkHex: '#2dd4bf',
+  },
+];
+
+export const ACCOUNTING_NEGATIVE_COLORS: AccountingFigureColorPreset[] = [
+  {
+    id: 'crimson',
+    label: 'Crimson Red',
+    lightHex: '#e11d48',
+    darkHex: '#fb7185',
+  },
+  {
+    id: 'red',
+    label: 'Accounting Red',
+    lightHex: '#dc2626',
+    darkHex: '#f87171',
+  },
+  {
+    id: 'ruby',
+    label: 'Deep Ruby',
+    lightHex: '#b91c1c',
+    darkHex: '#ef4444',
+  },
+  {
+    id: 'coral',
+    label: 'Coral Red',
+    lightHex: '#ef4444',
+    darkHex: '#fca5a5',
+  },
+];
+
+const ACCOUNTING_FIGURES_ENABLED_KEY = 'savenknow_accounting_figures_enabled';
+const POSITIVE_FIGURE_COLOR_KEY = 'savenknow_positive_figure_color';
+const NEGATIVE_FIGURE_COLOR_KEY = 'savenknow_negative_figure_color';
+
+export function getPersistedAccountingFiguresEnabled(): boolean {
+  try {
+    const raw = localStorage.getItem(ACCOUNTING_FIGURES_ENABLED_KEY);
+    if (raw === 'false') return false;
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+export function getPersistedPositiveFigureColor(): string {
+  try {
+    const raw = localStorage.getItem(POSITIVE_FIGURE_COLOR_KEY);
+    if (raw && /^#[0-9A-Fa-f]{6}$/.test(raw)) return raw;
+  } catch {
+    // ignore
+  }
+  return '#059669';
+}
+
+export function getPersistedNegativeFigureColor(): string {
+  try {
+    const raw = localStorage.getItem(NEGATIVE_FIGURE_COLOR_KEY);
+    if (raw && /^#[0-9A-Fa-f]{6}$/.test(raw)) return raw;
+  } catch {
+    // ignore
+  }
+  return '#e11d48';
+}
+
+export function applyAccountingFigureColorsToDocument(options?: {
+  enabled?: boolean;
+  positiveColor?: string;
+  negativeColor?: string;
+}): void {
+  const enabled =
+    options?.enabled !== undefined
+      ? Boolean(options.enabled)
+      : getPersistedAccountingFiguresEnabled();
+  const posHex =
+    options?.positiveColor && /^#[0-9A-Fa-f]{6}$/.test(options.positiveColor)
+      ? options.positiveColor
+      : getPersistedPositiveFigureColor();
+  const negHex =
+    options?.negativeColor && /^#[0-9A-Fa-f]{6}$/.test(options.negativeColor)
+      ? options.negativeColor
+      : getPersistedNegativeFigureColor();
+
+  try {
+    localStorage.setItem(ACCOUNTING_FIGURES_ENABLED_KEY, String(enabled));
+    localStorage.setItem(POSITIVE_FIGURE_COLOR_KEY, posHex);
+    localStorage.setItem(NEGATIVE_FIGURE_COLOR_KEY, negHex);
+  } catch {
+    // ignore storage errors
+  }
+
+  const posPreset = ACCOUNTING_POSITIVE_COLORS.find(
+    (p) => p.lightHex.toLowerCase() === posHex.toLowerCase()
+  );
+  const negPreset = ACCOUNTING_NEGATIVE_COLORS.find(
+    (n) => n.lightHex.toLowerCase() === negHex.toLowerCase()
+  );
+
+  const root = document.documentElement;
+  root.setAttribute('data-accounting-figures', enabled ? 'true' : 'false');
+  root.style.setProperty('--figure-positive-color', posHex);
+  root.style.setProperty('--figure-negative-color', negHex);
+  root.style.setProperty(
+    '--figure-positive-dark-color',
+    posPreset?.darkHex || posHex
+  );
+  root.style.setProperty(
+    '--figure-negative-dark-color',
+    negPreset?.darkHex || negHex
+  );
+}
+
 export function getColorThemeConfig(themeId?: AppColorTheme): ColorThemeConfig {
   const effectiveId = themeId || getPersistedColorTheme();
   return (

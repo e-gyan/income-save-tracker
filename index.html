@@ -11,6 +11,79 @@
     </style>
     <script>
       (function() {
+        // Intercept Vite HMR / ping WebSockets when HMR is disabled so @vite/client never throws "WebSocket closed without opened."
+        var OrigWebSocket = window.WebSocket;
+        if (OrigWebSocket) {
+          var PatchedWebSocket = function(url, protocols) {
+            var protoStr = Array.isArray(protocols) ? protocols.join(',') : String(protocols || '');
+            var urlStr = String(url || '');
+            if (
+              protoStr.indexOf('vite-hmr') !== -1 ||
+              protoStr.indexOf('vite-ping') !== -1 ||
+              urlStr.indexOf('__vite_ping') !== -1
+            ) {
+              var listeners = {};
+              var fakeWs = {
+                url: urlStr,
+                protocol: protoStr,
+                readyState: 1,
+                 bufferedAmount: 0,
+                extensions: '',
+                binaryType: 'blob',
+                CONNECTING: 0,
+                OPEN: 1,
+                CLOSING: 2,
+                CLOSED: 3,
+                send: function() {},
+                close: function() {
+                  this.readyState = 3;
+                },
+                addEventListener: function(type, cb) {
+                  if (!listeners[type]) listeners[type] = [];
+                  listeners[type].push(cb);
+                  if (type === 'open') {
+                    setTimeout(function() {
+                      try {
+                        cb(new Event('open'));
+                      } catch (_e) {}
+                    }, 0);
+                  }
+                },
+                removeEventListener: function(type, cb) {
+                  if (!listeners[type]) return;
+                  listeners[type] = listeners[type].filter(function(fn) {
+                    return fn !== cb;
+                  });
+                },
+                dispatchEvent: function() {
+                  return true;
+                },
+                onopen: null,
+                onmessage: null,
+                onerror: null,
+                onclose: null
+              };
+              setTimeout(function() {
+                if (typeof fakeWs.onopen === 'function') {
+                  try {
+                    fakeWs.onopen(new Event('open'));
+                  } catch (_e) {}
+                }
+              }, 0);
+              return fakeWs;
+            }
+            return protocols !== undefined
+              ? new OrigWebSocket(url, protocols)
+              : new OrigWebSocket(url);
+          };
+          PatchedWebSocket.prototype = OrigWebSocket.prototype;
+          PatchedWebSocket.CONNECTING = OrigWebSocket.CONNECTING;
+          PatchedWebSocket.OPEN = OrigWebSocket.OPEN;
+          PatchedWebSocket.CLOSING = OrigWebSocket.CLOSING;
+          PatchedWebSocket.CLOSED = OrigWebSocket.CLOSED;
+          window.WebSocket = PatchedWebSocket;
+        }
+
         // Suppress harmless Vite dev server HMR WebSocket closure notifications in AI Studio iframe environment
         function isWsError(msg) {
           if (!msg) return false;
@@ -54,6 +127,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Save N Know" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <title>Save N Know</title>
@@ -64,7 +138,7 @@
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..700;1,9..40,400..700&family=JetBrains+Mono:wght@500;600;700;800&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet" />
   </head>
   <body>
     <div id="root"></div>

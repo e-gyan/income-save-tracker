@@ -29,7 +29,13 @@ import {
   APP_VERSION,
   VERSION_RELEASE_LOG,
 } from '../lib/calculations.ts';
-import { APP_COLOR_THEMES, getColorThemeConfig } from '../lib/colorThemes.ts';
+import {
+  APP_COLOR_THEMES,
+  getColorThemeConfig,
+  ACCOUNTING_POSITIVE_COLORS,
+  ACCOUNTING_NEGATIVE_COLORS,
+  applyAccountingFigureColorsToDocument,
+} from '../lib/colorThemes.ts';
 import { User } from '../lib/firebase.ts';
 import { WrapSelect } from './WrapSelect.tsx';
 
@@ -77,6 +83,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [themeMode, setThemeMode] = useState<ThemeMode>(settings.themeMode || 'light');
   const [colorTheme, setColorTheme] = useState<AppColorTheme>(
     settings.colorTheme || 'emerald'
+  );
+  const [accountingFiguresEnabled, setAccountingFiguresEnabled] = useState<boolean>(
+    settings.accountingFigureColorsEnabled !== false
+  );
+  const [positiveFigureColor, setPositiveFigureColor] = useState<string>(
+    settings.positiveFigureColor || '#059669'
+  );
+  const [negativeFigureColor, setNegativeFigureColor] = useState<string>(
+    settings.negativeFigureColor || '#e11d48'
   );
   const [customCuts, setCustomCuts] = useState<CustomDeduction[]>(
     (settings.customCuts || []).filter((c) => !LEGACY_SEEDED_CUT_IDS.has(c.id))
@@ -207,6 +222,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setTotalsCurrencyMode(settings.totalsCurrencyMode || 'base');
     setThemeMode(settings.themeMode || 'light');
     setColorTheme(settings.colorTheme || 'emerald');
+    setAccountingFiguresEnabled(settings.accountingFigureColorsEnabled !== false);
+    setPositiveFigureColor(settings.positiveFigureColor || '#059669');
+    setNegativeFigureColor(settings.negativeFigureColor || '#e11d48');
     setCustomCuts(
       (settings.customCuts || []).filter((c) => !LEGACY_SEEDED_CUT_IDS.has(c.id))
     );
@@ -274,6 +292,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       totalsCurrencyMode,
       themeMode,
       colorTheme,
+      accountingFigureColorsEnabled: accountingFiguresEnabled,
+      positiveFigureColor,
+      negativeFigureColor,
       customCuts,
       savingsBuckets,
       expenseCategoryPreferences: expensePrefs,
@@ -299,6 +320,36 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const handleColorThemeSelect = async (nextColor: AppColorTheme) => {
     setColorTheme(nextColor);
     await persistUpdates({ colorTheme: nextColor });
+  };
+
+  const handleAccountingFiguresToggle = async (nextEnabled: boolean) => {
+    setAccountingFiguresEnabled(nextEnabled);
+    applyAccountingFigureColorsToDocument({
+      enabled: nextEnabled,
+      positiveColor: positiveFigureColor,
+      negativeColor: negativeFigureColor,
+    });
+    await persistUpdates({ accountingFigureColorsEnabled: nextEnabled });
+  };
+
+  const handlePositiveFigureColorSelect = async (nextHex: string) => {
+    setPositiveFigureColor(nextHex);
+    applyAccountingFigureColorsToDocument({
+      enabled: accountingFiguresEnabled,
+      positiveColor: nextHex,
+      negativeColor: negativeFigureColor,
+    });
+    await persistUpdates({ positiveFigureColor: nextHex });
+  };
+
+  const handleNegativeFigureColorSelect = async (nextHex: string) => {
+    setNegativeFigureColor(nextHex);
+    applyAccountingFigureColorsToDocument({
+      enabled: accountingFiguresEnabled,
+      positiveColor: positiveFigureColor,
+      negativeColor: nextHex,
+    });
+    await persistUpdates({ negativeFigureColor: nextHex });
   };
 
   const handleCurrencySelect = async (nextCurr: string) => {
@@ -1265,6 +1316,119 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </button>
                 );
               })}
+            </div>
+          )}
+        </div>
+
+        {/* Accounting Figure Colors Override (Positives = Emerald/Green, Negatives = Red) */}
+        <div className="border-t border-slate-100 pt-4 space-y-3.5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-0.5 min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-display text-sm font-semibold text-slate-900">
+                  Accounting Figure Colors
+                </span>
+                <span className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-[11px] font-semibold">
+                  <span style={{ color: positiveFigureColor }}>+1,250.00</span>
+                  <span className="text-slate-300">/</span>
+                  <span style={{ color: negativeFigureColor }}>-450.00</span>
+                </span>
+              </div>
+              <p className="text-xs text-slate-500">
+                Override app theme color on figures: positives in emerald/green and negatives in red.
+              </p>
+            </div>
+
+            <label className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-800 cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                checked={accountingFiguresEnabled}
+                onChange={(e) => handleAccountingFiguresToggle(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-300"
+              />
+              <span>{accountingFiguresEnabled ? 'Override Active' : 'Use Theme Color'}</span>
+            </label>
+          </div>
+
+          {accountingFiguresEnabled && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-xl border border-slate-200/80 bg-slate-50/50 p-3.5">
+              {/* Positive Figure Color (Emerald / Green) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-slate-800">
+                    Positive Figures (Emerald / Green)
+                  </span>
+                  <span
+                    className="font-mono text-xs font-bold tabular-nums"
+                    style={{ color: positiveFigureColor }}
+                  >
+                    +{currency} 1,000.00
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {ACCOUNTING_POSITIVE_COLORS.map((preset) => {
+                    const isSelected =
+                      positiveFigureColor.toLowerCase() === preset.lightHex.toLowerCase();
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => handlePositiveFigureColorSelect(preset.lightHex)}
+                        className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors ${
+                          isSelected
+                            ? 'border-slate-900 bg-white font-bold text-slate-900 shadow-xs'
+                            : 'border-slate-200 bg-white/80 font-medium text-slate-700 hover:bg-white'
+                        }`}
+                      >
+                        <span
+                          className="h-3.5 w-3.5 rounded-full shrink-0"
+                          style={{ backgroundColor: preset.lightHex }}
+                        />
+                        <span className="truncate">{preset.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Negative Figure Color (Red) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-slate-800">
+                    Negative Figures (Red)
+                  </span>
+                  <span
+                    className="font-mono text-xs font-bold tabular-nums"
+                    style={{ color: negativeFigureColor }}
+                  >
+                    -{currency} 450.00
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {ACCOUNTING_NEGATIVE_COLORS.map((preset) => {
+                    const isSelected =
+                      negativeFigureColor.toLowerCase() === preset.lightHex.toLowerCase();
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => handleNegativeFigureColorSelect(preset.lightHex)}
+                        className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors ${
+                          isSelected
+                            ? 'border-slate-900 bg-white font-bold text-slate-900 shadow-xs'
+                            : 'border-slate-200 bg-white/80 font-medium text-slate-700 hover:bg-white'
+                        }`}
+                      >
+                        <span
+                          className="h-3.5 w-3.5 rounded-full shrink-0"
+                          style={{ backgroundColor: preset.lightHex }}
+                        />
+                        <span className="truncate">{preset.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           )}
         </div>

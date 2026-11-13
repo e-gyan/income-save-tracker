@@ -1880,7 +1880,115 @@ app.post('/api/records/format-card', (req: Request, res: Response) => {
   }
 });
 
+/**
+ * Authenticated User Cloud-Session Snapshot Store
+ * Enables instant zero-wait refresh and offline logged-in data continuity without falling back to the unauthenticated local ledger.
+ */
+interface CloudUserSessionSnapshot {
+  userId: string;
+  settings?: any;
+  accounts?: any[];
+  incomes?: any[];
+  expenses?: any[];
+  transfers?: any[];
+  budgets?: any[];
+  revisions?: any[];
+  updatedAt: string;
+}
+
+const authenticatedCloudSnapshots = new Map<string, CloudUserSessionSnapshot>();
+
+app.get('/api/session/cloud-snapshot/:uid', (req: Request, res: Response) => {
+  const uid = String(req.params.uid || '').trim();
+  if (!uid || uid === 'default_user' || uid === 'guest_user') {
+    return res.status(400).json({
+      success: false,
+      error: 'Valid authenticated UID required.',
+    });
+  }
+  const existing = authenticatedCloudSnapshots.get(uid);
+  return res.json({
+    success: true,
+    uid,
+    snapshot: existing || null,
+  });
+});
+
+app.post('/api/session/cloud-snapshot/:uid', (req: Request, res: Response) => {
+  const uid = String(req.params.uid || '').trim();
+  if (!uid || uid === 'default_user' || uid === 'guest_user') {
+    return res.status(400).json({
+      success: false,
+      error: 'Valid authenticated UID required.',
+    });
+  }
+  const body = req.body || {};
+  const existing = authenticatedCloudSnapshots.get(uid) || {
+    userId: uid,
+    updatedAt: new Date().toISOString(),
+  };
+
+  const merged: CloudUserSessionSnapshot = {
+    ...existing,
+    userId: uid,
+    settings: body.settings !== undefined ? body.settings : existing.settings,
+    accounts: Array.isArray(body.accounts) ? body.accounts : existing.accounts,
+    incomes: Array.isArray(body.incomes) ? body.incomes : existing.incomes,
+    expenses: Array.isArray(body.expenses) ? body.expenses : existing.expenses,
+    transfers: Array.isArray(body.transfers) ? body.transfers : existing.transfers,
+    budgets: Array.isArray(body.budgets) ? body.budgets : existing.budgets,
+    revisions: Array.isArray(body.revisions) ? body.revisions : existing.revisions,
+    updatedAt: new Date().toISOString(),
+  };
+
+  authenticatedCloudSnapshots.set(uid, merged);
+  return res.json({
+    success: true,
+    uid,
+    updatedAt: merged.updatedAt,
+  });
+});
+
 // Bind port 3000 immediately so container healthchecks succeed without waiting on Vite cold boot
+app.get('/manifest.webmanifest', (_req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'application/manifest+json');
+  res.send(
+    JSON.stringify({
+      id: '/',
+      name: 'Save N Know',
+      short_name: 'Save N Know',
+      description:
+        'Progressive financial management system to route income into accounts, manage defined deductions as expenses or savings split transfers, and track budgets, goals, and analytics.',
+      theme_color: '#059669',
+      background_color: '#f8fafc',
+      display: 'standalone',
+      orientation: 'portrait',
+      start_url: '/',
+      scope: '/',
+      icons: [
+        {
+          src: '/pwa-192x192.png',
+          sizes: '192x192',
+          type: 'image/png',
+          purpose: 'any',
+        },
+        {
+          src: '/pwa-512x512.png',
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'any',
+        },
+        {
+          src: '/pwa-maskable-512x512.png',
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'maskable',
+        },
+      ],
+    })
+  );
+});
+
 async function startServer() {
   if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.resolve(__dirname, 'dist')));

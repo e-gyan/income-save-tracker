@@ -100,6 +100,9 @@ export interface UserSettings {
   totalsCurrencyMode?: TotalsCurrencyMode; // 'base' = system base currency, 'original' = each account's original currency
   themeMode?: ThemeMode;
   colorTheme?: AppColorTheme;
+  accountingFigureColorsEnabled?: boolean; // Overrides app theme color on figures: Positives = Emerald/Green, Negatives = Red
+  positiveFigureColor?: string; // Custom hex for positive figures (default #059669 Emerald)
+  negativeFigureColor?: string; // Custom hex for negative figures (default #e11d48 Red)
   subscriptionFee?: number;
   dataBundleFee?: number;
   projectBuildingsRate?: number;

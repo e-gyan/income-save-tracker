@@ -40,6 +40,10 @@ import {
   setPersistedColorTheme,
   getPersistedThemeMode,
   setPersistedThemeMode,
+  getPersistedAccountingFiguresEnabled,
+  getPersistedPositiveFigureColor,
+  getPersistedNegativeFigureColor,
+  applyAccountingFigureColorsToDocument,
 } from './colorThemes.ts';
 import { sortRecordsByArrivalTime } from './dateFilters.ts';
 
@@ -61,8 +65,8 @@ function stripLegacyPredefinedList(
 const LOCAL_STORAGE_KEY_PREFIX = 'iaft_local_';
 
 /**
- * User-scoped local storage helpers so signed-in user data remains attached to their account
- * and is never leaked when signed out.
+ * User-scoped storage helpers so signed-in user data remains attached to their authenticated UID
+ * and is never mixed with unauthenticated guest/local ledger data.
  */
 export function getLocalData<T>(key: string, defaultValue: T, userId = 'guest_user'): T {
   try {
@@ -84,6 +88,55 @@ export function setLocalData<T>(key: string, value: T, userId = 'guest_user'): v
   }
 }
 
+export interface AuthenticatedCloudSnapshot {
+  userId: string;
+  settings?: UserSettings;
+  accounts?: FinancialAccount[];
+  incomes?: IncomeReceipt[];
+  expenses?: FlexibleExpense[];
+  transfers?: AccountTransfer[];
+  budgets?: FinancialBudget[];
+  revisions?: RevisionEntry[];
+  updatedAt?: string;
+}
+
+export async function syncAuthenticatedCloudSnapshotToBackend(
+  userId: string,
+  partialSnapshot: Partial<AuthenticatedCloudSnapshot>
+): Promise<void> {
+  if (!userId || userId === 'default_user' || userId === 'guest_user') return;
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+  try {
+    await fetch(`/api/session/cloud-snapshot/${encodeURIComponent(userId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(partialSnapshot),
+    });
+  } catch {
+    // Non-blocking background sync
+  }
+}
+
+export async function hydrateAuthenticatedCloudSnapshotFromBackend(
+  userId: string
+): Promise<AuthenticatedCloudSnapshot | null> {
+  if (!userId || userId === 'default_user' || userId === 'guest_user') return null;
+  try {
+    const res = await fetch(
+      `/api/session/cloud-snapshot/${encodeURIComponent(userId)}`,
+      { headers: { Accept: 'application/json' } }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data?.success && data?.snapshot) {
+      return data.snapshot as AuthenticatedCloudSnapshot;
+    }
+  } catch {
+    // Ignore when offline
+  }
+  return null;
+}
+
 /**
  * Clears guest / unscoped local data on sign-out so all records remain attached only to signed-in accounts.
  */
@@ -101,6 +154,7 @@ export function clearUnassignedLocalData(): void {
     for (const k of keysToRemove) {
       localStorage.removeItem(`${LOCAL_STORAGE_KEY_PREFIX}${k}`);
       localStorage.removeItem(`${LOCAL_STORAGE_KEY_PREFIX}guest_user_${k}`);
+      localStorage.removeItem(`${LOCAL_STORAGE_KEY_PREFIX}default_user_${k}`);
     }
   } catch {
     // ignore storage errors
@@ -117,8 +171,22 @@ export async function fetchUserSettings(userId: string): Promise<UserSettings> {
       const data = snap.data();
       const resolvedThemeMode = data.themeMode || getPersistedThemeMode();
       const resolvedColorTheme = data.colorTheme || getPersistedColorTheme();
+      const resolvedAccountingEnabled =
+        data.accountingFigureColorsEnabled !== undefined
+          ? Boolean(data.accountingFigureColorsEnabled)
+          : getPersistedAccountingFiguresEnabled();
+      const resolvedPositiveColor =
+        data.positiveFigureColor || getPersistedPositiveFigureColor();
+      const resolvedNegativeColor =
+        data.negativeFigureColor || getPersistedNegativeFigureColor();
+
       setPersistedThemeMode(resolvedThemeMode);
       setPersistedColorTheme(resolvedColorTheme);
+      applyAccountingFigureColorsToDocument({
+        enabled: resolvedAccountingEnabled,
+        positiveColor: resolvedPositiveColor,
+        negativeColor: resolvedNegativeColor,
+      });
 
       const rawCuts = data.customCuts ? JSON.parse(data.customCuts) : [];
       const userDefinedCuts = Array.isArray(rawCuts)
@@ -150,12 +218,15 @@ export async function fetchUserSettings(userId: string): Promise<UserSettings> {
           )
         : [];
 
-      return {
+      const result: UserSettings = {
         userId,
         currency: data.currency || 'GHS',
         totalsCurrencyMode: data.totalsCurrencyMode === 'original' ? 'original' : 'base',
         themeMode: resolvedThemeMode,
         colorTheme: resolvedColorTheme,
+        accountingFigureColorsEnabled: resolvedAccountingEnabled,
+        positiveFigureColor: resolvedPositiveColor,
+        negativeFigureColor: resolvedNegativeColor,
         subscriptionFee: Number(data.subscriptionFee ?? 0),
         dataBundleFee: Number(data.dataBundleFee ?? 0),
         projectBuildingsRate: Number(data.projectBuildingsRate ?? 0),
@@ -180,17 +251,27 @@ export async function fetchUserSettings(userId: string): Promise<UserSettings> {
             : DEFAULT_USER_SETTINGS.defaultNetIncomeAccountId,
         updatedAt: data.updatedAt || new Date().toISOString(),
       };
+      setLocalData('settings', result, userId);
+      syncAuthenticatedCloudSnapshotToBackend(userId, { settings: result });
+      return result;
+    }
+    const cachedForUser = getLocalData<UserSettings | null>('settings', null, userId);
+    if (cachedForUser) {
+      return cachedForUser;
     }
     return {
       ...DEFAULT_USER_SETTINGS,
       userId,
       themeMode: getPersistedThemeMode(),
       colorTheme: getPersistedColorTheme(),
+      accountingFigureColorsEnabled: getPersistedAccountingFiguresEnabled(),
+      positiveFigureColor: getPersistedPositiveFigureColor(),
+      negativeFigureColor: getPersistedNegativeFigureColor(),
       customCuts: [],
     };
   } catch (error: any) {
     if (isFirestoreOffline(error)) {
-      console.warn(`Firestore getDoc offline/unreachable on ${path}, falling back to local settings:`, error?.message || error);
+      console.warn(`Firestore getDoc offline/unreachable on ${path}, using cached user cloud settings:`, error?.message || error);
       const local = getLocalData<UserSettings>(
         'settings',
         {
@@ -198,6 +279,9 @@ export async function fetchUserSettings(userId: string): Promise<UserSettings> {
           userId,
           themeMode: getPersistedThemeMode(),
           colorTheme: getPersistedColorTheme(),
+          accountingFigureColorsEnabled: getPersistedAccountingFiguresEnabled(),
+          positiveFigureColor: getPersistedPositiveFigureColor(),
+          negativeFigureColor: getPersistedNegativeFigureColor(),
           customCuts: [],
         },
         userId
@@ -207,6 +291,14 @@ export async function fetchUserSettings(userId: string): Promise<UserSettings> {
         totalsCurrencyMode: local.totalsCurrencyMode === 'original' ? 'original' : 'base',
         themeMode: local.themeMode || getPersistedThemeMode(),
         colorTheme: local.colorTheme || getPersistedColorTheme(),
+        accountingFigureColorsEnabled:
+          local.accountingFigureColorsEnabled !== undefined
+            ? Boolean(local.accountingFigureColorsEnabled)
+            : getPersistedAccountingFiguresEnabled(),
+        positiveFigureColor:
+          local.positiveFigureColor || getPersistedPositiveFigureColor(),
+        negativeFigureColor:
+          local.negativeFigureColor || getPersistedNegativeFigureColor(),
         incomeCategories: stripLegacyPredefinedList(
           local.incomeCategories,
           LEGACY_PREDEFINED_INCOME_CATEGORIES
@@ -236,12 +328,29 @@ export async function saveUserSettings(userId: string, settings: UserSettings): 
   const path = `users/${userId}/settings/config`;
   const resolvedThemeMode = settings.themeMode || getPersistedThemeMode();
   const resolvedColorTheme = settings.colorTheme || getPersistedColorTheme();
+  const resolvedAccountingEnabled =
+    settings.accountingFigureColorsEnabled !== undefined
+      ? Boolean(settings.accountingFigureColorsEnabled)
+      : getPersistedAccountingFiguresEnabled();
+  const resolvedPositiveColor =
+    settings.positiveFigureColor || getPersistedPositiveFigureColor();
+  const resolvedNegativeColor =
+    settings.negativeFigureColor || getPersistedNegativeFigureColor();
+
   setPersistedThemeMode(resolvedThemeMode);
   setPersistedColorTheme(resolvedColorTheme);
+  applyAccountingFigureColorsToDocument({
+    enabled: resolvedAccountingEnabled,
+    positiveColor: resolvedPositiveColor,
+    negativeColor: resolvedNegativeColor,
+  });
 
   const cleanedCuts = (settings.customCuts || []).filter(
     (c) => !LEGACY_SEEDED_CUT_IDS.has(c.id)
   );
+
+  setLocalData('settings', settings, userId);
+  syncAuthenticatedCloudSnapshotToBackend(userId, { settings });
 
   try {
     const docData: any = {
@@ -250,6 +359,9 @@ export async function saveUserSettings(userId: string, settings: UserSettings): 
       totalsCurrencyMode: settings.totalsCurrencyMode === 'original' ? 'original' : 'base',
       themeMode: resolvedThemeMode,
       colorTheme: resolvedColorTheme,
+      accountingFigureColorsEnabled: resolvedAccountingEnabled,
+      positiveFigureColor: resolvedPositiveColor,
+      negativeFigureColor: resolvedNegativeColor,
       subscriptionFee: settings.subscriptionFee ?? 0,
       dataBundleFee: settings.dataBundleFee ?? 0,
       projectBuildingsRate: settings.projectBuildingsRate ?? 0,
@@ -273,7 +385,7 @@ export async function saveUserSettings(userId: string, settings: UserSettings): 
     await setDoc(doc(db, 'users', userId, 'settings', 'config'), docData);
   } catch (error) {
     if (isFirestoreOffline(error)) {
-      console.warn(`Firestore saveUserSettings offline on ${path}, saved locally:`, (error as any)?.message || error);
+      console.warn(`Firestore saveUserSettings offline on ${path}, queued in cloud cache:`, (error as any)?.message || error);
       return;
     }
     handleFirestoreError(error, OperationType.WRITE, path);

@@ -2,8 +2,8 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-display: 'Space Grotesk', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'Outfit', 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
 }
 
@@ -16,6 +16,10 @@
   --app-canvas-tint: #f4fbf7;
   --app-chart-secondary: #10b981;
   --app-chart-tertiary: #34d399;
+  --figure-positive-color: #059669;
+  --figure-negative-color: #e11d48;
+  --figure-positive-dark-color: #34d399;
+  --figure-negative-dark-color: #fb7185;
 }
 
 @layer base {
@@ -29,11 +33,11 @@
   body {
     font-family: var(--font-sans);
     font-weight: 500;
-    letter-spacing: -0.008em;
+    letter-spacing: -0.004em;
     line-height: 1.5;
     background-color: var(--app-canvas-tint, #f8fafc);
     color: #0f172a;
-    font-feature-settings: "cv02" 1, "cv03" 1, "cv04" 1, "cv11" 1, "tnum" 1;
+    font-feature-settings: "cv02" 1, "cv03" 1, "cv04" 1, "cv11" 1;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
@@ -43,7 +47,7 @@
   h1, h2, h3, h4, .font-display {
     font-family: var(--font-display);
     font-weight: 700;
-    letter-spacing: -0.025em;
+    letter-spacing: -0.015em;
     overflow-wrap: anywhere;
     word-break: break-word;
   }
@@ -63,7 +67,7 @@
 
   .font-mono,
   .tabular-nums {
-    font-family: var(--font-mono);
+    font-family: var(--font-mono) !important;
     font-weight: 600;
     letter-spacing: -0.02em;
     font-variant-numeric: tabular-nums;
@@ -157,13 +161,36 @@
   box-shadow: 0 0 0 2px var(--app-accent-soft);
 }
 
-.text-emerald-600,
-.text-emerald-700,
-.text-emerald-800,
-.text-emerald-900,
-.text-rose-500,
-.text-rose-600,
-.text-rose-700,
+/* Accounting Figure Color Override: Positives = Emerald/Green, Negatives = Red */
+html:not([data-accounting-figures="false"]) .text-emerald-500,
+html:not([data-accounting-figures="false"]) .text-emerald-600,
+html:not([data-accounting-figures="false"]) .text-emerald-700,
+html:not([data-accounting-figures="false"]) .text-emerald-800,
+html:not([data-accounting-figures="false"]) .text-emerald-900,
+html:not([data-accounting-figures="false"]) .text-green-600,
+html:not([data-accounting-figures="false"]) .text-green-700 {
+  color: var(--figure-positive-color, #059669) !important;
+}
+
+html:not([data-accounting-figures="false"]) .text-rose-500,
+html:not([data-accounting-figures="false"]) .text-rose-600,
+html:not([data-accounting-figures="false"]) .text-rose-700,
+html:not([data-accounting-figures="false"]) .text-red-500,
+html:not([data-accounting-figures="false"]) .text-red-600,
+html:not([data-accounting-figures="false"]) .text-red-700 {
+  color: var(--figure-negative-color, #e11d48) !important;
+}
+
+html[data-accounting-figures="false"] .text-emerald-600,
+html[data-accounting-figures="false"] .text-emerald-700,
+html[data-accounting-figures="false"] .text-emerald-800,
+html[data-accounting-figures="false"] .text-emerald-900,
+html[data-accounting-figures="false"] .text-rose-500,
+html[data-accounting-figures="false"] .text-rose-600,
+html[data-accounting-figures="false"] .text-rose-700 {
+  color: var(--app-accent-text) !important;
+}
+
 .text-sky-700,
 .text-sky-800,
 .text-sky-900,
@@ -171,29 +198,12 @@
   color: var(--app-accent-text) !important;
 }
 
-.bg-emerald-50,
-.bg-emerald-50\/80,
-.bg-emerald-50\/70,
-.bg-emerald-50\/60,
-.bg-emerald-50\/50,
-.bg-emerald-50\/40,
-.bg-emerald-100\/70,
-.bg-rose-50,
-.bg-rose-50\/60,
-.bg-rose-50\/50,
 .bg-sky-50,
 .bg-sky-50\/50,
 .bg-sky-100 {
   background-color: var(--app-accent-soft) !important;
 }
 
-.border-emerald-100,
-.border-emerald-200,
-.border-emerald-200\/80,
-.border-emerald-200\/70,
-.border-emerald-300,
-.border-rose-200,
-.border-rose-300,
 .border-sky-100,
 .border-sky-200 {
   border-color: var(--app-accent-border) !important;
@@ -271,10 +281,16 @@ html.dark .bg-emerald-50\/70,
 html.dark .bg-emerald-50\/60,
 html.dark .bg-emerald-50\/50,
 html.dark .bg-emerald-50\/40,
-html.dark .bg-emerald-100\/70,
+html.dark .bg-emerald-100\/70 {
+  background-color: rgba(6, 78, 59, 0.3) !important;
+}
+
 html.dark .bg-rose-50,
 html.dark .bg-rose-50\/60,
-html.dark .bg-rose-50\/50,
+html.dark .bg-rose-50\/50 {
+  background-color: rgba(136, 19, 55, 0.3) !important;
+}
+
 html.dark .bg-sky-50 {
   background-color: var(--app-accent-soft) !important;
 }
@@ -321,13 +337,35 @@ html.dark .text-slate-400 {
   color: #64748b !important;
 }
 
-html.dark .text-emerald-600,
-html.dark .text-emerald-700,
-html.dark .text-emerald-800,
-html.dark .text-emerald-900,
-html.dark .text-rose-500,
-html.dark .text-rose-600,
-html.dark .text-rose-700,
+html.dark:not([data-accounting-figures="false"]) .text-emerald-500,
+html.dark:not([data-accounting-figures="false"]) .text-emerald-600,
+html.dark:not([data-accounting-figures="false"]) .text-emerald-700,
+html.dark:not([data-accounting-figures="false"]) .text-emerald-800,
+html.dark:not([data-accounting-figures="false"]) .text-emerald-900,
+html.dark:not([data-accounting-figures="false"]) .text-green-600,
+html.dark:not([data-accounting-figures="false"]) .text-green-700 {
+  color: var(--figure-positive-dark-color, #34d399) !important;
+}
+
+html.dark:not([data-accounting-figures="false"]) .text-rose-500,
+html.dark:not([data-accounting-figures="false"]) .text-rose-600,
+html.dark:not([data-accounting-figures="false"]) .text-rose-700,
+html.dark:not([data-accounting-figures="false"]) .text-red-500,
+html.dark:not([data-accounting-figures="false"]) .text-red-600,
+html.dark:not([data-accounting-figures="false"]) .text-red-700 {
+  color: var(--figure-negative-dark-color, #fb7185) !important;
+}
+
+html.dark[data-accounting-figures="false"] .text-emerald-600,
+html.dark[data-accounting-figures="false"] .text-emerald-700,
+html.dark[data-accounting-figures="false"] .text-emerald-800,
+html.dark[data-accounting-figures="false"] .text-emerald-900,
+html.dark[data-accounting-figures="false"] .text-rose-500,
+html.dark[data-accounting-figures="false"] .text-rose-600,
+html.dark[data-accounting-figures="false"] .text-rose-700 {
+  color: var(--app-accent-text) !important;
+}
+
 html.dark .text-sky-700,
 html.dark .text-sky-800,
 html.dark .text-sky-900 {

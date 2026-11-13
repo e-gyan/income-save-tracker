@@ -23,6 +23,9 @@ import {
 import {
   getPersistedColorTheme,
   getPersistedThemeMode,
+  getPersistedAccountingFiguresEnabled,
+  getPersistedPositiveFigureColor,
+  getPersistedNegativeFigureColor,
 } from './colorThemes.ts';
 import {
   convertCurrency2dp,
@@ -249,6 +252,9 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   totalsCurrencyMode: 'base',
   themeMode: getPersistedThemeMode(),
   colorTheme: getPersistedColorTheme(),
+  accountingFigureColorsEnabled: getPersistedAccountingFiguresEnabled(),
+  positiveFigureColor: getPersistedPositiveFigureColor(),
+  negativeFigureColor: getPersistedNegativeFigureColor(),
   subscriptionFee: 0,
   dataBundleFee: 0,
   projectBuildingsRate: 0,

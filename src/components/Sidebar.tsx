@@ -15,6 +15,7 @@ import {
   loginWithGoogle,
   logoutUser,
   onAuthStateChanged,
+  getPersistedAuthUser,
   User,
   AuthDiagnosticInfo,
   getFirebaseAuthDiagnostic,
@@ -54,7 +55,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   budgetAlertsCount = 0,
   onReset,
 }) => {
-  const [user, setUser] = useState<User | null>(auth.currentUser);
+  const [user, setUser] = useState<User | null>(() => getPersistedAuthUser());
   const [isAuthLoading, setIsAuthLoading] = useState(false);
   const [authDiagnostic, setAuthDiagnostic] =
     useState<AuthDiagnosticInfo | null>(null);

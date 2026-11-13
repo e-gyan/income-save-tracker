@@ -6,6 +6,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import {
   auth,
   onAuthStateChanged,
+  getPersistedAuthUser,
   User,
 } from './lib/firebase.ts';
 import {
@@ -38,10 +39,14 @@ import {
 import { learnSavingsVaultDebitAccount } from './lib/deductionIntelligence.ts';
 import {
   applyColorThemeToDocument,
+  applyAccountingFigureColorsToDocument,
   getPersistedColorTheme,
   setPersistedColorTheme,
   getPersistedThemeMode,
   setPersistedThemeMode,
+  getPersistedAccountingFiguresEnabled,
+  getPersistedPositiveFigureColor,
+  getPersistedNegativeFigureColor,
 } from './lib/colorThemes.ts';
 import {
   fetchUserSettings,
@@ -65,6 +70,8 @@ import {
   getLocalData,
   setLocalData,
   clearUnassignedLocalData,
+  syncAuthenticatedCloudSnapshotToBackend,
+  hydrateAuthenticatedCloudSnapshotFromBackend,
 } from './lib/firestoreService.ts';
 
 import { Header } from './components/Header.tsx';
@@ -85,7 +92,11 @@ import { OfflineIndicator } from './components/PWAInstallButton.tsx';
 import { TimeRangePreset, isDateInPreset } from './lib/dateFilters.ts';
 
 export default function App() {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  // Synchronously hydrate the signed-in user and their cloud-cached records on frame 0
+  // so refreshing or opening the app renders data immediately without waiting.
+  const [currentUser, setCurrentUser] = useState<User | null>(() =>
+    getPersistedAuthUser()
+  );
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isMobileDateFilterOpen, setIsMobileDateFilterOpen] = useState(false);
@@ -98,17 +109,78 @@ export default function App() {
   const [expandExpenseTrigger, setExpandExpenseTrigger] = useState(0);
   const [openTransferTrigger, setOpenTransferTrigger] = useState(0);
 
-  // Core Data States (Strictly attached to the signed-in account)
-  const [settings, setSettings] = useState<UserSettings>(DEFAULT_USER_SETTINGS);
-  const [accounts, setAccounts] = useState<FinancialAccount[]>(DEFAULT_FINANCIAL_ACCOUNTS);
-  const [transfers, setTransfers] = useState<AccountTransfer[]>([]);
-  const [incomes, setIncomes] = useState<IncomeReceipt[]>([]);
-  const [expenses, setExpenses] = useState<FlexibleExpense[]>([]);
-  const [budgets, setBudgets] = useState<FinancialBudget[]>([]);
+  // Core Data States (Strictly attached to the signed-in account; hydrated synchronously on mount)
+  const [settings, setSettings] = useState<UserSettings>(() => {
+    const initialUid = getPersistedAuthUser()?.uid;
+    if (!initialUid) return DEFAULT_USER_SETTINGS;
+    const cached = getLocalData<UserSettings>(
+      'settings',
+      {
+        ...DEFAULT_USER_SETTINGS,
+        userId: initialUid,
+        colorTheme: getPersistedColorTheme(),
+        themeMode: getPersistedThemeMode(),
+        accountingFigureColorsEnabled: getPersistedAccountingFiguresEnabled(),
+        positiveFigureColor: getPersistedPositiveFigureColor(),
+        negativeFigureColor: getPersistedNegativeFigureColor(),
+      },
+      initialUid
+    );
+    return {
+      ...cached,
+      colorTheme: cached.colorTheme || getPersistedColorTheme(),
+      themeMode: cached.themeMode || getPersistedThemeMode(),
+      accountingFigureColorsEnabled:
+        cached.accountingFigureColorsEnabled !== undefined
+          ? Boolean(cached.accountingFigureColorsEnabled)
+          : getPersistedAccountingFiguresEnabled(),
+      positiveFigureColor:
+        cached.positiveFigureColor || getPersistedPositiveFigureColor(),
+      negativeFigureColor:
+        cached.negativeFigureColor || getPersistedNegativeFigureColor(),
+      customCuts: (cached.customCuts || []).filter(
+        (c) => !LEGACY_SEEDED_CUT_IDS.has(c.id)
+      ),
+    };
+  });
+
+  const [accounts, setAccounts] = useState<FinancialAccount[]>(() => {
+    const initialUid = getPersistedAuthUser()?.uid;
+    if (!initialUid) return DEFAULT_FINANCIAL_ACCOUNTS;
+    return getLocalData<FinancialAccount[]>(
+      'accounts',
+      DEFAULT_FINANCIAL_ACCOUNTS,
+      initialUid
+    );
+  });
+
+  const [transfers, setTransfers] = useState<AccountTransfer[]>(() => {
+    const initialUid = getPersistedAuthUser()?.uid;
+    if (!initialUid) return [];
+    return getLocalData<AccountTransfer[]>('transfers', [], initialUid);
+  });
+
+  const [incomes, setIncomes] = useState<IncomeReceipt[]>(() => {
+    const initialUid = getPersistedAuthUser()?.uid;
+    if (!initialUid) return [];
+    return getLocalData<IncomeReceipt[]>('incomes', [], initialUid);
+  });
+
+  const [expenses, setExpenses] = useState<FlexibleExpense[]>(() => {
+    const initialUid = getPersistedAuthUser()?.uid;
+    if (!initialUid) return [];
+    return getLocalData<FlexibleExpense[]>('expenses', [], initialUid);
+  });
+
+  const [budgets, setBudgets] = useState<FinancialBudget[]>(() => {
+    const initialUid = getPersistedAuthUser()?.uid;
+    if (!initialUid) return [];
+    return getLocalData<FinancialBudget[]>('budgets', [], initialUid);
+  });
 
   const effectiveUserId = currentUser?.uid || 'guest_user';
 
-  // Apply Theme Mode (light / dark / system) & Functional Color Theme to documentElement
+  // Apply Theme Mode (light / dark / system), Functional Color Theme & Accounting Figure Colors to documentElement
   useEffect(() => {
     const mode: ThemeMode = settings.themeMode || getPersistedThemeMode();
     const colorTheme: AppColorTheme =
@@ -117,6 +189,11 @@ export default function App() {
 
     setPersistedThemeMode(mode);
     setPersistedColorTheme(colorTheme);
+    applyAccountingFigureColorsToDocument({
+      enabled: settings.accountingFigureColorsEnabled !== false,
+      positiveColor: settings.positiveFigureColor || '#059669',
+      negativeColor: settings.negativeFigureColor || '#e11d48',
+    });
 
     const applyThemeAndColors = () => {
       let isDark = false;
@@ -141,7 +218,13 @@ export default function App() {
       mql.addEventListener('change', listener);
       return () => mql.removeEventListener('change', listener);
     }
-  }, [settings.themeMode, settings.colorTheme]);
+  }, [
+    settings.themeMode,
+    settings.colorTheme,
+    settings.accountingFigureColorsEnabled,
+    settings.positiveFigureColor,
+    settings.negativeFigureColor,
+  ]);
 
   // Auth and Firestore Subscriptions — Data is strictly attached to the signed-in account
   useEffect(() => {
@@ -173,6 +256,9 @@ export default function App() {
               userId: uid,
               colorTheme: getPersistedColorTheme(),
               themeMode: getPersistedThemeMode(),
+              accountingFigureColorsEnabled: getPersistedAccountingFiguresEnabled(),
+              positiveFigureColor: getPersistedPositiveFigureColor(),
+              negativeFigureColor: getPersistedNegativeFigureColor(),
             },
             uid
           );
@@ -180,6 +266,14 @@ export default function App() {
             ...cachedSettings,
             colorTheme: cachedSettings.colorTheme || getPersistedColorTheme(),
             themeMode: cachedSettings.themeMode || getPersistedThemeMode(),
+            accountingFigureColorsEnabled:
+              cachedSettings.accountingFigureColorsEnabled !== undefined
+                ? Boolean(cachedSettings.accountingFigureColorsEnabled)
+                : getPersistedAccountingFiguresEnabled(),
+            positiveFigureColor:
+              cachedSettings.positiveFigureColor || getPersistedPositiveFigureColor(),
+            negativeFigureColor:
+              cachedSettings.negativeFigureColor || getPersistedNegativeFigureColor(),
             customCuts: (cachedSettings.customCuts || []).filter(
               (c) => !LEGACY_SEEDED_CUT_IDS.has(c.id)
             ),
@@ -205,30 +299,50 @@ export default function App() {
           const cachedBudgets = getLocalData<FinancialBudget[]>('budgets', [], uid);
           setBudgets(cachedBudgets);
 
-          const guestIncomes = getLocalData<IncomeReceipt[]>('incomes', [], 'guest_user');
-          if (guestIncomes.length > 0 && cachedIncomes.length === 0) {
-            const migrated = guestIncomes.map((inc) => ({ ...inc, userId: uid }));
-            setIncomes(migrated);
-            setLocalData('incomes', migrated, uid);
-            for (const m of migrated) {
-              saveIncomeReceipt(uid, m).catch(() => {});
-            }
-          }
+          // Non-blocking backend cloud-session snapshot check for instant cross-tab/refresh continuity
+          hydrateAuthenticatedCloudSnapshotFromBackend(uid)
+            .then((snap) => {
+              if (!snap) return;
+              if (snap.incomes && snap.incomes.length > 0 && cachedIncomes.length === 0) {
+                setIncomes(snap.incomes);
+                setLocalData('incomes', snap.incomes, uid);
+              }
+              if (snap.expenses && snap.expenses.length > 0 && cachedExpenses.length === 0) {
+                setExpenses(snap.expenses);
+                setLocalData('expenses', snap.expenses, uid);
+              }
+              if (snap.transfers && snap.transfers.length > 0 && cachedTransfers.length === 0) {
+                setTransfers(snap.transfers);
+                setLocalData('transfers', snap.transfers, uid);
+              }
+              if (snap.accounts && snap.accounts.length > 0 && cachedAccounts.length <= 1) {
+                setAccounts(snap.accounts);
+                setLocalData('accounts', snap.accounts, uid);
+              }
+              if (snap.budgets && snap.budgets.length > 0 && cachedBudgets.length === 0) {
+                setBudgets(snap.budgets);
+                setLocalData('budgets', snap.budgets, uid);
+              }
+            })
+            .catch(() => {});
+
           clearUnassignedLocalData();
 
-          try {
-            const userSettings = await fetchUserSettings(uid);
-            setSettings(userSettings);
-            setLocalData('settings', userSettings, uid);
-          } catch (err) {
-            console.warn('Using user settings cache:', err);
-          }
+          fetchUserSettings(uid)
+            .then((userSettings) => {
+              setSettings(userSettings);
+              setLocalData('settings', userSettings, uid);
+            })
+            .catch((err) => {
+              console.warn('Using user settings cache:', err);
+            });
 
           const unsubIncomes = subscribeToIncomes(
             uid,
             (items) => {
               setIncomes(items);
               setLocalData('incomes', items, uid);
+              syncAuthenticatedCloudSnapshotToBackend(uid, { incomes: items });
             },
             (err) => console.warn('Incomes subscription fallback to user cache:', err)
           );
@@ -237,6 +351,7 @@ export default function App() {
           const unsubExpenses = subscribeToFlexibleExpenses(uid, (items) => {
             setExpenses(items);
             setLocalData('expenses', items, uid);
+            syncAuthenticatedCloudSnapshotToBackend(uid, { expenses: items });
           });
           unsubs.push(unsubExpenses);
 
@@ -261,6 +376,7 @@ export default function App() {
             const merged = [...cleaned, ...missingMain];
             setAccounts(merged);
             setLocalData('accounts', merged, uid);
+            syncAuthenticatedCloudSnapshotToBackend(uid, { accounts: merged });
 
             if (missingMain.length > 0) {
               for (const m of missingMain) {
@@ -273,12 +389,14 @@ export default function App() {
           const unsubTransfers = subscribeToTransfers(uid, (items) => {
             setTransfers(items);
             setLocalData('transfers', items, uid);
+            syncAuthenticatedCloudSnapshotToBackend(uid, { transfers: items });
           });
           unsubs.push(unsubTransfers);
 
           const unsubBudgets = subscribeToBudgets(uid, (items) => {
             setBudgets(items);
             setLocalData('budgets', items, uid);
+            syncAuthenticatedCloudSnapshotToBackend(uid, { budgets: items });
           });
           unsubs.push(unsubBudgets);
         } else {

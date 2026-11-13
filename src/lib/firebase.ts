@@ -12,11 +12,14 @@ import {
   setPersistence,
   browserLocalPersistence,
   signOut,
-  onAuthStateChanged,
+  onAuthStateChanged as firebaseOnAuthStateChanged,
   User,
 } from 'firebase/auth';
 import {
   getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   doc,
   getDocFromServer,
 } from 'firebase/firestore';
@@ -43,11 +46,25 @@ export const effectiveFirebaseConfig = {
 // Initialize Firebase App
 export const app = initializeApp(effectiveFirebaseConfig);
 
-// CRITICAL: Initialize Firestore using the exact configured database ID
-export const db = getFirestore(
-  app,
-  effectiveFirebaseConfig.firestoreDatabaseId
-);
+// CRITICAL: Initialize Firestore with persistent IndexedDB offline cache using the exact configured database ID
+// so signed-in users continue reading/writing their cloud data seamlessly when offline without falling back to local ledger.
+function createPersistentFirestore() {
+  try {
+    return initializeFirestore(
+      app,
+      {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager(),
+        }),
+      },
+      effectiveFirebaseConfig.firestoreDatabaseId
+    );
+  } catch {
+    return getFirestore(app, effectiveFirebaseConfig.firestoreDatabaseId);
+  }
+}
+
+export const db = createPersistentFirestore();
 
 // Initialize Firebase Authentication with durable local persistence
 export const auth = getAuth(app);
@@ -55,8 +72,74 @@ setPersistence(auth, browserLocalPersistence).catch(() => {
   // Ignore persistence fallback in restricted contexts
 });
 
-// Validate connection to Firestore on boot
+const PERSISTED_AUTH_USER_KEY = 'savenknow_authenticated_user_session';
+
+export interface PersistedAuthSession {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+  photoURL: string | null;
+}
+
+export function getPersistedAuthUser(): User | null {
+  if (auth.currentUser) return auth.currentUser;
+  try {
+    const raw = localStorage.getItem(PERSISTED_AUTH_USER_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedAuthSession;
+    if (parsed && typeof parsed.uid === 'string' && parsed.uid.trim()) {
+      return {
+        uid: parsed.uid,
+        email: parsed.email || null,
+        displayName: parsed.displayName || null,
+        photoURL: parsed.photoURL || null,
+        emailVerified: true,
+        isAnonymous: false,
+        metadata: {},
+        providerData: [],
+        refreshToken: '',
+        tenantId: null,
+        delete: async () => {},
+        getIdToken: async () => '',
+        getIdTokenResult: async () => ({} as any),
+        reload: async () => {},
+        toJSON: () => parsed,
+        phoneNumber: null,
+        providerId: 'google.com',
+      } as unknown as User;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return null;
+}
+
+export function setPersistedAuthUser(user: User | null): void {
+  try {
+    if (!user || !user.uid) return;
+    const payload: PersistedAuthSession = {
+      uid: user.uid,
+      email: user.email || null,
+      displayName: user.displayName || null,
+      photoURL: user.photoURL || null,
+    };
+    localStorage.setItem(PERSISTED_AUTH_USER_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function clearPersistedAuthUser(): void {
+  try {
+    localStorage.removeItem(PERSISTED_AUTH_USER_KEY);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+// Validate connection to Firestore on boot (only when online)
 async function testConnection() {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return;
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
@@ -92,6 +175,9 @@ export const setAccessToken = (token: string | null) => {
 getRedirectResult(auth)
   .then((result) => {
     if (result) {
+      if (result.user) {
+        setPersistedAuthUser(result.user);
+      }
       const credential = GoogleAuthProvider.credentialFromResult(result);
       if (credential?.accessToken) {
         cachedAccessToken = credential.accessToken;
@@ -257,6 +343,9 @@ export async function loginWithGoogle(
     }
 
     const result = await signInWithPopup(auth, googleProvider);
+    if (result.user) {
+      setPersistedAuthUser(result.user);
+    }
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (credential?.accessToken) {
       cachedAccessToken = credential.accessToken;
@@ -275,9 +364,30 @@ export async function loginWithGoogle(
 }
 
 export async function logoutUser(): Promise<void> {
+  clearPersistedAuthUser();
   await signOut(auth);
   cachedAccessToken = null;
 }
 
-export { onAuthStateChanged };
+export function onAuthStateChanged(
+  authInstance: typeof auth,
+  callback: (user: User | null) => void
+) {
+  return firebaseOnAuthStateChanged(authInstance, (currentUser) => {
+    if (currentUser) {
+      setPersistedAuthUser(currentUser);
+      callback(currentUser);
+      return;
+    }
+    // If a signed-in session was persisted (and user did not sign out), preserve their logged-in session
+    // even when offline or while Firebase Auth is rehydrating.
+    const persisted = getPersistedAuthUser();
+    if (persisted) {
+      callback(persisted);
+      return;
+    }
+    callback(null);
+  });
+}
+
 export type { User };
