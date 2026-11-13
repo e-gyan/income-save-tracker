@@ -19,6 +19,7 @@ import {
   AuthDiagnosticInfo,
   getFirebaseAuthDiagnostic,
 } from '../lib/firebase.ts';
+import { PWAInstallButton } from './PWAInstallButton.tsx';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -240,6 +241,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     </button>
                   </div>
                 )}
+
+                <PWAInstallButton variant="sidebar" />
               </div>
 
               {/* 3. Primary Navigation Links */}

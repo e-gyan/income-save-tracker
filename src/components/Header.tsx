@@ -5,6 +5,7 @@ import {
   TIME_RANGE_OPTIONS,
   getPresetLabel,
 } from '../lib/dateFilters.ts';
+import { PWAInstallButton } from './PWAInstallButton.tsx';
 
 export const APP_VERSION = '3.5.0';
 
@@ -134,6 +135,9 @@ export const Header: React.FC<HeaderProps> = ({
               </svg>
             </button>
           )}
+
+          {/* In-App PWA Install Button for Android / Phone */}
+          <PWAInstallButton variant="header" />
 
           {/* Top-Right Menu Button (Bundles Navigation, Color Theme, Mode, Login & Account Details) */}
           {onToggleSidebar && (

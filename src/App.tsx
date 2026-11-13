@@ -81,6 +81,7 @@ import { CleanSheetModal } from './components/CleanSheetModal.tsx';
 import { FloatingQuickActions } from './components/FloatingQuickActions.tsx';
 import { DeductionAgentModal } from './components/DeductionAgentModal.tsx';
 import { EditExpenseModal } from './components/EditExpenseModal.tsx';
+import { OfflineIndicator } from './components/PWAInstallButton.tsx';
 import { TimeRangePreset, isDateInPreset } from './lib/dateFilters.ts';
 
 export default function App() {
@@ -1639,6 +1640,9 @@ export default function App() {
         onClose={() => setIsCleanSheetModalOpen(false)}
         onConfirm={handleConfirmCleanSheet}
       />
+
+      {/* Offline Mode Connectivity Banner */}
+      <OfflineIndicator />
     </div>
   );
 }
