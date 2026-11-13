@@ -290,28 +290,42 @@ export type BudgetPeriodType = 'weekly' | 'monthly' | 'yearly' | 'custom';
 
 export type BudgetScopeType = 'single' | 'multiple';
 
+export type BudgetPurposeType = 'budget' | 'goal';
+
+export type GoalSourceType =
+  | 'savings_and_transfers'
+  | 'savings_only'
+  | 'transfers_only';
+
 export interface FinancialBudget {
   id: string;
   userId: string;
   name: string;
+  purposeType?: BudgetPurposeType; // 'budget' (linked to expenses) | 'goal' (transfers or savings for a cause)
+  goalCause?: string; // Target cause or objective when purposeType === 'goal'
+  goalSourceType?: GoalSourceType; // Funding source tracked when purposeType === 'goal'
   periodType: BudgetPeriodType; // 'weekly' | 'monthly' | 'yearly' | 'custom'
   customStartDate?: string; // YYYY-MM-DD (required when periodType === 'custom')
   customEndDate?: string; // YYYY-MM-DD (required when periodType === 'custom')
   activePeriodStart?: string; // YYYY-MM-DD start of the active recurring cycle
   activePeriodEnd?: string; // YYYY-MM-DD end of the active recurring cycle
+  autoRecreate?: boolean; // Whether this budget/goal should recreate after its date period expires
+  recreateDays?: number; // How many days the recreation should be done (cycle duration / interval in days)
   parentRecurringBudgetId?: string; // Root/previous budget ID when auto-recreated for a new period
   isArchivedPeriod?: boolean; // True when a past recurring cycle has elapsed and been recreated
+  isExpiredDisabled?: boolean; // True when the date period ended and autoRecreate is disabled
   scopeType: BudgetScopeType; // 'single' | 'multiple' subcategories
   subcategories: string[]; // Selected expense subcategories tracked by this budget
   categories?: string[]; // Optional parent expense categories for context
-  accountId?: string; // Optional specific account to check against, or '' for all accounts
+  accountId?: string; // Optional specific account/vault to check against, or '' for all accounts
   currency: string; // Budget currency (e.g. GHS, USD, EUR)
-  amount: number; // Budget limit amount in budget.currency (2-point floating)
+  amount: number; // Budget limit or Goal target amount in budget.currency (2-point floating)
   alertThresholdPercent?: number; // Warning threshold percentage (default 80%)
   color?: string;
   notes?: string;
   createdAt: string;
   updatedAt: string;
 }
+
 
 

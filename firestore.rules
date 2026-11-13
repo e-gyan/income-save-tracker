@@ -155,6 +155,9 @@ service cloud.firestore {
       return data.keys().hasAll(['userId', 'name', 'periodType', 'scopeType', 'subcategoriesJson', 'currency', 'amount']) &&
              data.userId == userId &&
              data.name is string && data.name.size() <= 150 &&
+             (!('purposeType' in data) || (data.purposeType is string && data.purposeType.size() <= 20)) &&
+             (!('goalCause' in data) || (data.goalCause is string && data.goalCause.size() <= 200)) &&
+             (!('goalSourceType' in data) || (data.goalSourceType is string && data.goalSourceType.size() <= 40)) &&
              data.periodType is string && data.periodType.size() <= 20 &&
              data.scopeType is string && data.scopeType.size() <= 20 &&
              data.subcategoriesJson is string && data.subcategoriesJson.size() <= 10000 &&
@@ -164,8 +167,11 @@ service cloud.firestore {
              (!('customEndDate' in data) || (data.customEndDate is string && data.customEndDate.size() <= 30)) &&
              (!('activePeriodStart' in data) || (data.activePeriodStart is string && data.activePeriodStart.size() <= 30)) &&
              (!('activePeriodEnd' in data) || (data.activePeriodEnd is string && data.activePeriodEnd.size() <= 30)) &&
+             (!('autoRecreate' in data) || (data.autoRecreate is bool)) &&
+             (!('recreateDays' in data) || (data.recreateDays is number && data.recreateDays >= 0)) &&
              (!('parentRecurringBudgetId' in data) || (data.parentRecurringBudgetId is string && data.parentRecurringBudgetId.size() <= 128)) &&
              (!('isArchivedPeriod' in data) || (data.isArchivedPeriod is bool)) &&
+             (!('isExpiredDisabled' in data) || (data.isExpiredDisabled is bool)) &&
              (!('categoriesJson' in data) || (data.categoriesJson is string && data.categoriesJson.size() <= 5000)) &&
              (!('accountId' in data) || (data.accountId is string && data.accountId.size() <= 128)) &&
              (!('alertThresholdPercent' in data) || (data.alertThresholdPercent is number && data.alertThresholdPercent >= 1 && data.alertThresholdPercent <= 100)) &&

@@ -27,6 +27,7 @@ import {
   formatTotalByCurrencyMode,
   getSecondaryCurrencyModeCaption,
   formatAccountCardBalanceByMode,
+  resolveIntuitiveSubcategoryColor,
   DEFAULT_ACCOUNT_TYPES,
 } from '../lib/calculations.ts';
 import {
@@ -45,6 +46,12 @@ import {
 import { getColorThemeConfig } from '../lib/colorThemes.ts';
 import { ActiveTab } from './Navigation.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
+import {
+  RecordCard,
+  ExpenseDetailPopupModal,
+  TransferDetailPopupModal,
+  IncomeDetailPopupModal,
+} from './RecordCard.tsx';
 import {
   formatDateDDMMYYYY,
   formatDateTimeDDMMYYYY,
@@ -193,6 +200,12 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
     null
   );
   const [historyGroupBy, setHistoryGroupBy] = useState<RecordGroupPeriod>('none');
+  const [selectedPopupIncome, setSelectedPopupIncome] =
+    useState<IncomeReceipt | null>(null);
+  const [selectedPopupExpense, setSelectedPopupExpense] =
+    useState<FlexibleExpense | null>(null);
+  const [selectedPopupTransfer, setSelectedPopupTransfer] =
+    useState<AccountTransfer | null>(null);
 
   // Editing Account Pop-up Modal State
   const [editingAccount, setEditingAccount] = useState<FinancialAccount | null>(null);
@@ -499,17 +512,17 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
       );
       const toLabel = causeRecipient.trim();
       const noteLabel = causeNotes.trim();
+      const catLabel = causeCategory.trim() || 'Savings Cause';
+      const subLabel = causeSubcategory.trim() || catLabel;
       await onAddExpenses([
         {
           date: causeDate,
           accountId: creditVaultAccount.id,
           recipient: toLabel,
-          category: causeCategory.trim() || 'Savings Cause',
-          subcategory: causeSubcategory.trim() || undefined,
+          category: catLabel,
+          subcategory: subLabel,
           notes: noteLabel || undefined,
-          description: `${
-            vaultModalMode === 'credit' ? 'Credit: ' : ''
-          }${toLabel}${noteLabel ? ` — ${noteLabel}` : ''}`,
+          description: subLabel,
           currency: selectedCurr,
           originalAmount: rawAmt,
           exchangeRate: exchangeRate2dp,
@@ -2464,126 +2477,49 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                                   {group.label} ({group.items.length})
                                 </div>
                               )}
-                              {group.items.map((inc) => {
-                                const {
-                                  nativeGross: incNativeGross,
-                                  currency: incRecordCurr,
-                                } = getIncomeNativeGross(inc, settings, accounts);
-                                const deds = getEffectiveIncomeDeductions(
-                                  inc,
-                                  settings
-                                );
-                                const savSum = deds
-                                  .filter((d) => isSavingsDeduction(d))
-                                  .reduce((s, d) => s + d.amount, 0);
-                                const expSum = deds
-                                  .filter((d) => !isSavingsDeduction(d))
-                                  .reduce((s, d) => s + d.amount, 0);
-                                const netAfterDeductions = Math.max(
-                                  0,
-                                  Math.round(
-                                    (incNativeGross - savSum - expSum) * 100
-                                  ) / 100
-                                );
-                                const netDestAccId =
-                                  getEffectiveNetTransferAccountId(
-                                    inc,
-                                    settings,
-                                    accounts
+                                {group.items.map((inc) => {
+                                  const {
+                                    nativeGross: incNativeGross,
+                                    currency: incRecordCurr,
+                                  } = getIncomeNativeGross(inc, settings, accounts);
+                                  const depAccId = resolveValidAccountId(
+                                    inc.accountId,
+                                    accounts,
+                                    settings
                                   );
-                                const netDestAcc = netDestAccId
-                                  ? accounts.find((a) => a.id === netDestAccId)
-                                  : undefined;
-                                return (
-                                  <div
-                                    key={inc.id}
-                                    className="rounded-lg border border-slate-200/80 bg-slate-50/50 p-4"
-                                  >
-                                    <div className="flex flex-wrap items-start justify-between gap-3">
-                                      <div className="min-w-0">
-                                        <div className="font-display text-sm font-semibold text-slate-900 break-words">
-                                          {inc.clientOrSource}
-                                        </div>
-                                        {inc.notes && (
-                                          <div className="text-xs text-slate-600 mt-0.5 break-words">
-                                            {inc.notes}
-                                          </div>
-                                        )}
-                                        <div className="text-[11px] font-mono text-slate-400 mt-1 tabular-nums">
-                                          {formatDateTimeDDMMYYYY(
-                                            inc.date,
-                                            inc.createdAt
-                                          )}
-                                          {inc.receiptId
-                                            ? ` · ${inc.receiptId}`
-                                            : ''}
-                                        </div>
-                                      </div>
-
-                                      <div className="text-right font-mono text-xs space-y-0.5 tabular-nums shrink-0">
-                                        <div className="text-emerald-700 font-medium">
-                                          Total Income: +
-                                          {formatAmount(
-                                            incNativeGross,
-                                            incRecordCurr
-                                          )}
-                                        </div>
-                                        {incRecordCurr !== currency && (
-                                          <div className="text-[10px] text-slate-400">
-                                            Totals ({currency}):{' '}
-                                            {formatAmount(
-                                              convertCurrency2dp(
-                                                incNativeGross,
-                                                incRecordCurr,
-                                                currency,
-                                                fxSnapshot
-                                              ).convertedAmount,
-                                              currency
-                                            )}{' '}
-                                            @{' '}
-                                            {format2PointFloat(
-                                              getExchangeRate(
-                                                incRecordCurr,
-                                                currency,
-                                                fxSnapshot
-                                              ).rate2dp
-                                            )}
-                                          </div>
-                                        )}
-                                        {expSum > 0 && (
-                                          <div className="text-rose-600">
-                                            Expenses (Deductions): -
-                                            {formatAmount(expSum, incRecordCurr)}
-                                          </div>
-                                        )}
-                                        {savSum > 0 && (
-                                          <div className="text-rose-600">
-                                            Savings Accumulated: -
-                                            {formatAmount(savSum, incRecordCurr)}
-                                          </div>
-                                        )}
-                                        {netDestAcc ? (
-                                          <div className="font-semibold text-emerald-700 pt-0.5">
-                                            Net Transferred to {netDestAcc.name}:{' '}
-                                            {formatAmount(
-                                              netAfterDeductions,
-                                              incRecordCurr
-                                            )}
-                                          </div>
-                                        ) : (
-                                          <div className="font-semibold text-emerald-700 pt-0.5">
-                                            Net Retained:{' '}
-                                            {formatAmount(
-                                              netAfterDeductions,
-                                              incRecordCurr
-                                            )}
-                                          </div>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </div>
-                                );
-                              })}
+                                  const depAcc = accounts.find(
+                                    (a) => a.id === depAccId
+                                  );
+                                  const subLabel =
+                                    inc.clientOrSource?.trim() || 'Income';
+                                  const subColor =
+                                    resolveIntuitiveSubcategoryColor(
+                                      subLabel,
+                                      'Income',
+                                      settings,
+                                      expenses
+                                    );
+                                  return (
+                                    <RecordCard
+                                      key={inc.id}
+                                      topLeftSubcategory={subLabel}
+                                      subcategoryColor={subColor}
+                                      bottomLeftAccount={
+                                        depAcc?.name ||
+                                        selectedHistorySummary.account.name
+                                      }
+                                      topRightAmount={`+${formatAmount(
+                                        incNativeGross,
+                                        incRecordCurr
+                                      )}`}
+                                      recordType="income"
+                                      bottomRightDate={formatDateDDMMYYYY(
+                                        inc.date
+                                      )}
+                                      onClick={() => setSelectedPopupIncome(inc)}
+                                    />
+                                  );
+                                })}
                             </div>
                           )
                         )}
@@ -2608,139 +2544,58 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                                   {group.label} ({group.items.length})
                                 </div>
                               )}
-                              <div className="divide-y divide-slate-100 rounded-lg border border-slate-200/80 bg-white">
+                              <div className="space-y-2">
                                 {group.items.map((exp) => {
-                                  const isDedExp = exp.id.startsWith('exp_ded_');
                                   const isCredit = exp.vaultAction === 'credit';
-                                  const isVault = isSavingsVaultAccount(
-                                    selectedHistorySummary.account,
+                                  const expAccId = resolveValidAccountId(
+                                    exp.accountId,
+                                    accounts,
                                     settings
                                   );
-                                  const isAlreadyCredited =
-                                    !isCredit &&
-                                    expenses.some(
-                                      (e) =>
-                                        e.vaultAction === 'credit' &&
-                                        e.linkedExpenseId === exp.id
+                                  const expAcc = accounts.find(
+                                    (a) => a.id === expAccId
+                                  );
+                                  const subLabel =
+                                    exp.subcategory?.trim() ||
+                                    exp.category?.trim() ||
+                                    'Expense';
+                                  const subColor =
+                                    resolveIntuitiveSubcategoryColor(
+                                      subLabel,
+                                      exp.category,
+                                      settings,
+                                      expenses
                                     );
+                                  const expRecordCurr = (
+                                    exp.currency || currency
+                                  ).toUpperCase();
+                                  const expNativeAmt =
+                                    exp.originalAmount !== undefined &&
+                                    exp.originalAmount > 0
+                                      ? exp.originalAmount
+                                      : exp.amount;
 
                                   return (
-                                    <div
+                                    <RecordCard
                                       key={exp.id}
-                                      className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2.5 text-xs"
-                                    >
-                                      <div className="min-w-0">
-                                        <div className="flex flex-wrap items-center gap-1.5">
-                                          <span className="font-medium text-slate-900 break-words">
-                                            {exp.recipient ||
-                                              exp.description ||
-                                              exp.category}
-                                          </span>
-                                          {isVault && (
-                                            <span
-                                              className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                                                isCredit
-                                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                                  : 'bg-rose-50 text-rose-700 border border-rose-200'
-                                              }`}
-                                            >
-                                              {isCredit ? 'Credit' : 'Debit'}
-                                            </span>
-                                          )}
-                                          {isAlreadyCredited && (
-                                            <span className="rounded bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
-                                              Credited Back
-                                            </span>
-                                          )}
-                                        </div>
-                                        <div className="text-[11px] text-slate-500 mt-0.5 break-words">
-                                          {exp.category}
-                                          {exp.subcategory
-                                            ? ` / ${exp.subcategory}`
-                                            : ''}
-                                          {exp.notes ? ` · ${exp.notes}` : ''} ·{' '}
-                                          <span className="font-mono tabular-nums">
-                                            {formatDateTimeDDMMYYYY(
-                                              exp.date,
-                                              exp.createdAt
-                                            )}
-                                          </span>
-                                        </div>
-                                      </div>
-                                      <div className="flex items-center gap-2 shrink-0">
-                                        <span
-                                          className={`font-mono font-semibold tabular-nums ${
-                                            isCredit
-                                              ? 'text-emerald-700'
-                                              : 'text-rose-600'
-                                          }`}
-                                        >
-                                          {isCredit ? '+' : '-'}
-                                          {formatAmount(exp.amount, currency)}
-                                        </span>
-                                        {onEditExpense && (
-                                          <button
-                                            type="button"
-                                            onClick={() => onEditExpense(exp)}
-                                            className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
-                                          >
-                                            Edit
-                                          </button>
-                                        )}
-                                        {isVault &&
-                                          !isCredit &&
-                                          !isDedExp &&
-                                          !isAlreadyCredited &&
-                                          onAddExpenses && (
-                                            <button
-                                              type="button"
-                                              onClick={() => {
-                                                const acc =
-                                                  selectedHistorySummary.account;
-                                                setHistoryModalAccountId(null);
-                                                openVaultCauseModal(
-                                                  acc,
-                                                  'credit',
-                                                  exp
-                                                );
-                                              }}
-                                              className="rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100"
-                                            >
-                                              Credit Instance
-                                            </button>
-                                          )}
-                                        {isDedExp ? (
-                                          <span className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-600">
-                                            Income Deduction
-                                          </span>
-                                        ) : (
-                                          onDeleteExpense && (
-                                            <button
-                                              type="button"
-                                              onClick={() => {
-                                                setPendingConfirm({
-                                                  title: 'Delete Entry?',
-                                                  message: `Delete ${
-                                                    exp.recipient ||
-                                                    exp.description ||
-                                                    exp.category
-                                                  } (${formatAmount(
-                                                    exp.amount,
-                                                    currency
-                                                  )})?`,
-                                                  confirmLabel: 'Yes, Delete',
-                                                  onConfirmAction: () =>
-                                                    onDeleteExpense(exp.id),
-                                                });
-                                              }}
-                                              className="text-[11px] text-slate-400 hover:text-slate-900"
-                                            >
-                                              Delete
-                                            </button>
-                                          )
-                                        )}
-                                      </div>
-                                    </div>
+                                      topLeftSubcategory={subLabel}
+                                      subcategoryColor={subColor}
+                                      bottomLeftAccount={
+                                        expAcc?.name ||
+                                        selectedHistorySummary.account.name
+                                      }
+                                      topRightAmount={`${
+                                        isCredit ? '+' : '-'
+                                      }${formatAmount(
+                                        expNativeAmt,
+                                        expRecordCurr
+                                      )}`}
+                                      recordType={isCredit ? 'income' : 'expense'}
+                                      bottomRightDate={formatDateDDMMYYYY(
+                                        exp.date
+                                      )}
+                                      onClick={() => setSelectedPopupExpense(exp)}
+                                    />
                                   );
                                 })}
                               </div>
@@ -2766,7 +2621,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                                   {group.label} ({group.items.length})
                                 </div>
                               )}
-                              <div className="divide-y divide-slate-100 rounded-lg border border-slate-200/80 bg-white">
+                              <div className="space-y-2">
                                 {group.items.map((t) => {
                                   const isOut =
                                     t.sourceAccountId === historyModalAccountId;
@@ -2774,122 +2629,33 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                                     t.id.startsWith('trans_sav_');
                                   const isNetIncomeTransfer =
                                     t.id.startsWith('trans_net_');
-                                  const otherAccId = isOut
-                                    ? t.destinationAccountId
-                                    : t.sourceAccountId;
-                                  const otherAcc = accounts.find(
-                                    (a) => a.id === otherAccId
+                                  const sourceAcc = accounts.find(
+                                    (a) => a.id === t.sourceAccountId
                                   );
+                                  const destAcc = accounts.find(
+                                    (a) => a.id === t.destinationAccountId
+                                  );
+                                  const transferSubLabel = isSavingsSplitTransfer
+                                    ? 'Savings Allocation'
+                                    : isNetIncomeTransfer
+                                    ? 'Net Income Transfer'
+                                    : 'Fund Transfer';
+
                                   return (
-                                    <div
+                                    <RecordCard
                                       key={t.id}
-                                      className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2.5 text-xs"
-                                    >
-                                      <div className="min-w-0">
-                                        <div className="font-medium text-slate-800 break-words">
-                                          {t.description || 'Account transfer'}
-                                        </div>
-                                        <div className="text-[11px] text-slate-500 mt-0.5 break-words">
-                                          {isOut
-                                            ? `Transferred to ${
-                                                otherAcc?.name || 'Account'
-                                              }`
-                                            : `Transferred from ${
-                                                otherAcc?.name || 'Account'
-                                              }`}{' '}
-                                          ·{' '}
-                                          <span className="font-mono tabular-nums">
-                                            {formatDateTimeDDMMYYYY(
-                                              t.date,
-                                              t.createdAt
-                                            )}
-                                          </span>
-                                        </div>
-                                      </div>
-                                      <div className="flex items-center gap-3 shrink-0">
-                                        <span
-                                          className={`font-mono font-semibold tabular-nums ${
-                                            isOut
-                                              ? 'text-rose-600'
-                                              : 'text-emerald-700'
-                                          }`}
-                                        >
-                                          {isOut ? '-' : '+'}
-                                          {formatAmount(t.amount, currency)}
-                                        </span>
-                                        {isSavingsSplitTransfer ? (
-                                          <span className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-600">
-                                            Savings Split
-                                          </span>
-                                        ) : isNetIncomeTransfer ? (
-                                          <div className="flex items-center gap-2">
-                                            <span className="rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
-                                              Net Income Transfer
-                                            </span>
-                                            {onUpdateIncome &&
-                                              t.linkedIncomeId && (
-                                                <button
-                                                  type="button"
-                                                  onClick={() => {
-                                                    const linkedInc =
-                                                      incomes.find(
-                                                        (i) =>
-                                                          i.id ===
-                                                          t.linkedIncomeId
-                                                      );
-                                                    if (!linkedInc) return;
-                                                    setPendingConfirm({
-                                                      title:
-                                                        'Revert Net Income Transfer?',
-                                                      message: `Keep Net Income (${formatAmount(
-                                                        t.amount,
-                                                        currency
-                                                      )}) in the receiving account instead of transferring to ${
-                                                        otherAcc?.name ||
-                                                        'Account'
-                                                      }?`,
-                                                      confirmLabel:
-                                                        'Yes, Keep in Receiving Account',
-                                                      onConfirmAction: () =>
-                                                        onUpdateIncome({
-                                                          ...linkedInc,
-                                                          netTransferredToAccountId:
-                                                            '__KEEP__',
-                                                          updatedAt:
-                                                            new Date().toISOString(),
-                                                        }),
-                                                    });
-                                                  }}
-                                                  className="text-[11px] text-slate-400 hover:text-slate-900"
-                                                >
-                                                  Revert
-                                                </button>
-                                              )}
-                                          </div>
-                                        ) : (
-                                          <button
-                                            type="button"
-                                            onClick={() => {
-                                              setPendingConfirm({
-                                                title:
-                                                  'Revert Account Transfer?',
-                                                message: `Revert transfer of ${formatAmount(
-                                                  t.amount,
-                                                  currency
-                                                )}?`,
-                                                confirmLabel:
-                                                  'Yes, Revert Transfer',
-                                                onConfirmAction: () =>
-                                                  onDeleteTransfer(t.id),
-                                              });
-                                            }}
-                                            className="text-[11px] text-slate-400 hover:text-slate-900"
-                                          >
-                                            Revert
-                                          </button>
-                                        )}
-                                      </div>
-                                    </div>
+                                      topLeftSubcategory={transferSubLabel}
+                                      subcategoryColor="#2563EB"
+                                      bottomLeftAccount={`${
+                                        sourceAcc?.name || 'Source'
+                                      } → ${destAcc?.name || 'Destination'}`}
+                                      topRightAmount={`${
+                                        isOut ? '-' : '+'
+                                      }${formatAmount(t.amount, currency)}`}
+                                      recordType="transfer"
+                                      bottomRightDate={formatDateDDMMYYYY(t.date)}
+                                      onClick={() => setSelectedPopupTransfer(t)}
+                                    />
                                   );
                                 })}
                               </div>
@@ -3235,6 +3001,92 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Record Detail Pop-Up Modals */}
+      <IncomeDetailPopupModal
+        income={selectedPopupIncome}
+        accounts={accounts}
+        settings={settings}
+        currency={currency}
+        onClose={() => setSelectedPopupIncome(null)}
+      />
+
+      <ExpenseDetailPopupModal
+        expense={selectedPopupExpense}
+        accounts={accounts}
+        settings={settings}
+        currency={currency}
+        onClose={() => setSelectedPopupExpense(null)}
+        onEditExpense={onEditExpense}
+        onDeleteExpense={onDeleteExpense}
+        onCreditVaultInstance={
+          selectedPopupExpense &&
+          selectedHistorySummary &&
+          isSavingsVaultAccount(selectedHistorySummary.account, settings) &&
+          selectedPopupExpense.vaultAction !== 'credit' &&
+          !selectedPopupExpense.id.startsWith('exp_ded_') &&
+          !expenses.some(
+            (e) =>
+              e.vaultAction === 'credit' &&
+              e.linkedExpenseId === selectedPopupExpense.id
+          ) &&
+          onAddExpenses
+            ? (exp) => {
+                const acc = selectedHistorySummary.account;
+                setHistoryModalAccountId(null);
+                openVaultCauseModal(acc, 'credit', exp);
+              }
+            : undefined
+        }
+      />
+
+      <TransferDetailPopupModal
+        transfer={selectedPopupTransfer}
+        accounts={accounts}
+        currency={currency}
+        onClose={() => setSelectedPopupTransfer(null)}
+        onDeleteTransfer={
+          selectedPopupTransfer &&
+          !selectedPopupTransfer.id.startsWith('trans_sav_') &&
+          !selectedPopupTransfer.id.startsWith('trans_net_')
+            ? (id) => {
+                setPendingConfirm({
+                  title: 'Revert Account Transfer?',
+                  message: `Revert transfer of ${formatAmount(
+                    selectedPopupTransfer.amount,
+                    currency
+                  )}?`,
+                  confirmLabel: 'Yes, Revert Transfer',
+                  onConfirmAction: () => onDeleteTransfer(id),
+                });
+              }
+            : selectedPopupTransfer &&
+              selectedPopupTransfer.id.startsWith('trans_net_') &&
+              onUpdateIncome &&
+              selectedPopupTransfer.linkedIncomeId
+            ? () => {
+                const linkedInc = incomes.find(
+                  (i) => i.id === selectedPopupTransfer.linkedIncomeId
+                );
+                if (!linkedInc) return;
+                setPendingConfirm({
+                  title: 'Revert Net Income Transfer?',
+                  message: `Keep Net Income (${formatAmount(
+                    selectedPopupTransfer.amount,
+                    currency
+                  )}) in the receiving account?`,
+                  confirmLabel: 'Yes, Keep in Receiving Account',
+                  onConfirmAction: () =>
+                    onUpdateIncome({
+                      ...linkedInc,
+                      netTransferredToAccountId: '__KEEP__',
+                      updatedAt: new Date().toISOString(),
+                    }),
+                });
+              }
+            : undefined
+        }
+      />
 
       {/* Confirmation Check Modal */}
       <ConfirmDeleteModal

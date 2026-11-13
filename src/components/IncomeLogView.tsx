@@ -56,6 +56,7 @@ import {
   groupRecordsByPeriod,
   RecordGroupPeriod,
 } from '../lib/dateFilters.ts';
+import { RecordCard } from './RecordCard.tsx';
 
 interface IncomeLogViewProps {
   incomes: IncomeReceipt[];
@@ -2628,21 +2629,101 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                 );
 
                 return (
-                  <div
-                    key={inc.id}
-                    className="rounded-xl border border-slate-200/90 bg-white p-4 sm:p-5 transition-colors min-w-0"
-                  >
-                    {isEditing ? (
-                      <div className="space-y-3 border-b border-slate-100 pb-4 mb-4">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="text-xs font-semibold text-slate-900">
-                            Edit Income Record
+                  <React.Fragment key={inc.id}>
+                    <RecordCard
+                      subcategory={inc.clientOrSource || 'Income'}
+                      subcategoryColor="#059669"
+                      accountName={
+                        netDestAccount
+                          ? `${targetAccount?.name || 'Account'} → ${netDestAccount.name}`
+                          : targetAccount?.name || 'Account'
+                      }
+                      amountText={`+${formatAmount(incNativeGross, incRecordCurr)}`}
+                      recordType="income"
+                      date={inc.date}
+                      onClick={() => toggleIncomeExpand(inc.id)}
+                    />
+
+                    {isExpanded && (
+                      <div
+                        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto"
+                        onClick={() => {
+                          setEditingIncomeId(null);
+                          toggleIncomeExpand(inc.id);
+                        }}
+                      >
+                        <div
+                          className="w-full max-w-lg max-h-[88dvh] sm:max-h-[90vh] overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white p-4 sm:p-5 shadow-2xl space-y-4 my-auto"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {/* Pop-up Header */}
+                          <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3.5">
+                            <div className="min-w-0 space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-800">
+                                  <span className="h-2 w-2 rounded-full bg-emerald-600 shrink-0" />
+                                  {inc.clientOrSource || 'Income'}
+                                </span>
+                                <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-600">
+                                  Income
+                                </span>
+                              </div>
+                              <p className="font-mono text-xs font-semibold text-slate-500 tabular-nums">
+                                {formatDateTimeDDMMYYYY(inc.date, inc.createdAt)}
+                              </p>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              {!isEditing && (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleStartEditIncome(inc)}
+                                    className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      toggleIncomeExpand(inc.id);
+                                      setConfirmDeleteConfig({
+                                        title: 'Delete Income Record?',
+                                        message: `Delete "${inc.clientOrSource}" (${formatAmount(incNativeGross, incRecordCurr)})?`,
+                                        confirmLabel: 'Delete',
+                                        onConfirm: () => onDeleteIncome(inc.id),
+                                      });
+                                    }}
+                                    className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+                                  >
+                                    Delete
+                                  </button>
+                                </>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingIncomeId(null);
+                                  toggleIncomeExpand(inc.id);
+                                }}
+                                className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100"
+                              >
+                                Close
+                              </button>
+                            </div>
                           </div>
-                          <span className="rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-700">
-                            {getQuarterFromDate(editDate)}
-                          </span>
-                        </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+
+                          {isEditing ? (
+                            <div className="space-y-3 border-b border-slate-100 pb-4">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="text-xs font-semibold text-slate-900">
+                                  Edit Income Record
+                                </div>
+                                <span className="rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-700">
+                                  {getQuarterFromDate(editDate)}
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <div className="space-y-1.5">
                             <div className="flex items-center justify-between gap-2">
                               <label className="block text-[11px] text-slate-500">
@@ -2931,139 +3012,88 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                           </button>
                         </div>
                       </div>
-                    ) : (
-                      <div
-                        onClick={() => toggleIncomeExpand(inc.id)}
-                        className={`flex flex-col sm:flex-row sm:items-start justify-between gap-3 cursor-pointer select-none ${
-                          isExpanded ? 'border-b border-slate-100 pb-3.5' : ''
-                        }`}
-                      >
-                        <div className="space-y-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <svg
-                              className={`h-4 w-4 text-slate-400 shrink-0 transition-transform ${
-                                isExpanded ? 'rotate-180' : ''
-                              }`}
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                              strokeWidth={2}
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M19 9l-7 7-7-7"
-                              />
-                            </svg>
-                            <h3 className="font-display text-sm sm:text-base font-semibold text-slate-900 break-words">
-                              {inc.clientOrSource}
-                            </h3>
-                          </div>
-
-                          <div className="flex flex-wrap items-center gap-1.5 pl-6 text-xs text-slate-500">
-                            <span className="font-mono tabular-nums">
-                              {formatDateTimeDDMMYYYY(inc.date, inc.createdAt)}
-                            </span>
-                            {inc.notes && (
-                              <>
-                                <span aria-hidden="true">·</span>
-                                <span className="text-slate-700 break-words">{inc.notes}</span>
-                              </>
-                            )}
-                            <span aria-hidden="true">·</span>
-                            <span className="font-medium text-slate-700 break-words">
-                              {netDestAccount
-                                ? `${targetAccount?.name || 'Account'} → Net to ${netDestAccount.name}`
-                                : targetAccount?.name || 'Account'}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="flex sm:flex-col items-end justify-between sm:justify-start gap-1.5 shrink-0 pl-6 sm:pl-0">
-                          <div className="text-right font-mono tabular-nums space-y-0.5">
-                            <div className="text-sm font-semibold text-emerald-700">
-                              +{formatAmount(incNativeGross, incRecordCurr)}
+                      ) : (
+                        <div className="space-y-3">
+                          <div className="rounded-xl border border-slate-200/80 bg-slate-50/70 p-3.5 space-y-1.5 text-xs">
+                            <div className="flex items-center justify-between">
+                              <span className="text-slate-600 font-semibold">Total Income</span>
+                              <span className="font-mono text-base font-bold text-emerald-600 tabular-nums">
+                                +{formatAmount(incNativeGross, incRecordCurr)}
+                              </span>
                             </div>
                             {incRecordCurr !== currency && (
-                              <div className="text-[10px] text-slate-400">
-                                Totals ({currency}):{' '}
-                                {formatAmount(
-                                  convertCurrency2dp(
-                                    incNativeGross,
-                                    incRecordCurr,
-                                    currency,
-                                    fxSnapshot
-                                  ).convertedAmount,
-                                  currency
-                                )}{' '}
-                                @{' '}
-                                {format2PointFloat(
-                                  getExchangeRate(
-                                    incRecordCurr,
-                                    currency,
-                                    fxSnapshot
-                                  ).rate2dp
-                                )}
+                              <div className="flex items-center justify-between text-[11px] text-slate-400">
+                                <span>Totals ({currency})</span>
+                                <span className="font-mono tabular-nums">
+                                  {formatAmount(
+                                    convertCurrency2dp(
+                                      incNativeGross,
+                                      incRecordCurr,
+                                      currency,
+                                      fxSnapshot
+                                    ).convertedAmount,
+                                    currency
+                                  )}{' '}
+                                  @{' '}
+                                  {format2PointFloat(
+                                    getExchangeRate(
+                                      incRecordCurr,
+                                      currency,
+                                      fxSnapshot
+                                    ).rate2dp
+                                  )}
+                                </span>
                               </div>
                             )}
-                            <div className="text-[11px] text-slate-500">
-                              {totalDed > 0 ? (
-                                <span className="text-rose-600 font-medium">
-                                  Ded: -{formatAmount(totalDed, incRecordCurr)} ·{' '}
+                            {totalDed > 0 && (
+                              <div className="flex items-center justify-between text-rose-600">
+                                <span>Total Deductions</span>
+                                <span className="font-mono font-semibold tabular-nums">
+                                  -{formatAmount(totalDed, incRecordCurr)}
                                 </span>
-                              ) : null}
+                              </div>
+                            )}
+                            <div className="flex items-center justify-between pt-1.5 border-t border-slate-200/70 font-semibold">
+                              <span className="text-slate-800">Net Income</span>
                               <span
-                                className={`font-semibold ${
-                                  netRetained < 0 ? 'text-rose-600' : 'text-emerald-700'
+                                className={`font-mono tabular-nums ${
+                                  netRetained < 0 ? 'text-rose-600' : 'text-emerald-600'
                                 }`}
                               >
-                                Net: {formatAmount(netRetained, incRecordCurr)}
+                                {formatAmount(netRetained, incRecordCurr)}
                               </span>
                             </div>
                           </div>
 
-                          <div
-                            className="flex flex-wrap items-center gap-2.5 text-xs text-slate-500"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => toggleIncomeExpand(inc.id)}
-                              className="hover:text-slate-900"
-                            >
-                              {isExpanded ? 'Collapse' : 'Expand'}
-                            </button>
-                            <span aria-hidden="true">·</span>
-                            <button
-                              type="button"
-                              onClick={() => handleStartEditIncome(inc)}
-                              className="hover:text-slate-900"
-                            >
-                              Edit
-                            </button>
-                            <span aria-hidden="true">·</span>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setConfirmDeleteConfig({
-                                  title: 'Delete Income Record?',
-                                  message: `Delete "${inc.clientOrSource}" (${formatAmount(incNativeGross, incRecordCurr)})?`,
-                                  confirmLabel: 'Delete',
-                                  onConfirm: () => onDeleteIncome(inc.id),
-                                })
-                              }
-                              className="hover:text-slate-900"
-                            >
-                              Delete
-                            </button>
+                          <div className="rounded-xl border border-slate-200/80 divide-y divide-slate-100 text-xs">
+                            <div className="flex items-center justify-between gap-3 px-3.5 py-2">
+                              <span className="text-slate-500">Account</span>
+                              <span className="font-semibold text-slate-900">
+                                {netDestAccount
+                                  ? `${targetAccount?.name || 'Account'} → Net to ${netDestAccount.name}`
+                                  : targetAccount?.name || 'Account'}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between gap-3 px-3.5 py-2">
+                              <span className="text-slate-500">Date & Time</span>
+                              <span className="font-mono font-semibold text-slate-900 tabular-nums">
+                                {formatDateTimeDDMMYYYY(inc.date, inc.createdAt)}
+                              </span>
+                            </div>
+                            {inc.notes && (
+                              <div className="flex items-center justify-between gap-3 px-3.5 py-2">
+                                <span className="text-slate-500">Source / Notes</span>
+                                <span className="font-semibold text-slate-900 text-right break-words">
+                                  {inc.notes}
+                                </span>
+                              </div>
+                            )}
                           </div>
                         </div>
-                      </div>
-                    )}
+                      )}
 
-                    {/* Expanded Deductions */}
-                    {isExpanded && (
-                      <div className="pt-3 space-y-3">
+                      {/* Pop-Up Deductions & Net Income Routing */}
+                      <div className="pt-2 space-y-3">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <span className="text-xs font-medium text-slate-700">
                             Defined Deductions ({itemDeductions.length})
@@ -3174,8 +3204,8 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                                             'General';
                                           const subColor =
                                             resolveIntuitiveSubcategoryColor(
-                                              ded.expenseSubcategory,
-                                              ded.expenseCategory,
+                                              subLabel,
+                                              ded.expenseCategory || 'General',
                                               settings,
                                               expenses
                                             );
@@ -3414,8 +3444,10 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                           </span>
                         </div>
                       </div>
+                        </div>
+                      </div>
                     )}
-                  </div>
+                  </React.Fragment>
                 );
               })}
                 </div>

@@ -42,12 +42,12 @@ import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { ActiveTab } from './Navigation.tsx';
 import {
   formatDateDDMMYYYY,
-  formatDateTimeDDMMYYYY,
   sortRecordsByArrivalTime,
   groupRecordsByPeriod,
   RecordGroupPeriod,
 } from '../lib/dateFilters.ts';
 import { learnSavingsVaultDebitAccount } from '../lib/deductionIntelligence.ts';
+import { RecordCard, ExpenseDetailPopupModal } from './RecordCard.tsx';
 
 interface ExpenseDraftRow {
   rowId: string;
@@ -103,6 +103,7 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
   onAddExpenses,
   onDeleteExpense,
   onEditExpense,
+  onMoveSubcategory,
   onNavigateToTab,
   expandFormTrigger,
 }) => {
@@ -167,7 +168,7 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState('all');
   const [presentationMode, setPresentationMode] = useState<'cards' | 'grouped'>('cards');
   const [groupByPeriod, setGroupByPeriod] = useState<RecordGroupPeriod>('none');
-  const [expandedExpenseIds, setExpandedExpenseIds] = useState<Set<string>>(new Set());
+  const [selectedPopupExpense, setSelectedPopupExpense] = useState<FlexibleExpense | null>(null);
   const [expandedCategoryGroups, setExpandedCategoryGroups] = useState<Set<string>>(new Set());
   const [pendingDeleteExpense, setPendingDeleteExpense] = useState<FlexibleExpense | null>(null);
 
@@ -353,12 +354,10 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
             accountId: r.accountId,
             recipient: toLabel || undefined,
             category: catLabel,
-            subcategory: subLabel || undefined,
+            subcategory: subLabel || catLabel,
             subcategoryColor: subColor,
             notes: noteLabel || undefined,
-            description: toLabel
-              ? `${toLabel}${noteLabel ? ` — ${noteLabel}` : ''}`
-              : noteLabel || catLabel,
+            description: subLabel || catLabel,
             currency: rowCurr,
             originalAmount: rawAmt,
             exchangeRate: exchangeRate2dp,
@@ -1298,24 +1297,6 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
               By Category
             </button>
           </div>
-
-          {filteredExpenses.length > 0 && presentationMode === 'cards' && (
-            <button
-              type="button"
-              onClick={() => {
-                if (expandedExpenseIds.size >= filteredExpenses.length) {
-                  setExpandedExpenseIds(new Set());
-                } else {
-                  setExpandedExpenseIds(new Set(filteredExpenses.map((e) => e.id)));
-                }
-              }}
-              className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
-            >
-              {expandedExpenseIds.size >= filteredExpenses.length
-                ? 'Collapse All'
-                : 'Expand All'}
-            </button>
-          )}
         </div>
       </div>
 
@@ -1353,251 +1334,40 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
                   </div>
                 )}
 
-                {periodGroup.items.map((exp) => {
-                  const acc = accounts.find((a) => a.id === exp.accountId) || defaultAcc;
-                  const isVault = acc && isSavingsVaultAccount(acc, settings);
-                  const isDeductionExp = exp.id.startsWith('exp_ded_');
-                  const isExpanded = expandedExpenseIds.has(exp.id);
-                  const toggleCard = () => {
-                    setExpandedExpenseIds((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(exp.id)) {
-                        next.delete(exp.id);
-                      } else {
-                        next.add(exp.id);
-                      }
-                      return next;
-                    });
-                  };
+                <div className="space-y-2">
+                  {periodGroup.items.map((exp) => {
+                    const acc =
+                      accounts.find((a) => a.id === exp.accountId) || defaultAcc;
+                    const subLabel =
+                      exp.subcategory || exp.category || 'Expense';
+                    const subColor = resolveIntuitiveSubcategoryColor(
+                      exp.subcategory,
+                      exp.category,
+                      settings,
+                      expenses
+                    );
+                    const expCurr = (
+                      exp.currency || getAccountCurrency(acc, currency)
+                    ).toUpperCase();
+                    const expNativeAmt =
+                      exp.originalAmount !== undefined && exp.originalAmount > 0
+                        ? exp.originalAmount
+                        : exp.amount;
 
-                  const subColor = resolveIntuitiveSubcategoryColor(
-                    exp.subcategory,
-                    exp.category,
-                    settings,
-                    expenses
-                  );
-                  const subBadgeStyle = getSubcategoryBadgeStyle(subColor);
-
-                  return (
-                    <div
-                      key={exp.id}
-                      className="rounded-xl border border-slate-200/90 bg-white transition-all hover:border-slate-300"
-                    >
-                      {/* Card Header (Always Visible, Click to Expand/Collapse) */}
-                      <div
-                        onClick={toggleCard}
-                        className="flex flex-wrap items-center justify-between gap-3 p-3.5 sm:px-4 cursor-pointer select-none"
-                      >
-                        <div className="flex items-start gap-3 min-w-0 flex-1">
-                          <span
-                            className="mt-1 h-2.5 w-2.5 rounded-full shrink-0"
-                            style={{
-                              backgroundColor: exp.subcategory
-                                ? subColor
-                                : isDeductionExp
-                                ? 'var(--app-accent)'
-                                : isVault
-                                ? '#059669'
-                                : '#e11d48',
-                            }}
-                          />
-                          <div className="min-w-0 flex-1 space-y-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="font-display text-sm font-bold text-slate-900 break-words">
-                                {exp.recipient || exp.description || exp.category || 'Expense'}
-                              </span>
-                              <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-700 break-words">
-                                <span>{exp.category || 'Uncategorized'}</span>
-                              </span>
-                              {exp.subcategory && (
-                                <span
-                                  style={{
-                                    backgroundColor: subBadgeStyle.backgroundColor,
-                                    borderColor: subBadgeStyle.borderColor,
-                                    color: subBadgeStyle.color,
-                                  }}
-                                  className="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-semibold break-words"
-                                >
-                                  <span
-                                    className="h-2 w-2 rounded-full shrink-0"
-                                    style={{ backgroundColor: subColor }}
-                                  />
-                                  <span>{exp.subcategory}</span>
-                                </span>
-                              )}
-                              {isDeductionExp && (
-                                <span
-                                  className="rounded-md px-2 py-0.5 text-[10px] font-semibold"
-                                  style={{
-                                    backgroundColor: 'var(--app-accent-soft)',
-                                    color: 'var(--app-accent-text)',
-                                  }}
-                                >
-                                  Income Deduction
-                                </span>
-                              )}
-                              {exp.vaultAction === 'credit' && (
-                                <span className="rounded-md bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
-                                  Vault Credit
-                                </span>
-                              )}
-                              {isVault && exp.vaultAction !== 'credit' && (
-                                <span className="rounded-md bg-rose-50 border border-rose-200 px-2 py-0.5 text-[10px] font-semibold text-rose-700">
-                                  Vault Debit
-                                </span>
-                              )}
-                            </div>
-
-                            <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-                              <span className="font-mono tabular-nums">
-                                {formatDateTimeDDMMYYYY(exp.date, exp.createdAt)}
-                              </span>
-                              <span>·</span>
-                              <span
-                                className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium break-words ${
-                                  isVault
-                                    ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                                    : 'bg-slate-100 text-slate-700'
-                                }`}
-                              >
-                                {acc?.name || 'Account'}
-                              </span>
-                              {exp.notes && (
-                                <>
-                                  <span>·</span>
-                                  <span className="truncate max-w-xs text-slate-500">
-                                    {exp.notes}
-                                  </span>
-                                </>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 shrink-0 ml-auto">
-                          <span
-                            className={`font-mono text-sm font-bold tabular-nums whitespace-nowrap ${
-                              exp.vaultAction === 'credit'
-                                ? 'text-emerald-700'
-                                : 'text-rose-600'
-                            }`}
-                          >
-                            {exp.vaultAction === 'credit' ? '+' : '-'}
-                            {formatAmount(exp.amount, currency)}
-                          </span>
-                          {onEditExpense && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onEditExpense(exp);
-                              }}
-                              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
-                            >
-                              Edit
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleCard();
-                            }}
-                            className="rounded-lg border border-slate-200 bg-slate-50 p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
-                            aria-label={isExpanded ? 'Collapse details' : 'Expand details'}
-                          >
-                            <svg
-                              className={`h-3.5 w-3.5 transition-transform ${
-                                isExpanded ? 'rotate-180' : ''
-                              }`}
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                              strokeWidth={2}
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M19 9l-7 7-7-7"
-                              />
-                            </svg>
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Collapsible Details Drawer */}
-                      {isExpanded && (
-                        <div className="border-t border-slate-100 bg-slate-50/60 px-4 py-3 text-xs space-y-2.5 rounded-b-xl">
-                          <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
-                            <div>
-                              <div className="text-[10px] font-medium text-slate-400">
-                                Category
-                              </div>
-                              <div className="font-semibold text-slate-800 break-words">
-                                {exp.category || 'Uncategorized'}
-                              </div>
-                            </div>
-                            <div>
-                              <div className="text-[10px] font-medium text-slate-400">
-                                Subcategory
-                              </div>
-                              <div className="font-semibold text-slate-800 break-words">
-                                {exp.subcategory || '—'}
-                              </div>
-                            </div>
-                            <div>
-                              <div className="text-[10px] font-medium text-slate-400">
-                                Deducted From Account
-                              </div>
-                              <div className="font-semibold text-slate-800 break-words">
-                                {acc?.name || 'Account'}
-                              </div>
-                            </div>
-                            <div>
-                              <div className="text-[10px] font-medium text-slate-400">
-                                Notes / Description
-                              </div>
-                              <div className="text-slate-700 break-words">
-                                {exp.notes || exp.description || '—'}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="flex flex-wrap items-center justify-end gap-2 pt-1 border-t border-slate-200/60">
-                            {onEditExpense && (
-                              <button
-                                type="button"
-                                onClick={() => onEditExpense(exp)}
-                                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-800 hover:bg-slate-100"
-                              >
-                                Edit Expense
-                              </button>
-                            )}
-                            {isDeductionExp ? (
-                              onNavigateToTab && (
-                                <button
-                                  type="button"
-                                  onClick={() => onNavigateToTab('income_log')}
-                                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
-                                >
-                                  View in Income
-                                </button>
-                              )
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => setPendingDeleteExpense(exp)}
-                                className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-medium text-rose-600 hover:bg-rose-100"
-                              >
-                                Delete Expense
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                    return (
+                      <RecordCard
+                        key={exp.id}
+                        subcategory={subLabel}
+                        subcategoryColor={subColor}
+                        accountName={acc?.name || 'Account'}
+                        amountText={`-${formatAmount(expNativeAmt, expCurr)}`}
+                        recordType="expense"
+                        date={exp.date}
+                        onClick={() => setSelectedPopupExpense(exp)}
+                      />
+                    );
+                  })}
+                </div>
               </div>
             );
           })}
@@ -1727,96 +1497,39 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
                   </div>
 
                   {isGroupOpen && (
-                    <div className="border-t border-slate-100 divide-y divide-slate-100 bg-slate-50/40">
+                    <div className="border-t border-slate-100 p-3 space-y-2 bg-slate-50/40">
                       {group.items.map((exp) => {
                         const acc =
                           accounts.find((a) => a.id === exp.accountId) ||
                           defaultAcc;
-                        const isDeductionExp = exp.id.startsWith('exp_ded_');
+                        const subLabel =
+                          exp.subcategory || exp.category || 'Expense';
                         const itemSubColor = resolveIntuitiveSubcategoryColor(
                           exp.subcategory,
                           exp.category,
                           settings,
                           expenses
                         );
-                        const itemSubBadge = getSubcategoryBadgeStyle(itemSubColor);
-                        return (
-                          <div
-                            key={exp.id}
-                            className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-xs"
-                          >
-                            <div className="min-w-0 flex-1 space-y-0.5">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-semibold text-slate-900 break-words">
-                                  {exp.recipient || exp.description || exp.category}
-                                </span>
-                                {exp.subcategory && (
-                                  <span
-                                    style={{
-                                      backgroundColor: itemSubBadge.backgroundColor,
-                                      borderColor: itemSubBadge.borderColor,
-                                      color: itemSubBadge.color,
-                                    }}
-                                    className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-semibold"
-                                  >
-                                    <span
-                                      className="h-1.5 w-1.5 rounded-full shrink-0"
-                                      style={{ backgroundColor: itemSubColor }}
-                                    />
-                                    <span>{exp.subcategory}</span>
-                                  </span>
-                                )}
-                                {isDeductionExp && (
-                                  <span
-                                    className="rounded px-1.5 py-0.5 text-[10px] font-semibold"
-                                    style={{
-                                      backgroundColor: 'var(--app-accent-soft)',
-                                      color: 'var(--app-accent-text)',
-                                    }}
-                                  >
-                                    Income Deduction
-                                  </span>
-                                )}
-                              </div>
-                              <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-                                <span className="font-mono">
-                                  {formatDateTimeDDMMYYYY(exp.date, exp.createdAt)}
-                                </span>
-                                <span>·</span>
-                                <span>{acc?.name || 'Account'}</span>
-                                {exp.notes && (
-                                  <>
-                                    <span>·</span>
-                                    <span className="break-words">{exp.notes}</span>
-                                  </>
-                                )}
-                              </div>
-                            </div>
+                        const expCurr = (
+                          exp.currency || getAccountCurrency(acc, currency)
+                        ).toUpperCase();
+                        const expNativeAmt =
+                          exp.originalAmount !== undefined &&
+                          exp.originalAmount > 0
+                            ? exp.originalAmount
+                            : exp.amount;
 
-                            <div className="flex items-center gap-2 shrink-0">
-                              <span className="font-mono font-semibold text-slate-900 tabular-nums">
-                                -{formatAmount(exp.amount, currency)}
-                              </span>
-                              {onEditExpense && (
-                                <button
-                                  type="button"
-                                  onClick={() => onEditExpense(exp)}
-                                  className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
-                                >
-                                  Edit
-                                </button>
-                              )}
-                              {!isDeductionExp && (
-                                <button
-                                  type="button"
-                                  onClick={() => setPendingDeleteExpense(exp)}
-                                  className="rounded border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-medium text-rose-600 hover:bg-rose-100"
-                                >
-                                  Delete
-                                </button>
-                              )}
-                            </div>
-                          </div>
+                        return (
+                          <RecordCard
+                            key={exp.id}
+                            subcategory={subLabel}
+                            subcategoryColor={itemSubColor}
+                            accountName={acc?.name || 'Account'}
+                            amountText={`-${formatAmount(expNativeAmt, expCurr)}`}
+                            recordType="expense"
+                            date={exp.date}
+                            onClick={() => setSelectedPopupExpense(exp)}
+                          />
                         );
                       })}
                     </div>
@@ -1828,15 +1541,28 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
         </div>
       )}
 
+      {/* Expense Details Pop-Up Modal */}
+      <ExpenseDetailPopupModal
+        expense={selectedPopupExpense}
+        accounts={accounts}
+        settings={settings}
+        expenses={expenses}
+        currency={currency}
+        fxSnapshot={fxSnapshot}
+        categoryPreferences={categoryPreferences}
+        onClose={() => setSelectedPopupExpense(null)}
+        onEdit={onEditExpense}
+        onDelete={(exp) => setPendingDeleteExpense(exp)}
+        onMoveSubcategory={onMoveSubcategory}
+      />
+
       <ConfirmDeleteModal
         isOpen={Boolean(pendingDeleteExpense)}
         title="Delete Expense?"
         message={
           pendingDeleteExpense
             ? `Delete expense of ${formatAmount(pendingDeleteExpense.amount, currency)} (${
-                pendingDeleteExpense.recipient ||
-                pendingDeleteExpense.description ||
-                pendingDeleteExpense.category
+                pendingDeleteExpense.subcategory || pendingDeleteExpense.category
               })?`
             : 'Delete this expense?'
         }

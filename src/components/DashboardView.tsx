@@ -24,6 +24,7 @@ import {
   formatTotalByCurrencyMode,
   getSecondaryCurrencyModeCaption,
   formatAccountCardBalanceByMode,
+  resolveIntuitiveSubcategoryColor,
 } from '../lib/calculations.ts';
 import {
   fetchMarketExchangeRates,
@@ -35,12 +36,16 @@ import { getColorThemeConfig } from '../lib/colorThemes.ts';
 import {
   TimeRangePreset,
   getPresetLabel,
-  formatDateTimeDDMMYYYY,
   sortRecordsByArrivalTime,
   groupRecordsByPeriod,
   RecordGroupPeriod,
 } from '../lib/dateFilters.ts';
 import { ActiveTab } from './Navigation.tsx';
+import {
+  RecordCard,
+  ExpenseDetailPopupModal,
+  IncomeDetailPopupModal,
+} from './RecordCard.tsx';
 
 interface DashboardViewProps {
   incomes: IncomeReceipt[];
@@ -53,6 +58,8 @@ interface DashboardViewProps {
   onSelectTimeRange?: (range: TimeRangePreset) => void;
   onNavigateToTab: (tab: ActiveTab) => void;
   onEditExpense?: (expense: FlexibleExpense) => void;
+  onDeleteExpense?: (id: string) => Promise<void>;
+  onDeleteIncome?: (id: string) => Promise<void>;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -65,12 +72,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   timeRange = 'all',
   onNavigateToTab,
   onEditExpense,
+  onDeleteExpense,
+  onDeleteIncome,
 }) => {
   // Collapse all expandable sections by default
   const [isRecentIncomesCollapsed, setIsRecentIncomesCollapsed] = useState(true);
   const [isRecentExpensesCollapsed, setIsRecentExpensesCollapsed] = useState(true);
   const [isAccountsCollapsed, setIsAccountsCollapsed] = useState(true);
   const [recordGroupBy, setRecordGroupBy] = useState<RecordGroupPeriod>('none');
+  const [selectedPopupIncome, setSelectedPopupIncome] = useState<IncomeReceipt | null>(null);
+  const [selectedPopupExpense, setSelectedPopupExpense] = useState<FlexibleExpense | null>(null);
   const [fxSnapshot, setFxSnapshot] = useState<MarketFxSnapshot>(() =>
     getInitialFxSnapshot(currency)
   );
@@ -542,7 +553,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             {group.label} ({group.items.length})
                           </div>
                         )}
-                        <div className="divide-y divide-slate-100">
+                        <div className="space-y-2">
                           {group.items.map((inc) => {
                             const resolvedAccId = resolveValidAccountId(
                               inc.accountId,
@@ -564,86 +575,27 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               nativeGross,
                               currency: incCurr,
                             } = getIncomeBaseGross(inc, settings, accounts, fxSnapshot);
-                            const deds = getEffectiveIncomeDeductions(inc, settings);
-                            const nativeDedTotal =
-                              Math.round(
-                                deds.reduce((sum, d) => sum + d.amount, 0) * 100
-                              ) / 100;
-                            const nativeNetAmt =
-                              Math.round((nativeGross - nativeDedTotal) * 100) / 100;
 
                             const showInOriginal =
                               settings.totalsCurrencyMode === 'original';
                             const dispCurr = showInOriginal ? incCurr : currency;
                             const dispGross = showInOriginal ? nativeGross : baseGross;
-                            const dispDed = showInOriginal
-                              ? nativeDedTotal
-                              : convertCurrency2dp(
-                                  nativeDedTotal,
-                                  incCurr,
-                                  currency,
-                                  fxSnapshot
-                                ).convertedAmount;
-                            const dispNet = showInOriginal
-                              ? nativeNetAmt
-                              : convertCurrency2dp(
-                                  nativeNetAmt,
-                                  incCurr,
-                                  currency,
-                                  fxSnapshot
-                                ).convertedAmount;
 
                             return (
-                              <div key={inc.id} className="py-3.5 first:pt-0 last:pb-0 space-y-1.5">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="min-w-0 flex-1">
-                                    <div className="font-display text-sm font-semibold text-slate-900 break-words">
-                                      {inc.clientOrSource}
-                                    </div>
-                                    <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500 mt-0.5">
-                                      <span className="font-mono tabular-nums">
-                                        {formatDateTimeDDMMYYYY(inc.date, inc.createdAt)}
-                                      </span>
-                                      {inc.notes && (
-                                        <>
-                                          <span aria-hidden="true">·</span>
-                                          <span className="break-words">{inc.notes}</span>
-                                        </>
-                                      )}
-                                      <span aria-hidden="true">·</span>
-                                      <span className="font-medium text-slate-700 break-words">
-                                        {netDestAcc
-                                          ? `${acc?.name || 'Account'} → Net to ${netDestAcc.name}`
-                                          : acc?.name || 'Account'}
-                                      </span>
-                                    </div>
-                                  </div>
-
-                                  <div className="text-right font-mono shrink-0 tabular-nums">
-                                    <div className="text-sm font-semibold text-slate-900">
-                                      {formatAmount(dispGross, dispCurr)}
-                                    </div>
-                                    {incCurr !== currency && (
-                                      <div className="text-[11px] text-slate-400">
-                                        {showInOriginal
-                                          ? `≈ ${formatAmount(baseGross, currency)}`
-                                          : formatAmount(nativeGross, incCurr)}
-                                      </div>
-                                    )}
-                                    {dispDed > 0 && (
-                                      <div className="text-xs text-rose-600">
-                                        -{formatAmount(dispDed, dispCurr)}
-                                      </div>
-                                    )}
-                                    <div
-                                      className="text-xs font-medium"
-                                      style={{ color: colorConfig.primary }}
-                                    >
-                                      Net: {formatAmount(dispNet, dispCurr)}
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
+                              <RecordCard
+                                key={inc.id}
+                                subcategory={inc.clientOrSource || 'Income'}
+                                subcategoryColor="#059669"
+                                accountName={
+                                  netDestAcc
+                                    ? `${acc?.name || 'Account'} → ${netDestAcc.name}`
+                                    : acc?.name || 'Account'
+                                }
+                                amountText={`+${formatAmount(dispGross, dispCurr)}`}
+                                recordType="income"
+                                date={inc.date}
+                                onClick={() => setSelectedPopupIncome(inc)}
+                              />
                             );
                           })}
                         </div>
@@ -713,54 +665,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             {group.label} ({group.items.length})
                           </div>
                         )}
-                        <div className="divide-y divide-slate-100">
+                        <div className="space-y-2">
                           {group.items.map((exp) => {
                             const acc =
                               accounts.find((a) => a.id === exp.accountId) ||
                               defaultAccount;
+                            const subLabel =
+                              exp.subcategory || exp.category || 'Expense';
+                            const subColor = resolveIntuitiveSubcategoryColor(
+                              exp.subcategory,
+                              exp.category,
+                              settings,
+                              expenses
+                            );
                             return (
-                              <div
+                              <RecordCard
                                 key={exp.id}
-                                className="py-3 first:pt-0 last:pb-0 flex items-center justify-between gap-3"
-                              >
-                                <div className="min-w-0 flex-1">
-                                  <div className="font-display text-xs sm:text-sm font-semibold text-slate-900 break-words">
-                                    {exp.recipient || exp.description || exp.category}
-                                  </div>
-                                  <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500 mt-0.5">
-                                    <span className="font-mono tabular-nums">
-                                      {formatDateTimeDDMMYYYY(exp.date, exp.createdAt)}
-                                    </span>
-                                    <span>·</span>
-                                    <span>{exp.subcategory || exp.category}</span>
-                                    <span>·</span>
-                                    <span className="font-medium text-slate-700">
-                                      {acc?.name || 'Account'}
-                                    </span>
-                                  </div>
-                                </div>
-                                <div className="flex items-center gap-2 shrink-0">
-                                  <span
-                                    className={`font-mono text-xs sm:text-sm font-semibold tabular-nums ${
-                                      exp.vaultAction === 'credit'
-                                        ? 'text-emerald-700'
-                                        : 'text-rose-600'
-                                    }`}
-                                  >
-                                    {exp.vaultAction === 'credit' ? '+' : '-'}
-                                    {formatAmount(exp.amount, currency)}
-                                  </span>
-                                  {onEditExpense && (
-                                    <button
-                                      type="button"
-                                      onClick={() => onEditExpense(exp)}
-                                      className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
-                                    >
-                                      Edit
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
+                                subcategory={subLabel}
+                                subcategoryColor={subColor}
+                                accountName={acc?.name || 'Account'}
+                                amountText={`-${formatAmount(exp.amount, currency)}`}
+                                recordType="expense"
+                                date={exp.date}
+                                onClick={() => setSelectedPopupExpense(exp)}
+                              />
                             );
                           })}
                         </div>
@@ -884,6 +812,43 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           )}
         </div>
       </div>
+
+      {/* Pop-Up Modals for Income & Expense Record Cards */}
+      <IncomeDetailPopupModal
+        income={selectedPopupIncome}
+        accounts={accounts}
+        settings={settings}
+        expenses={expenses}
+        currency={currency}
+        fxSnapshot={fxSnapshot}
+        onClose={() => setSelectedPopupIncome(null)}
+        onEdit={() => onNavigateToTab('income_log')}
+        onDelete={
+          onDeleteIncome
+            ? (inc) => {
+                onDeleteIncome(inc.id);
+              }
+            : undefined
+        }
+      />
+
+      <ExpenseDetailPopupModal
+        expense={selectedPopupExpense}
+        accounts={accounts}
+        settings={settings}
+        expenses={expenses}
+        currency={currency}
+        fxSnapshot={fxSnapshot}
+        onClose={() => setSelectedPopupExpense(null)}
+        onEdit={onEditExpense}
+        onDelete={
+          onDeleteExpense
+            ? (exp) => {
+                onDeleteExpense(exp.id);
+              }
+            : undefined
+        }
+      />
     </div>
   );
 };

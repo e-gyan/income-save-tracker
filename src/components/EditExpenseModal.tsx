@@ -220,7 +220,7 @@ export const EditExpenseModal: React.FC<EditExpenseModalProps> = ({
         ...expense,
         date: date || expense.date,
         accountId: accountId || expense.accountId,
-        recipient: cleanRecipient || cleanSub || cleanCategory,
+        recipient: cleanRecipient || undefined,
         category: cleanCategory,
         subcategory: cleanSub || undefined,
         subcategoryColor: resolvedColor,
@@ -229,8 +229,7 @@ export const EditExpenseModal: React.FC<EditExpenseModalProps> = ({
         exchangeRate: exchangeRate2dp,
         amount: convertedAmount,
         notes: cleanNotes || undefined,
-        description:
-          cleanNotes || cleanRecipient || cleanSub || cleanCategory || 'Expense',
+        description: cleanSub || cleanCategory || 'Expense',
         vaultAction: isSelectedAccountVault ? vaultAction : undefined,
       });
       onClose();

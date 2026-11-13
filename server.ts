@@ -793,9 +793,7 @@ app.post('/api/import/parse', async (req: Request, res: Response) => {
               raw.incomeSource ||
               raw.source ||
               raw.client ||
-              raw.description ||
-              raw.title ||
-              'Imported Income'
+              'Income'
           ).trim(),
           category: String(raw.category || 'Salary').trim(),
           accountId: accMatch.id,
@@ -810,18 +808,18 @@ app.post('/api/import/parse', async (req: Request, res: Response) => {
           ),
         });
       } else {
+        const cleanCat = String(raw.category || 'General').trim();
+        const cleanSub = String(raw.subcategory || cleanCat || 'General').trim();
         parsedExpenses.push({
           date: dateStr,
           accountId: accMatch.id,
           recipient: String(
-            raw.recipient || raw.to || raw.payee || raw.vendor || raw.merchant || raw.description || 'Imported Expense'
+            raw.recipient || raw.to || raw.payee || raw.vendor || raw.merchant || ''
           ).trim(),
-          category: String(raw.category || 'General').trim(),
-          subcategory: String(raw.subcategory || '').trim() || undefined,
+          category: cleanCat,
+          subcategory: cleanSub,
           notes: String(raw.notes || raw.description || '').trim() || undefined,
-          description: String(
-            raw.description || raw.recipient || raw.notes || raw.category || 'Imported Expense'
-          ).trim(),
+          description: cleanSub,
           currency: rowCurr,
           originalAmount: absAmt,
           exchangeRate: exchangeRate2dp,
@@ -1169,19 +1167,24 @@ Each transfer: { "date": "YYYY-MM-DD", "fromAccount": "string", "toAccount": "st
 });
 
 /**
- * Backend Budget & Account Spend Verification Endpoint
+ * Backend Multi-Purpose Budget & Goal Evaluation Endpoint (`POST /api/budgets/evaluate`)
+ * Evaluates both Expense-linked Budgets (`purposeType: 'budget'`) and Transfer/Savings-linked
+ * Goals (`purposeType: 'goal'`), checking active date windows, auto-recreation settings
+ * (`autoRecreate`, `recreateDays`), and disabling expired budgets without auto-recreate.
  */
 app.post('/api/budgets/evaluate', (req: Request, res: Response) => {
   try {
     const {
       budgets = [],
       expenses = [],
+      transfers = [],
       spendDraft = null,
       baseCurrency = 'GHS',
     } = req.body || {};
 
     const upperBase = String(baseCurrency || 'GHS').toUpperCase();
     const fallbackRates = buildFallbackRatesForBase(upperBase);
+    const todayYmd = new Date().toISOString().split('T')[0];
 
     const convertAmt = (amt: number, fromCurr: string, toCurr: string): number => {
       const f = String(fromCurr || upperBase).toUpperCase();
@@ -1193,28 +1196,65 @@ app.post('/api/budgets/evaluate', (req: Request, res: Response) => {
     };
 
     const evaluated = (Array.isArray(budgets) ? budgets : []).map((b: any) => {
+      const purposeType: 'budget' | 'goal' =
+        b.purposeType === 'goal' ? 'goal' : 'budget';
       const budgetCurr = String(b.currency || upperBase).toUpperCase();
       const subs: string[] = Array.isArray(b.subcategories)
         ? b.subcategories.map((s: any) => String(s || '').trim().toLowerCase())
         : [];
       const limit = round2dp(Number(b.amount || 0));
+      const endYmd = String(b.activePeriodEnd || b.customEndDate || '');
+      const isExpired =
+        Boolean(b.isExpiredDisabled) || Boolean(endYmd && todayYmd > endYmd);
+      const autoRecreate = Boolean(b.autoRecreate);
+      const recreateDays = Math.max(0, Math.round(Number(b.recreateDays || 0)));
+      const isDisabledFromReach = isExpired && !autoRecreate;
 
       let spent = 0;
-      for (const exp of Array.isArray(expenses) ? expenses : []) {
-        if (!exp || exp.vaultAction === 'credit') continue;
-        const expSub = String(exp.subcategory || '').trim().toLowerCase();
-        if (!subs.includes(expSub)) continue;
-        if (b.accountId && exp.accountId !== b.accountId) continue;
-        const rawAmt = Number(exp.originalAmount ?? exp.amount ?? 0);
-        const expCurr = String(exp.currency || upperBase).toUpperCase();
-        spent = round2dp(spent + convertAmt(rawAmt, expCurr, budgetCurr));
+
+      if (purposeType === 'goal') {
+        const goalCauseLower = String(b.goalCause || '').trim().toLowerCase();
+        for (const tr of Array.isArray(transfers) ? transfers : []) {
+          if (!tr) continue;
+          if (b.accountId && tr.destinationAccountId !== b.accountId) continue;
+          if (!b.accountId && goalCauseLower) {
+            const descMatch = String(tr.description || '')
+              .toLowerCase()
+              .includes(goalCauseLower);
+            if (!descMatch && tr.transferType !== 'savings_deduction') continue;
+          }
+          const rawAmt = Number(tr.destinationAmount ?? tr.amount ?? 0);
+          const trCurr = String(
+            tr.destinationCurrency || tr.sourceCurrency || upperBase
+          ).toUpperCase();
+          spent = round2dp(spent + convertAmt(rawAmt, trCurr, budgetCurr));
+        }
+      } else {
+        for (const exp of Array.isArray(expenses) ? expenses : []) {
+          if (!exp || exp.vaultAction === 'credit') continue;
+          const expSub = String(exp.subcategory || '').trim().toLowerCase();
+          if (!subs.includes(expSub)) continue;
+          if (b.accountId && exp.accountId !== b.accountId) continue;
+          const rawAmt = Number(exp.originalAmount ?? exp.amount ?? 0);
+          const expCurr = String(exp.currency || upperBase).toUpperCase();
+          spent = round2dp(spent + convertAmt(rawAmt, expCurr, budgetCurr));
+        }
       }
 
-      const residual = round2dp(limit - spent);
+      const residual =
+        purposeType === 'goal'
+          ? round2dp(Math.max(0, limit - spent))
+          : round2dp(limit - spent);
       const percentage = limit > 0 ? round2dp((spent / limit) * 100) : 0;
       const threshold = Number(b.alertThresholdPercent ?? 80);
       const status =
-        limit > 0 && spent > limit
+        purposeType === 'goal'
+          ? limit > 0 && spent >= limit
+            ? 'at_limit'
+            : percentage >= threshold
+            ? 'warning'
+            : 'healthy'
+          : limit > 0 && spent > limit
           ? 'exceeded'
           : limit > 0 && spent === limit
           ? 'at_limit'
@@ -1225,6 +1265,9 @@ app.post('/api/budgets/evaluate', (req: Request, res: Response) => {
       return {
         budgetId: b.id,
         name: b.name,
+        purposeType,
+        goalCause: b.goalCause || undefined,
+        goalSourceType: b.goalSourceType || 'savings_and_transfers',
         periodType: b.periodType || 'monthly',
         scopeType: b.scopeType || (subs.length > 1 ? 'multiple' : 'single'),
         currency: budgetCurr,
@@ -1233,30 +1276,35 @@ app.post('/api/budgets/evaluate', (req: Request, res: Response) => {
         residualAmount: residual,
         usagePercentage: percentage,
         status,
-        spendCheck: spendDraft
-          ? (() => {
-              const draftSub = String(spendDraft.subcategory || '')
-                .trim()
-                .toLowerCase();
-              if (!subs.includes(draftSub)) return null;
-              const addAmt = convertAmt(
-                Number(spendDraft.amount || 0),
-                String(spendDraft.currency || budgetCurr),
-                budgetCurr
-              );
-              const projectedSpent = round2dp(spent + addAmt);
-              const projectedResidual = round2dp(limit - projectedSpent);
-              const projectedPercentage =
-                limit > 0 ? round2dp((projectedSpent / limit) * 100) : 0;
-              return {
-                additionalSpend: addAmt,
-                projectedSpent,
-                projectedResidual,
-                projectedPercentage,
-                exceedsBudget: limit > 0 && projectedSpent > limit,
-              };
-            })()
-          : null,
+        autoRecreate,
+        recreateDays,
+        isExpired,
+        isDisabledFromReach,
+        spendCheck:
+          spendDraft && purposeType === 'budget' && !isDisabledFromReach
+            ? (() => {
+                const draftSub = String(spendDraft.subcategory || '')
+                  .trim()
+                  .toLowerCase();
+                if (!subs.includes(draftSub)) return null;
+                const addAmt = convertAmt(
+                  Number(spendDraft.amount || 0),
+                  String(spendDraft.currency || budgetCurr),
+                  budgetCurr
+                );
+                const projectedSpent = round2dp(spent + addAmt);
+                const projectedResidual = round2dp(limit - projectedSpent);
+                const projectedPercentage =
+                  limit > 0 ? round2dp((projectedSpent / limit) * 100) : 0;
+                return {
+                  additionalSpend: addAmt,
+                  projectedSpent,
+                  projectedResidual,
+                  projectedPercentage,
+                  exceedsBudget: limit > 0 && projectedSpent > limit,
+                };
+              })()
+            : null,
       };
     });
 
@@ -1268,6 +1316,93 @@ app.post('/api/budgets/evaluate', (req: Request, res: Response) => {
     return res.status(500).json({
       success: false,
       error: err?.message || 'Budget evaluation failed.',
+    });
+  }
+});
+
+/**
+ * Backend Budget Auto-Recreation & Expiration Reconciliation Endpoint (`POST /api/budgets/reconcile`)
+ * Recreates expired budgets that have `autoRecreate: true` for `recreateDays` days,
+ * and marks expired budgets without `autoRecreate` as `isExpiredDisabled: true`.
+ */
+app.post('/api/budgets/reconcile', (req: Request, res: Response) => {
+  try {
+    const { budgets = [] } = req.body || {};
+    const today = new Date();
+    const todayYmd = today.toISOString().split('T')[0];
+    const nowIso = today.toISOString();
+
+    const nextBudgets: any[] = [];
+    const changedBudgets: any[] = [];
+    const recreatedList: any[] = [];
+
+    for (let i = 0; i < (Array.isArray(budgets) ? budgets.length : 0); i++) {
+      const b = budgets[i];
+      if (!b || b.isArchivedPeriod) {
+        if (b) nextBudgets.push(b);
+        continue;
+      }
+
+      const endYmd = String(b.activePeriodEnd || b.customEndDate || '');
+      if (endYmd && todayYmd > endYmd) {
+        if (b.autoRecreate) {
+          const days = Math.max(1, Math.round(Number(b.recreateDays || 30)));
+          const startD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+          const endD = new Date(startD);
+          endD.setDate(startD.getDate() + days - 1);
+          const newStartYmd = startD.toISOString().split('T')[0];
+          const newEndYmd = endD.toISOString().split('T')[0];
+
+          const archived = {
+            ...b,
+            isArchivedPeriod: true,
+            isExpiredDisabled: false,
+            updatedAt: nowIso,
+          };
+          nextBudgets.push(archived);
+          changedBudgets.push(archived);
+
+          const recreated = {
+            ...b,
+            id: `bgt_rec_${Date.now()}_${i}`,
+            activePeriodStart: newStartYmd,
+            activePeriodEnd: newEndYmd,
+            customStartDate: b.periodType === 'custom' ? newStartYmd : b.customStartDate,
+            customEndDate: b.periodType === 'custom' ? newEndYmd : b.customEndDate,
+            autoRecreate: true,
+            recreateDays: days,
+            parentRecurringBudgetId: b.parentRecurringBudgetId || b.id,
+            isArchivedPeriod: false,
+            isExpiredDisabled: false,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          };
+          recreatedList.push(recreated);
+          changedBudgets.push(recreated);
+        } else {
+          const disabled = {
+            ...b,
+            isExpiredDisabled: true,
+            updatedAt: nowIso,
+          };
+          nextBudgets.push(disabled);
+          changedBudgets.push(disabled);
+        }
+      } else {
+        nextBudgets.push(b);
+      }
+    }
+
+    return res.json({
+      success: true,
+      nextBudgets: [...recreatedList, ...nextBudgets],
+      changedBudgets,
+      hasChanges: changedBudgets.length > 0,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Budget reconciliation failed.',
     });
   }
 });
@@ -1446,18 +1581,18 @@ app.post('/api/expenses/update', (req: Request, res: Response) => {
       upperBase
     );
 
+    const cleanCategory = String(expense.category || 'Uncategorized').trim();
+    const cleanSubcategory = expense.subcategory
+      ? String(expense.subcategory).trim()
+      : cleanCategory;
     const normalizedExpense = {
       ...expense,
       date: normalizeDateString(expense.date),
-      category: String(expense.category || 'Uncategorized').trim(),
-      subcategory: expense.subcategory
-        ? String(expense.subcategory).trim()
-        : undefined,
+      category: cleanCategory,
+      subcategory: cleanSubcategory,
       recipient: String(expense.recipient || '').trim(),
-      notes: String(expense.notes || expense.description || '').trim(),
-      description: String(
-        expense.notes || expense.description || expense.recipient || expense.category || 'Expense'
-      ).trim(),
+      notes: String(expense.notes || '').trim() || undefined,
+      description: cleanSubcategory,
       currency: expCurr,
       originalAmount: rawNativeAmt,
       exchangeRate: exchangeRate2dp,
@@ -1636,6 +1771,111 @@ app.post('/api/categories/move-subcategory', (req: Request, res: Response) => {
     return res.status(500).json({
       success: false,
       error: err?.message || 'Moving subcategory failed.',
+    });
+  }
+});
+
+/**
+ * Backend Record Card Formatting Endpoint (`POST /api/records/format-card`)
+ * Formats any record (income, expense, transfer) into the standardized 2x2 card structure:
+ * - Top-Left: Subcategory only (with subcategory color; never doubled with category, never notes/description)
+ * - Bottom-Left: Account name
+ * - Top-Right: Amount (emerald for income, red for expense, blue for transfer)
+ * - Bottom-Right: Date only in dd/mm/yyyy (time dd/mm/yyyy, hh:mm is returned in popupDetails)
+ */
+app.post('/api/records/format-card', (req: Request, res: Response) => {
+  try {
+    const {
+      record = {},
+      recordType = 'expense',
+      accountName = 'Account',
+      destinationAccountName = '',
+      subcategoryColor = '#059669',
+      currency = 'GHS',
+    } = req.body || {};
+
+    const normalizedDate = normalizeDateString(record.date);
+    const [yyyy, mm, dd] = normalizedDate.split('-');
+    const dateOnlyDDMMYYYY =
+      yyyy && mm && dd ? `${dd}/${mm}/${yyyy}` : normalizedDate;
+
+    let timeHHMM = '00:00';
+    if (record.createdAt) {
+      const parsedTime = new Date(record.createdAt);
+      if (!isNaN(parsedTime.getTime())) {
+        const hrs = String(parsedTime.getHours()).padStart(2, '0');
+        const mins = String(parsedTime.getMinutes()).padStart(2, '0');
+        timeHHMM = `${hrs}:${mins}`;
+      }
+    }
+
+    const type: 'income' | 'expense' | 'transfer' =
+      recordType === 'income'
+        ? 'income'
+        : recordType === 'transfer'
+        ? 'transfer'
+        : 'expense';
+
+    const topLeftSubcategory =
+      type === 'income'
+        ? String(record.clientOrSource || 'Income').trim()
+        : type === 'transfer'
+        ? record.transferType === 'savings_deduction' ||
+          String(record.id || '').startsWith('trans_sav_')
+          ? 'Savings Allocation'
+          : String(record.id || '').startsWith('trans_net_')
+          ? 'Net Income Transfer'
+          : 'Fund Transfer'
+        : String(record.subcategory || record.category || 'Expense').trim();
+
+    const bottomLeftAccount =
+      type === 'transfer' && destinationAccountName
+        ? `${accountName} → ${destinationAccountName}`
+        : String(accountName || 'Account').trim();
+
+    const amountColorClass =
+      type === 'income'
+        ? 'text-emerald-600'
+        : type === 'transfer'
+        ? 'text-blue-600'
+        : 'text-rose-600';
+
+    const rawAmount = round2dp(
+      Number(
+        record.originalAmount ??
+          record.originalGrossAmount ??
+          record.destinationAmount ??
+          record.amount ??
+          record.grossAmount ??
+          0
+      )
+    );
+
+    return res.json({
+      success: true,
+      card: {
+        topLeftSubcategory,
+        subcategoryColor,
+        bottomLeftAccount,
+        topRightAmount: rawAmount,
+        currency: String(record.currency || currency).toUpperCase(),
+        recordType: type,
+        amountColorClass,
+        bottomRightDate: dateOnlyDDMMYYYY,
+      },
+      popupDetails: {
+        dateTimeFormatted: `${dateOnlyDDMMYYYY}, ${timeHHMM}`,
+        category: String(record.category || '').trim() || undefined,
+        subcategory: topLeftSubcategory,
+        account: bottomLeftAccount,
+        recipientOrOrigin: String(record.recipient || '').trim() || undefined,
+        notes: String(record.notes || record.description || '').trim() || undefined,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Failed to format record card.',
     });
   }
 });

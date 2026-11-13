@@ -877,6 +877,13 @@ export function subscribeToBudgets(
           id: d.id,
           userId,
           name: item.name || 'Budget',
+          purposeType: item.purposeType === 'goal' ? 'goal' : 'budget',
+          goalCause: item.goalCause || undefined,
+          goalSourceType:
+            item.goalSourceType === 'savings_only' ||
+            item.goalSourceType === 'transfers_only'
+              ? item.goalSourceType
+              : 'savings_and_transfers',
           periodType:
             item.periodType === 'weekly' ||
             item.periodType === 'yearly' ||
@@ -887,10 +894,22 @@ export function subscribeToBudgets(
           customEndDate: item.customEndDate || undefined,
           activePeriodStart: item.activePeriodStart || undefined,
           activePeriodEnd: item.activePeriodEnd || undefined,
+          autoRecreate:
+            item.autoRecreate !== undefined
+              ? Boolean(item.autoRecreate)
+              : undefined,
+          recreateDays:
+            item.recreateDays !== undefined && Number.isFinite(Number(item.recreateDays))
+              ? Math.max(0, Math.round(Number(item.recreateDays)))
+              : undefined,
           parentRecurringBudgetId: item.parentRecurringBudgetId || undefined,
           isArchivedPeriod:
             item.isArchivedPeriod !== undefined
               ? Boolean(item.isArchivedPeriod)
+              : undefined,
+          isExpiredDisabled:
+            item.isExpiredDisabled !== undefined
+              ? Boolean(item.isExpiredDisabled)
               : undefined,
           scopeType: item.scopeType === 'multiple' ? 'multiple' : 'single',
           subcategories: parsedSubs,
@@ -929,6 +948,7 @@ export async function saveFinancialBudget(
     const docData: any = {
       userId,
       name: String(budget.name || 'Budget').slice(0, 150),
+      purposeType: budget.purposeType === 'goal' ? 'goal' : 'budget',
       periodType:
         budget.periodType === 'weekly' ||
         budget.periodType === 'yearly' ||
@@ -946,6 +966,12 @@ export async function saveFinancialBudget(
       createdAt: budget.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+    if (budget.goalCause) {
+      docData.goalCause = String(budget.goalCause).slice(0, 200);
+    }
+    if (budget.goalSourceType) {
+      docData.goalSourceType = String(budget.goalSourceType).slice(0, 40);
+    }
     if (budget.customStartDate) {
       docData.customStartDate = String(budget.customStartDate).slice(0, 30);
     }
@@ -958,11 +984,20 @@ export async function saveFinancialBudget(
     if (budget.activePeriodEnd) {
       docData.activePeriodEnd = String(budget.activePeriodEnd).slice(0, 30);
     }
+    if (budget.autoRecreate !== undefined) {
+      docData.autoRecreate = Boolean(budget.autoRecreate);
+    }
+    if (budget.recreateDays !== undefined && Number.isFinite(Number(budget.recreateDays))) {
+      docData.recreateDays = Math.max(0, Math.round(Number(budget.recreateDays)));
+    }
     if (budget.parentRecurringBudgetId) {
       docData.parentRecurringBudgetId = String(budget.parentRecurringBudgetId).slice(0, 128);
     }
     if (budget.isArchivedPeriod !== undefined) {
       docData.isArchivedPeriod = Boolean(budget.isArchivedPeriod);
+    }
+    if (budget.isExpiredDisabled !== undefined) {
+      docData.isExpiredDisabled = Boolean(budget.isExpiredDisabled);
     }
     if (budget.categories && budget.categories.length > 0) {
       docData.categoriesJson = JSON.stringify(budget.categories).slice(0, 4800);

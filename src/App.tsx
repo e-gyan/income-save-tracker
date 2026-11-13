@@ -1059,7 +1059,7 @@ export default function App() {
     })();
   };
 
-  // Automatically recreate recurring budgets (weekly, monthly, yearly) when their active period elapses
+  // Automatically reconcile budgets and goals when their active period elapses
   useEffect(() => {
     if (budgets.length === 0) return;
     const { nextBudgets, changedBudgets, hasChanges } =
@@ -1086,39 +1086,64 @@ export default function App() {
     }
   ) => {
     const nowIso = new Date().toISOString();
+    const todayYmd = nowIso.split('T')[0];
     let activePeriodStart = budgetData.activePeriodStart;
     let activePeriodEnd = budgetData.activePeriodEnd;
 
     if (budgetData.periodType !== 'custom') {
-      const bounds = computeRecurringPeriodBounds(budgetData.periodType);
-      activePeriodStart = bounds.startYmd;
-      activePeriodEnd = bounds.endYmd;
+      if (!activePeriodStart || !activePeriodEnd) {
+        const bounds = computeRecurringPeriodBounds(budgetData.periodType);
+        activePeriodStart = bounds.startYmd;
+        activePeriodEnd = bounds.endYmd;
+      }
     } else {
-      activePeriodStart = undefined;
-      activePeriodEnd = undefined;
+      activePeriodStart = budgetData.customStartDate || activePeriodStart;
+      activePeriodEnd = budgetData.customEndDate || activePeriodEnd;
     }
+
+    const isExpiredNow = Boolean(activePeriodEnd && todayYmd > activePeriodEnd);
+    const shouldAutoRecreate = Boolean(budgetData.autoRecreate);
 
     const budgetWithUser: FinancialBudget = {
       ...budgetData,
       id: budgetData.id || `bgt_${Date.now()}`,
       userId: effectiveUserId,
+      purposeType: budgetData.purposeType === 'goal' ? 'goal' : 'budget',
       activePeriodStart,
       activePeriodEnd,
+      autoRecreate: shouldAutoRecreate,
+      recreateDays:
+        budgetData.recreateDays !== undefined && Number(budgetData.recreateDays) > 0
+          ? Math.max(1, Math.round(Number(budgetData.recreateDays)))
+          : undefined,
       isArchivedPeriod: false,
+      isExpiredDisabled: isExpiredNow && !shouldAutoRecreate,
       createdAt: budgetData.createdAt || nowIso,
       updatedAt: nowIso,
     };
+
     const exists = budgets.some((b) => b.id === budgetWithUser.id);
-    const nextBudgets = exists
+    const rawNextBudgets = exists
       ? budgets.map((b) => (b.id === budgetWithUser.id ? budgetWithUser : b))
       : [budgetWithUser, ...budgets];
-    setBudgets(nextBudgets);
-    setLocalData('budgets', nextBudgets, effectiveUserId);
+
+    const reconciled = reconcileRecurringBudgets(rawNextBudgets);
+    const finalBudgets = reconciled.hasChanges
+      ? reconciled.nextBudgets
+      : rawNextBudgets;
+
+    setBudgets(finalBudgets);
+    setLocalData('budgets', finalBudgets, effectiveUserId);
 
     (async () => {
       try {
         if (currentUser) {
           await saveFinancialBudget(effectiveUserId, budgetWithUser);
+          if (reconciled.hasChanges) {
+            for (const cb of reconciled.changedBudgets) {
+              await saveFinancialBudget(effectiveUserId, cb);
+            }
+          }
         }
       } catch (err) {
         console.error('Budget save error:', err);
@@ -1344,15 +1369,21 @@ export default function App() {
       expenses,
       incomes,
       activeAccounts,
-      settings
+      settings,
+      undefined,
+      new Date(),
+      false,
+      transfers
     );
     return evaluations.filter(
       (ev) =>
-        ev.status === 'exceeded' ||
-        ev.status === 'at_limit' ||
-        ev.status === 'warning'
+        !ev.isDisabledFromReach &&
+        ev.purposeType !== 'goal' &&
+        (ev.status === 'exceeded' ||
+          ev.status === 'at_limit' ||
+          ev.status === 'warning')
     ).length;
-  }, [budgets, expenses, incomes, activeAccounts, settings]);
+  }, [budgets, expenses, incomes, activeAccounts, settings, transfers]);
 
   if (isLoading) {
     return (
@@ -1408,7 +1439,10 @@ export default function App() {
         timeRange={timeRange}
         onSelectTimeRange={setTimeRange}
         accountsCount={activeAccounts.length}
-        budgetsCount={budgets.filter((b) => !b.isArchivedPeriod).length}
+        budgetsCount={
+          budgets.filter((b) => !b.isArchivedPeriod && !b.isExpiredDisabled)
+            .length
+        }
         budgetAlertsCount={budgetAlertsCount}
         onReset={() => setIsCleanSheetModalOpen(true)}
       />
@@ -1429,6 +1463,8 @@ export default function App() {
                 onSelectTimeRange={setTimeRange}
                 onNavigateToTab={setActiveTab}
                 onEditExpense={(exp) => setEditingExpense(exp)}
+                onDeleteExpense={handleDeleteExpense}
+                onDeleteIncome={handleDeleteIncome}
               />
             )}
 
@@ -1482,6 +1518,7 @@ export default function App() {
                 onSaveBudget={handleSaveBudget}
                 onDeleteBudget={handleDeleteBudget}
                 onEditExpense={(exp) => setEditingExpense(exp)}
+                onDeleteExpense={handleDeleteExpense}
                 onNavigateToTab={setActiveTab}
               />
             )}
@@ -1521,6 +1558,7 @@ export default function App() {
                 timeRange={timeRange}
                 onNavigateToTab={setActiveTab}
                 onEditExpense={(exp) => setEditingExpense(exp)}
+                onDeleteExpense={handleDeleteExpense}
               />
             )}
 

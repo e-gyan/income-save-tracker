@@ -469,8 +469,23 @@
         },
         "name": {
           "type": "string",
-          "description": "Budget display name",
+          "description": "Budget or goal display name",
           "maxLength": 150
+        },
+        "purposeType": {
+          "type": "string",
+          "description": "Whether this record is an expense budget or a savings/transfer goal (budget or goal)",
+          "maxLength": 20
+        },
+        "goalCause": {
+          "type": "string",
+          "description": "Target cause or objective when purposeType is goal",
+          "maxLength": 200
+        },
+        "goalSourceType": {
+          "type": "string",
+          "description": "Funding source tracked for a goal: savings_and_transfers, savings_only, or transfers_only",
+          "maxLength": 40
         },
         "periodType": {
           "type": "string",
@@ -497,6 +512,14 @@
           "description": "End date of the active recurring cycle (YYYY-MM-DD)",
           "maxLength": 30
         },
+        "autoRecreate": {
+          "type": "boolean",
+          "description": "Whether the budget should automatically recreate after its date period expires"
+        },
+        "recreateDays": {
+          "type": "number",
+          "description": "Number of days for or after expiry to recreate the budget"
+        },
         "parentRecurringBudgetId": {
           "type": "string",
           "description": "Parent recurring budget ID when recreated for a new cycle",
@@ -505,6 +528,10 @@
         "isArchivedPeriod": {
           "type": "boolean",
           "description": "Whether this recurring budget cycle has elapsed and been recreated"
+        },
+        "isExpiredDisabled": {
+          "type": "boolean",
+          "description": "Whether this budget has expired without autoRecreate enabled"
         },
         "scopeType": {
           "type": "string",

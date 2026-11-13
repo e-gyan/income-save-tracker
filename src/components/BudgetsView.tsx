@@ -1,57 +1,79 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   FinancialBudget,
   BudgetPeriodType,
   BudgetScopeType,
+  BudgetPurposeType,
+  GoalSourceType,
   FlexibleExpense,
   IncomeReceipt,
-  FinancialAccount,
   AccountTransfer,
+  FinancialAccount,
   UserSettings,
-  ExpenseCategoryPreference,
 } from '../types/finance.ts';
 import {
-  formatAmount,
-  calculateAccountSummaries,
-  getEffectiveExpenseCategoryPreferences,
-  resolveIntuitiveSubcategoryColor,
-  addCurrencyBucketAmount,
-  mapToCurrencyBucketTotals,
-  formatTotalByCurrencyMode,
-  getSecondaryCurrencyModeCaption,
-  getSubcategoryBadgeStyle,
-} from '../lib/calculations.ts';
-import {
   evaluateAllBudgets,
-  computeRecurringPeriodBounds,
   EvaluatedBudget,
+  normalizeSubcategoryKey,
+  getDefaultRecreateDaysForPeriod,
 } from '../lib/budgetCalculations.ts';
 import {
+  getEffectiveExpenseCategoryPreferences,
+  resolveIntuitiveSubcategoryColor,
+} from '../lib/calculations.ts';
+import {
   SUPPORTED_CURRENCIES,
-  fetchMarketExchangeRates,
-  getInitialFxSnapshot,
-  convertCurrency2dp,
-  roundTo2Decimals,
-  format2PointFloat,
   getAccountCurrency,
-  getAccountNativeBalance,
+  getInitialFxSnapshot,
+  fetchMarketExchangeRates,
   MarketFxSnapshot,
+  roundTo2Decimals,
 } from '../lib/currencyService.ts';
-import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
-import { ActiveTab } from './Navigation.tsx';
 import {
   formatDateDDMMYYYY,
-  formatDateTimeDDMMYYYY,
-  groupRecordsByPeriod,
   RecordGroupPeriod,
+  groupRecordsByPeriod,
 } from '../lib/dateFilters.ts';
+import { getColorThemeConfig } from '../lib/colorThemes.ts';
+import {
+  RecordCard,
+  ExpenseDetailPopupModal,
+  TransferDetailPopupModal,
+} from './RecordCard.tsx';
+import {
+  Target,
+  Plus,
+  Trash2,
+  Edit2,
+  Check,
+  X,
+  Calendar,
+  Layers,
+  Tag,
+  Wallet,
+  ArrowRight,
+  Search,
+  ChevronRight,
+  RotateCcw,
+  Archive,
+  TrendingUp,
+  Lock,
+} from 'lucide-react';
+
+function formatCurrency(val: number, curr: string): string {
+  const code = (curr || 'GHS').toUpperCase();
+  return `${code} ${roundTo2Decimals(val).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
 
 interface BudgetsViewProps {
   budgets: FinancialBudget[];
   expenses: FlexibleExpense[];
   incomes: IncomeReceipt[];
-  accounts: FinancialAccount[];
   transfers: AccountTransfer[];
+  accounts: FinancialAccount[];
   settings: UserSettings;
   currency: string;
   onSaveBudget: (
@@ -59,1272 +81,1499 @@ interface BudgetsViewProps {
       id?: string;
       createdAt?: string;
     }
-  ) => Promise<void>;
-  onDeleteBudget: (id: string) => Promise<void>;
+  ) => void;
+  onDeleteBudget: (budgetId: string) => void;
   onEditExpense?: (expense: FlexibleExpense) => void;
-  onNavigateToTab?: (tab: ActiveTab) => void;
+  onDeleteExpense?: (id: string) => void;
+  onNavigateToTab?: (tab: any) => void;
 }
+
+type WorkspaceTab = 'budgets' | 'goals' | 'expired';
 
 export const BudgetsView: React.FC<BudgetsViewProps> = ({
   budgets,
   expenses,
   incomes,
-  accounts,
   transfers,
+  accounts,
   settings,
   currency,
   onSaveBudget,
   onDeleteBudget,
   onEditExpense,
+  onDeleteExpense,
   onNavigateToTab,
 }) => {
-  const todayStr = new Date().toISOString().substring(0, 10);
-  const endOfMonthStr = useMemo(() => {
-    const now = new Date();
-    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    return lastDay.toISOString().substring(0, 10);
-  }, []);
-
+  const baseCurrency = (currency || settings.currency || 'GHS').toUpperCase();
+  const themeConfig = useMemo(
+    () => getColorThemeConfig(settings.colorTheme),
+    [settings.colorTheme]
+  );
+  const [selectedPopupExpense, setSelectedPopupExpense] =
+    useState<FlexibleExpense | null>(null);
+  const [selectedPopupTransfer, setSelectedPopupTransfer] =
+    useState<AccountTransfer | null>(null);
   const [fxSnapshot, setFxSnapshot] = useState<MarketFxSnapshot>(() =>
-    getInitialFxSnapshot(currency)
+    getInitialFxSnapshot(baseCurrency)
   );
 
   useEffect(() => {
-    fetchMarketExchangeRates(currency).then((snap) => {
-      setFxSnapshot(snap);
-    });
-  }, [currency]);
+    let active = true;
+    fetchMarketExchangeRates(baseCurrency)
+      .then((snap) => {
+        if (active) setFxSnapshot(snap);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [baseCurrency]);
 
-  const categoryPreferences: ExpenseCategoryPreference[] = useMemo(
-    () => getEffectiveExpenseCategoryPreferences(settings, expenses),
-    [settings, expenses]
+  // Top-level workspace tab: Active Budgets | Goals | Expired / Disabled
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('budgets');
+
+  // Form state
+  const [isFormOpen, setIsFormOpen] = useState(false);
+  const [editingBudget, setEditingBudget] = useState<FinancialBudget | null>(
+    null
   );
+  const [purposeType, setPurposeType] = useState<BudgetPurposeType>('budget');
+  const [name, setName] = useState('');
+  const [goalCause, setGoalCause] = useState('');
+  const [goalSourceType, setGoalSourceType] = useState<GoalSourceType>(
+    'savings_and_transfers'
+  );
+  const [periodType, setPeriodType] = useState<BudgetPeriodType>('monthly');
+  const [customStartDate, setCustomStartDate] = useState(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1)
+      .toISOString()
+      .split('T')[0];
+  });
+  const [customEndDate, setCustomEndDate] = useState(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth() + 1, 0)
+      .toISOString()
+      .split('T')[0];
+  });
+  const [autoRecreate, setAutoRecreate] = useState<boolean>(true);
+  const [recreateDays, setRecreateDays] = useState<string>('30');
+  const [scopeType, setScopeType] = useState<BudgetScopeType>('single');
+  const [selectedSubcategories, setSelectedSubcategories] = useState<string[]>(
+    []
+  );
+  const [accountId, setAccountId] = useState<string>('');
+  const [budgetCurrency, setBudgetCurrency] = useState<string>(baseCurrency);
+  const [amount, setAmount] = useState<string>('');
+  const [alertThresholdPercent, setAlertThresholdPercent] =
+    useState<string>('80');
+  const [notes, setNotes] = useState<string>('');
+  const [subSearch, setSubSearch] = useState<string>('');
+  const [customSubInput, setCustomSubInput] = useState<string>('');
+  const [formError, setFormError] = useState<string>('');
 
-  // Flatten all available subcategories with their parent category
-  const availableSubcategories = useMemo(() => {
-    const list: { subcategory: string; category: string }[] = [];
-    const seen = new Set<string>();
+  // Filter state
+  const [filterPeriod, setFilterPeriod] = useState<
+    'all' | BudgetPeriodType
+  >('all');
 
-    for (const pref of categoryPreferences) {
+  // Pop-up modal state when clicking a budget or goal card
+  const [activeModalBudgetId, setActiveModalBudgetId] = useState<string | null>(
+    null
+  );
+  const [modalGroupBy, setModalGroupBy] = useState<RecordGroupPeriod>('none');
+  const [quickRecreateDays, setQuickRecreateDays] = useState<string>('30');
+
+  // Gather all available expense subcategories from settings + historical expenses
+  const allSubcategoryCatalog = useMemo(() => {
+    const prefs = getEffectiveExpenseCategoryPreferences(settings, expenses);
+    const map = new Map<
+      string,
+      { subcategory: string; category: string; color: string }
+    >();
+
+    for (const pref of prefs) {
       for (const sub of pref.subcategories || []) {
         const clean = sub.trim();
-        const key = clean.toLowerCase();
-        if (clean && !seen.has(key)) {
-          seen.add(key);
-          list.push({ subcategory: clean, category: pref.name });
+        if (!clean) continue;
+        const key = normalizeSubcategoryKey(clean);
+        if (!map.has(key)) {
+          map.set(key, {
+            subcategory: clean,
+            category: pref.name,
+            color:
+              pref.subcategoryColors?.[clean] ||
+              resolveIntuitiveSubcategoryColor(
+                clean,
+                pref.name,
+                settings,
+                expenses
+              ),
+          });
         }
       }
     }
 
     for (const exp of expenses) {
       const clean = (exp.subcategory || '').trim();
-      const key = clean.toLowerCase();
-      if (clean && !seen.has(key)) {
-        seen.add(key);
-        list.push({
+      if (!clean) continue;
+      const key = normalizeSubcategoryKey(clean);
+      if (!map.has(key)) {
+        map.set(key, {
           subcategory: clean,
-          category: exp.category || 'Uncategorized',
+          category: exp.category || 'General',
+          color:
+            exp.subcategoryColor ||
+            resolveIntuitiveSubcategoryColor(
+              clean,
+              exp.category,
+              settings,
+              expenses
+            ),
         });
       }
     }
 
-    return list;
-  }, [categoryPreferences, expenses]);
-
-  // Form State
-  const [isFormOpen, setIsFormOpen] = useState(false);
-  const [editingBudget, setEditingBudget] = useState<FinancialBudget | null>(
-    null
-  );
-  const [name, setName] = useState('');
-  const [periodType, setPeriodType] = useState<BudgetPeriodType>('monthly');
-  const [customStartDate, setCustomStartDate] = useState(todayStr);
-  const [customEndDate, setCustomEndDate] = useState(endOfMonthStr);
-  const [scopeType, setScopeType] = useState<BudgetScopeType>('single');
-  const [selectedSubcategories, setSelectedSubcategories] = useState<string[]>(
-    () =>
-      availableSubcategories[0]?.subcategory
-        ? [availableSubcategories[0].subcategory]
-        : []
-  );
-  const [customSubcategoryInput, setCustomSubcategoryInput] = useState('');
-  const [accountId, setAccountId] = useState('');
-  const [budgetCurrency, setBudgetCurrency] = useState(currency);
-  const [amount, setAmount] = useState('');
-  const [alertThresholdPercent, setAlertThresholdPercent] = useState('80');
-  const [notes, setNotes] = useState('');
-  const [formError, setFormError] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // Filter & UI State
-  const [periodFilter, setPeriodFilter] = useState<
-    'all' | 'weekly' | 'monthly' | 'yearly' | 'custom' | 'alerts'
-  >('all');
-  const [showArchivedCycles, setShowArchivedCycles] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedBudgetModalId, setSelectedBudgetModalId] = useState<
-    string | null
-  >(null);
-  const [txGroupBy, setTxGroupBy] = useState<RecordGroupPeriod>('none');
-  const [pendingDeleteBudget, setPendingDeleteBudget] =
-    useState<FinancialBudget | null>(null);
-
-  const archivedBudgetsCount = useMemo(
-    () => budgets.filter((b) => Boolean(b.isArchivedPeriod)).length,
-    [budgets]
-  );
-
-  // Evaluate budgets
-  const evaluatedBudgets: EvaluatedBudget[] = useMemo(
-    () =>
-      evaluateAllBudgets(
-        budgets,
-        expenses,
-        incomes,
-        accounts,
-        settings,
-        fxSnapshot,
-        new Date(),
-        showArchivedCycles
-      ),
-    [budgets, expenses, incomes, accounts, settings, fxSnapshot, showArchivedCycles]
-  );
-
-  // Account summaries to surface negative account alerts alongside budgets
-  const { summaries: accountSummaries } = useMemo(
-    () =>
-      calculateAccountSummaries(
-        accounts,
-        incomes,
-        expenses,
-        settings,
-        transfers,
-        fxSnapshot
-      ),
-    [accounts, incomes, expenses, settings, transfers, fxSnapshot]
-  );
-
-  const negativeAccounts = useMemo(
-    () =>
-      accountSummaries.filter((s) => {
-        const nat =
-          s.nativeCurrentCashBalance ??
-          getAccountNativeBalance(
-            s.currentCashBalance,
-            s.account,
-            currency,
-            fxSnapshot
-          ).amount;
-        return nat < 0;
-      }),
-    [accountSummaries, currency, fxSnapshot]
-  );
-
-  const filteredEvaluatedBudgets = useMemo(() => {
-    return evaluatedBudgets.filter((eb) => {
-      if (periodFilter === 'weekly' && eb.budget.periodType !== 'weekly') {
-        return false;
-      }
-      if (periodFilter === 'monthly' && eb.budget.periodType !== 'monthly') {
-        return false;
-      }
-      if (periodFilter === 'yearly' && eb.budget.periodType !== 'yearly') {
-        return false;
-      }
-      if (periodFilter === 'custom' && eb.budget.periodType !== 'custom') {
-        return false;
-      }
-      if (
-        periodFilter === 'alerts' &&
-        eb.status !== 'exceeded' &&
-        eb.status !== 'at_limit' &&
-        eb.status !== 'warning'
-      ) {
-        return false;
-      }
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        const matchName = eb.budget.name.toLowerCase().includes(q);
-        const matchSub = eb.budget.subcategories.some((s) =>
-          s.toLowerCase().includes(q)
-        );
-        const matchAcc = (eb.linkedAccount?.name || '')
-          .toLowerCase()
-          .includes(q);
-        if (!matchName && !matchSub && !matchAcc) return false;
-      }
-      return true;
-    });
-  }, [evaluatedBudgets, periodFilter, searchQuery]);
-
-  // Consolidated KPI Totals (supporting Base Currency vs. Account/Budget Original Currency mode)
-  const {
-    totalBudgetLimitBase,
-    totalSpentBase,
-    totalResidualBase,
-    budgetLimitByCurrency,
-    spentByCurrency,
-    residualByCurrency,
-    alertBudgetsCount,
-    exceededBudgetsCount,
-  } = useMemo(() => {
-    let limitBase = 0;
-    let spentBase = 0;
-    const limitMap = new Map<string, number>();
-    const spentMap = new Map<string, number>();
-    const residualMap = new Map<string, number>();
-    let alertsCount = 0;
-    let exceededCount = 0;
-
-    for (const eb of filteredEvaluatedBudgets) {
-      const bCurr = (eb.budget.currency || currency).toUpperCase();
-      limitBase += eb.budgetLimitBase;
-      spentBase += eb.spentAmountBase;
-      addCurrencyBucketAmount(limitMap, bCurr, eb.budgetLimit);
-      addCurrencyBucketAmount(spentMap, bCurr, eb.spentAmount);
-      addCurrencyBucketAmount(residualMap, bCurr, eb.residualAmount);
-
-      if (
-        eb.status === 'exceeded' ||
-        eb.status === 'at_limit' ||
-        eb.status === 'warning'
-      ) {
-        alertsCount += 1;
-      }
-      if (eb.status === 'exceeded') {
-        exceededCount += 1;
+    for (const cut of settings.customCuts || []) {
+      const clean = (cut.expenseSubcategory || '').trim();
+      if (!clean) continue;
+      const key = normalizeSubcategoryKey(clean);
+      if (!map.has(key)) {
+        map.set(key, {
+          subcategory: clean,
+          category: cut.expenseCategory || 'Deductions',
+          color: resolveIntuitiveSubcategoryColor(
+            clean,
+            cut.expenseCategory,
+            settings,
+            expenses
+          ),
+        });
       }
     }
 
-    return {
-      totalBudgetLimitBase: roundTo2Decimals(limitBase),
-      totalSpentBase: roundTo2Decimals(spentBase),
-      totalResidualBase: roundTo2Decimals(limitBase - spentBase),
-      budgetLimitByCurrency: mapToCurrencyBucketTotals(limitMap, currency),
-      spentByCurrency: mapToCurrencyBucketTotals(spentMap, currency),
-      residualByCurrency: mapToCurrencyBucketTotals(residualMap, currency),
-      alertBudgetsCount: alertsCount,
-      exceededBudgetsCount: exceededCount,
-    };
-  }, [filteredEvaluatedBudgets, currency]);
-
-  const resetForm = () => {
-    setEditingBudget(null);
-    setName('');
-    setPeriodType('monthly');
-    setCustomStartDate(todayStr);
-    setCustomEndDate(endOfMonthStr);
-    setScopeType('single');
-    setSelectedSubcategories(
-      availableSubcategories[0]?.subcategory
-        ? [availableSubcategories[0].subcategory]
-        : []
+    return Array.from(map.values()).sort((a, b) =>
+      a.subcategory.localeCompare(b.subcategory)
     );
-    setCustomSubcategoryInput('');
+  }, [settings, expenses]);
+
+  const filteredSubcategoryCatalog = useMemo(() => {
+    const q = subSearch.trim().toLowerCase();
+    if (!q) return allSubcategoryCatalog;
+    return allSubcategoryCatalog.filter(
+      (item) =>
+        item.subcategory.toLowerCase().includes(q) ||
+        item.category.toLowerCase().includes(q)
+    );
+  }, [allSubcategoryCatalog, subSearch]);
+
+  // Evaluate all non-archived budgets and goals
+  const evaluatedBudgets = useMemo(() => {
+    return evaluateAllBudgets(
+      budgets,
+      expenses,
+      incomes,
+      accounts,
+      settings,
+      fxSnapshot,
+      new Date(),
+      false,
+      transfers
+    );
+  }, [budgets, expenses, incomes, accounts, settings, fxSnapshot, transfers]);
+
+  // Sync evaluation with backend /api/budgets/evaluate
+  useEffect(() => {
+    if (budgets.length === 0) return;
+    fetch('/api/budgets/evaluate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        budgets: budgets.filter((b) => !b.isArchivedPeriod),
+        expenses,
+        transfers,
+        baseCurrency,
+      }),
+    }).catch(() => {});
+  }, [budgets, expenses, transfers, baseCurrency]);
+
+  // Partition evaluated items into Active Budgets, Active Goals, and Expired / Disabled
+  const { activeExpenseBudgets, activeGoals, expiredDisabledItems } =
+    useMemo(() => {
+      const expBudgets: EvaluatedBudget[] = [];
+      const goals: EvaluatedBudget[] = [];
+      const expired: EvaluatedBudget[] = [];
+
+      for (const ev of evaluatedBudgets) {
+        if (ev.isDisabledFromReach) {
+          expired.push(ev);
+        } else if (ev.purposeType === 'goal') {
+          goals.push(ev);
+        } else {
+          expBudgets.push(ev);
+        }
+      }
+
+      return {
+        activeExpenseBudgets: expBudgets,
+        activeGoals: goals,
+        expiredDisabledItems: expired,
+      };
+    }, [evaluatedBudgets]);
+
+  const displayedEvaluatedBudgets = useMemo(() => {
+    const sourceList =
+      workspaceTab === 'goals'
+        ? activeGoals
+        : workspaceTab === 'expired'
+        ? expiredDisabledItems
+        : activeExpenseBudgets;
+
+    return sourceList.filter((ev) => {
+      if (filterPeriod !== 'all' && ev.budget.periodType !== filterPeriod) {
+        return false;
+      }
+      return true;
+    });
+  }, [
+    workspaceTab,
+    activeExpenseBudgets,
+    activeGoals,
+    expiredDisabledItems,
+    filterPeriod,
+  ]);
+
+  const activeModalEvaluated = useMemo(() => {
+    if (!activeModalBudgetId) return null;
+    return (
+      evaluatedBudgets.find((ev) => ev.budget.id === activeModalBudgetId) ||
+      null
+    );
+  }, [evaluatedBudgets, activeModalBudgetId]);
+
+  useEffect(() => {
+    if (activeModalEvaluated) {
+      setQuickRecreateDays(
+        String(
+          activeModalEvaluated.budget.recreateDays ||
+            activeModalEvaluated.recreateDays ||
+            30
+        )
+      );
+    }
+  }, [activeModalEvaluated]);
+
+  const resetForm = (defaultPurpose?: BudgetPurposeType) => {
+    const targetPurpose =
+      defaultPurpose || (workspaceTab === 'goals' ? 'goal' : 'budget');
+    setEditingBudget(null);
+    setPurposeType(targetPurpose);
+    setName('');
+    setGoalCause('');
+    setGoalSourceType('savings_and_transfers');
+    setPeriodType('monthly');
+    const now = new Date();
+    setCustomStartDate(
+      new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]
+    );
+    setCustomEndDate(
+      new Date(now.getFullYear(), now.getMonth() + 1, 0)
+        .toISOString()
+        .split('T')[0]
+    );
+    setAutoRecreate(targetPurpose === 'budget');
+    setRecreateDays('30');
+    setScopeType('single');
+    setSelectedSubcategories([]);
     setAccountId('');
-    setBudgetCurrency(currency);
+    setBudgetCurrency(baseCurrency);
     setAmount('');
     setAlertThresholdPercent('80');
     setNotes('');
-    setFormError(null);
+    setSubSearch('');
+    setCustomSubInput('');
+    setFormError('');
   };
 
-  const handleOpenCreate = () => {
-    resetForm();
+  const handlePeriodTypeSelect = (pt: BudgetPeriodType) => {
+    setPeriodType(pt);
+    const defaultDays = getDefaultRecreateDaysForPeriod(
+      pt,
+      customStartDate,
+      customEndDate
+    );
+    setRecreateDays(String(defaultDays));
+  };
+
+  const handleOpenCreate = (overridePurpose?: BudgetPurposeType) => {
+    resetForm(overridePurpose);
     setIsFormOpen(true);
   };
 
   const handleOpenEdit = (budget: FinancialBudget) => {
+    setActiveModalBudgetId(null);
     setEditingBudget(budget);
+    setPurposeType(budget.purposeType === 'goal' ? 'goal' : 'budget');
     setName(budget.name);
+    setGoalCause(budget.goalCause || '');
+    setGoalSourceType(budget.goalSourceType || 'savings_and_transfers');
     setPeriodType(budget.periodType);
-    setCustomStartDate(budget.customStartDate || todayStr);
-    setCustomEndDate(budget.customEndDate || endOfMonthStr);
+    if (budget.customStartDate) setCustomStartDate(budget.customStartDate);
+    if (budget.customEndDate) setCustomEndDate(budget.customEndDate);
+    setAutoRecreate(Boolean(budget.autoRecreate));
+    setRecreateDays(
+      String(
+        budget.recreateDays ||
+          getDefaultRecreateDaysForPeriod(
+            budget.periodType,
+            budget.customStartDate,
+            budget.customEndDate
+          )
+      )
+    );
     setScopeType(budget.scopeType);
     setSelectedSubcategories(budget.subcategories || []);
-    setCustomSubcategoryInput('');
     setAccountId(budget.accountId || '');
-    setBudgetCurrency(budget.currency || currency);
-    setAmount(String(budget.amount));
+    setBudgetCurrency(budget.currency || baseCurrency);
+    setAmount(String(budget.amount || ''));
     setAlertThresholdPercent(String(budget.alertThresholdPercent ?? 80));
     setNotes(budget.notes || '');
-    setFormError(null);
+    setFormError('');
     setIsFormOpen(true);
   };
 
-  const handleToggleSubcategory = (sub: string) => {
+  const handleToggleSubcategory = (subName: string) => {
+    const clean = subName.trim();
+    if (!clean) return;
+    setFormError('');
+
     if (scopeType === 'single') {
-      setSelectedSubcategories([sub]);
+      setSelectedSubcategories([clean]);
+      if (!name.trim()) {
+        setName(`${clean} Budget`);
+      }
       return;
     }
-    setSelectedSubcategories((prev) => {
-      const exists = prev.some(
-        (item) => item.toLowerCase() === sub.toLowerCase()
+
+    const exists = selectedSubcategories.some(
+      (s) => normalizeSubcategoryKey(s) === normalizeSubcategoryKey(clean)
+    );
+    if (exists) {
+      setSelectedSubcategories((prev) =>
+        prev.filter(
+          (s) => normalizeSubcategoryKey(s) !== normalizeSubcategoryKey(clean)
+        )
       );
-      if (exists) {
-        return prev.filter((item) => item.toLowerCase() !== sub.toLowerCase());
-      }
-      return [...prev, sub];
-    });
+    } else {
+      setSelectedSubcategories((prev) => [...prev, clean]);
+    }
+  };
+
+  const handleScopeTypeChange = (nextScope: BudgetScopeType) => {
+    setScopeType(nextScope);
+    if (nextScope === 'single' && selectedSubcategories.length > 1) {
+      setSelectedSubcategories([selectedSubcategories[0]]);
+    }
   };
 
   const handleAddCustomSubcategory = () => {
-    const clean = customSubcategoryInput.trim();
+    const clean = customSubInput.trim();
     if (!clean) return;
-    if (scopeType === 'single') {
-      setSelectedSubcategories([clean]);
-    } else {
-      setSelectedSubcategories((prev) =>
-        prev.some((s) => s.toLowerCase() === clean.toLowerCase())
-          ? prev
-          : [...prev, clean]
-      );
-    }
-    setCustomSubcategoryInput('');
+    handleToggleSubcategory(clean);
+    setCustomSubInput('');
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleAccountSelectChange = (accId: string) => {
+    setAccountId(accId);
+    if (accId) {
+      const acc = accounts.find((a) => a.id === accId);
+      if (acc) {
+        setBudgetCurrency(getAccountCurrency(acc, baseCurrency));
+      }
+    }
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setFormError(null);
+    setFormError('');
 
-    const cleanName = name.trim();
+    const cleanName = name.trim() || (purposeType === 'goal' ? goalCause.trim() : '');
     if (!cleanName) {
-      setFormError('Enter a budget name.');
+      setFormError(
+        purposeType === 'goal'
+          ? 'Enter a goal name or target cause.'
+          : 'Enter a budget name.'
+      );
       return;
     }
 
-    const numericAmount = roundTo2Decimals(parseFloat(amount));
-    if (isNaN(numericAmount) || numericAmount <= 0) {
-      setFormError('Enter a valid budget limit greater than zero.');
+    const parsedAmount = roundTo2Decimals(Number(amount));
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      setFormError(
+        purposeType === 'goal'
+          ? 'Enter a valid target amount greater than 0.'
+          : 'Enter a valid budget limit greater than 0.'
+      );
       return;
     }
 
-    const finalSubcategories =
-      scopeType === 'single'
-        ? selectedSubcategories.slice(0, 1)
-        : selectedSubcategories;
-
-    if (finalSubcategories.length === 0) {
-      setFormError('Select at least one expense subcategory.');
-      return;
+    if (purposeType === 'budget') {
+      if (selectedSubcategories.length === 0) {
+        setFormError(
+          scopeType === 'single'
+            ? 'Select 1 expense subcategory for this budget.'
+            : 'Select at least 1 expense subcategory for this budget.'
+        );
+        return;
+      }
     }
 
-    if (periodType === 'custom' && (!customStartDate || !customEndDate)) {
-      setFormError('Specify both start and end dates for a custom period.');
-      return;
+    if (periodType === 'custom') {
+      if (!customStartDate || !customEndDate) {
+        setFormError('Select both start and end dates for custom period.');
+        return;
+      }
+      if (customEndDate < customStartDate) {
+        setFormError('End date cannot be earlier than start date.');
+        return;
+      }
     }
 
-    const parentCats = Array.from(
-      new Set(
-        finalSubcategories
-          .map(
-            (sub) =>
-              availableSubcategories.find(
-                (a) => a.subcategory.toLowerCase() === sub.toLowerCase()
-              )?.category
+    const parsedRecreateDays = Math.max(
+      1,
+      Math.round(
+        Number(recreateDays) ||
+          getDefaultRecreateDaysForPeriod(
+            periodType,
+            customStartDate,
+            customEndDate
           )
-          .filter((c): c is string => Boolean(c))
       )
     );
 
-    const recurringBounds =
-      periodType !== 'custom'
-        ? computeRecurringPeriodBounds(periodType)
-        : null;
+    const finalSubs =
+      purposeType === 'goal'
+        ? selectedSubcategories.length > 0
+          ? selectedSubcategories
+          : [goalCause.trim() || cleanName]
+        : scopeType === 'single'
+        ? [selectedSubcategories[0]]
+        : selectedSubcategories;
 
-    setIsSubmitting(true);
-    try {
-      await onSaveBudget({
-        id: editingBudget?.id,
-        createdAt: editingBudget?.createdAt,
-        name: cleanName,
-        periodType,
-        customStartDate: periodType === 'custom' ? customStartDate : undefined,
-        customEndDate: periodType === 'custom' ? customEndDate : undefined,
-        activePeriodStart: recurringBounds ? recurringBounds.startYmd : undefined,
-        activePeriodEnd: recurringBounds ? recurringBounds.endYmd : undefined,
-        parentRecurringBudgetId: editingBudget?.parentRecurringBudgetId,
-        isArchivedPeriod: false,
-        scopeType,
-        subcategories: finalSubcategories,
-        categories: parentCats.length > 0 ? parentCats : undefined,
-        accountId: accountId || undefined,
-        currency: (budgetCurrency || currency).toUpperCase(),
-        amount: numericAmount,
-        alertThresholdPercent: Math.min(
-          100,
-          Math.max(1, parseFloat(alertThresholdPercent) || 80)
-        ),
-        notes: notes.trim() || undefined,
-      });
-      setIsFormOpen(false);
-      resetForm();
-    } finally {
-      setIsSubmitting(false);
+    const parentCategories = Array.from(
+      new Set(
+        finalSubs
+          .map(
+            (sub) =>
+              allSubcategoryCatalog.find(
+                (c) =>
+                  normalizeSubcategoryKey(c.subcategory) ===
+                  normalizeSubcategoryKey(sub)
+              )?.category
+          )
+          .filter(Boolean) as string[]
+      )
+    );
+
+    const parsedThreshold = Math.min(
+      100,
+      Math.max(1, Math.round(Number(alertThresholdPercent || 80)))
+    );
+
+    onSaveBudget({
+      id: editingBudget?.id,
+      createdAt: editingBudget?.createdAt,
+      name: cleanName,
+      purposeType,
+      goalCause:
+        purposeType === 'goal' ? goalCause.trim() || cleanName : undefined,
+      goalSourceType: purposeType === 'goal' ? goalSourceType : undefined,
+      periodType,
+      customStartDate: periodType === 'custom' ? customStartDate : undefined,
+      customEndDate: periodType === 'custom' ? customEndDate : undefined,
+      activePeriodStart: editingBudget?.activePeriodStart,
+      activePeriodEnd: editingBudget?.activePeriodEnd,
+      autoRecreate,
+      recreateDays: autoRecreate ? parsedRecreateDays : undefined,
+      parentRecurringBudgetId: editingBudget?.parentRecurringBudgetId,
+      isArchivedPeriod: false,
+      isExpiredDisabled: false,
+      scopeType,
+      subcategories: finalSubs,
+      categories: parentCategories.length > 0 ? parentCategories : undefined,
+      accountId: accountId || undefined,
+      currency: budgetCurrency,
+      amount: parsedAmount,
+      alertThresholdPercent: parsedThreshold,
+      notes: notes.trim() || undefined,
+    });
+
+    if (purposeType === 'goal') {
+      setWorkspaceTab('goals');
+    } else {
+      setWorkspaceTab('budgets');
+    }
+
+    setIsFormOpen(false);
+    resetForm();
+  };
+
+  const handleQuickUpdateRecreation = (
+    budget: FinancialBudget,
+    enableAutoRecreate: boolean,
+    daysInput: string
+  ) => {
+    const days = Math.max(
+      1,
+      Math.round(
+        Number(daysInput) ||
+          getDefaultRecreateDaysForPeriod(
+            budget.periodType,
+            budget.customStartDate,
+            budget.customEndDate
+          )
+      )
+    );
+    onSaveBudget({
+      ...budget,
+      autoRecreate: enableAutoRecreate,
+      recreateDays: enableAutoRecreate ? days : undefined,
+      isExpiredDisabled: !enableAutoRecreate && Boolean(budget.isExpiredDisabled),
+    });
+    if (enableAutoRecreate && workspaceTab === 'expired') {
+      setWorkspaceTab(budget.purposeType === 'goal' ? 'goals' : 'budgets');
+      setActiveModalBudgetId(null);
     }
   };
 
-  const activeBudgetsCount = useMemo(
-    () => budgets.filter((b) => !b.isArchivedPeriod).length,
-    [budgets]
-  );
-
   return (
-    <div className="space-y-4 sm:space-y-6">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5 border-b border-slate-200 pb-3.5">
-        <div className="min-w-0">
-          <h1 className="font-display text-lg sm:text-2xl font-bold tracking-tight text-slate-900">
-            Budgets
-          </h1>
-          <p className="mt-0.5 text-xs text-slate-500">
-            Weekly, monthly, yearly, and custom spending limits.
-          </p>
-        </div>
+    <div className="space-y-6 pb-12">
+      {/* Top Header & Workspace Purpose Tabs */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 p-4 sm:p-6 shadow-2xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2.5">
+              <div
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-white shadow-2xs"
+                style={{ backgroundColor: 'var(--app-accent)' }}
+              >
+                <Target className="h-4.5 w-4.5 stroke-[2.2]" />
+              </div>
+              <div>
+                <h2 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900">
+                  Budgets & Goals
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Expense budgets, savings & transfer goals, and auto-recreation cycles
+                </p>
+              </div>
+            </div>
+          </div>
 
-        <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 shrink-0">
-          {onNavigateToTab && (
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => onNavigateToTab('flexible_expenses')}
-              className="rounded-lg border border-slate-200 bg-white px-3 py-2 sm:py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 text-center"
+              onClick={() =>
+                isFormOpen ? setIsFormOpen(false) : handleOpenCreate()
+              }
+              className="inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold text-white shadow-2xs transition-all hover:opacity-95 cursor-pointer shrink-0"
+              style={{ backgroundColor: 'var(--app-accent)' }}
             >
-              Record Expense
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              if (isFormOpen) {
-                setIsFormOpen(false);
-                resetForm();
-              } else {
-                handleOpenCreate();
-              }
-            }}
-            className="rounded-lg bg-slate-900 px-3.5 py-2 sm:py-1.5 text-xs font-bold text-white hover:bg-slate-800 text-center"
-          >
-            {isFormOpen ? 'Close Form' : '+ New Budget'}
-          </button>
-        </div>
-      </div>
-
-      {/* KPI Summary Strip — 2x2 on Mobile, 4-Column on Desktop */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
-        <div className="rounded-xl border border-slate-200 bg-white p-3 sm:p-4 min-w-0">
-          <div className="text-[11px] sm:text-xs text-slate-500 truncate">
-            Total Budgeted
-          </div>
-          <div className="mt-1 font-mono text-sm sm:text-xl font-bold text-slate-900 tabular-nums break-words">
-            {formatTotalByCurrencyMode(
-              totalBudgetLimitBase,
-              budgetLimitByCurrency,
-              settings
-            )}
-          </div>
-          {getSecondaryCurrencyModeCaption(
-            totalBudgetLimitBase,
-            budgetLimitByCurrency,
-            settings
-          ) && (
-            <div className="mt-0.5 font-mono text-[10px] sm:text-[11px] text-slate-400 tabular-nums truncate">
-              {getSecondaryCurrencyModeCaption(
-                totalBudgetLimitBase,
-                budgetLimitByCurrency,
-                settings
+              {isFormOpen ? (
+                <>
+                  <X className="h-4 w-4 stroke-[2.5]" />
+                  Close Form
+                </>
+              ) : (
+                <>
+                  <Plus className="h-4 w-4 stroke-[2.5]" />
+                  {workspaceTab === 'goals' ? 'New Goal' : 'New Budget / Goal'}
+                </>
               )}
-            </div>
-          )}
-        </div>
-
-        <div className="rounded-xl border border-slate-200 bg-white p-3 sm:p-4 min-w-0">
-          <div className="text-[11px] sm:text-xs text-slate-500 truncate">
-            Spent in Period
-          </div>
-          <div className="mt-1 font-mono text-sm sm:text-xl font-bold text-rose-600 tabular-nums break-words">
-            {formatTotalByCurrencyMode(totalSpentBase, spentByCurrency, settings, {
-              prefix: '-',
-            })}
-          </div>
-          <div className="mt-0.5 font-mono text-[10px] sm:text-[11px] text-slate-500 tabular-nums truncate">
-            {totalBudgetLimitBase > 0
-              ? `${roundTo2Decimals(
-                  (totalSpentBase / totalBudgetLimitBase) * 100
-                )}% used`
-              : '0% used'}
+            </button>
           </div>
         </div>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-3 sm:p-4 min-w-0">
-          <div className="text-[11px] sm:text-xs text-slate-500 truncate">
-            Residual Available
-          </div>
-          <div
-            className={`mt-1 font-mono text-sm sm:text-xl font-bold tabular-nums break-words ${
-              totalResidualBase < 0 ? 'text-rose-600' : 'text-emerald-700'
-            }`}
-          >
-            {formatTotalByCurrencyMode(
-              totalResidualBase,
-              residualByCurrency,
-              settings,
-              {
-                prefix: totalResidualBase > 0 ? '+' : '',
-              }
-            )}
-          </div>
-          <div className="mt-0.5 font-mono text-[10px] sm:text-[11px] text-slate-500 tabular-nums truncate">
-            {totalResidualBase < 0
-              ? 'Over budget'
-              : totalBudgetLimitBase > 0
-              ? `${Math.max(
-                  0,
-                  roundTo2Decimals(
-                    100 - (totalSpentBase / totalBudgetLimitBase) * 100
-                  )
-                )}% left`
-              : 'No limits'}
-          </div>
-        </div>
+        {/* Workspace Purpose & Expiration Tabs */}
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
+          <div className="inline-flex items-center rounded-xl bg-slate-100 p-1 gap-1">
+            <button
+              type="button"
+              onClick={() => setWorkspaceTab('budgets')}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-all cursor-pointer ${
+                workspaceTab === 'budgets'
+                  ? 'bg-white text-slate-900 shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Target className="h-3.5 w-3.5 text-emerald-600" />
+              Budgets
+              <span className="rounded-md bg-slate-200/70 px-1.5 py-0.5 text-[10px] font-mono font-bold text-slate-700">
+                {activeExpenseBudgets.length}
+              </span>
+            </button>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-3 sm:p-4 min-w-0">
-          <div className="text-[11px] sm:text-xs text-slate-500 truncate">
-            Alerts
+            <button
+              type="button"
+              onClick={() => setWorkspaceTab('goals')}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-all cursor-pointer ${
+                workspaceTab === 'goals'
+                  ? 'bg-white text-slate-900 shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <TrendingUp className="h-3.5 w-3.5 text-indigo-600" />
+              Goals
+              <span className="rounded-md bg-slate-200/70 px-1.5 py-0.5 text-[10px] font-mono font-bold text-slate-700">
+                {activeGoals.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setWorkspaceTab('expired')}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-all cursor-pointer ${
+                workspaceTab === 'expired'
+                  ? 'bg-white text-slate-900 shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Archive className="h-3.5 w-3.5 text-amber-600" />
+              Expired / Disabled
+              <span
+                className={`rounded-md px-1.5 py-0.5 text-[10px] font-mono font-bold ${
+                  expiredDisabledItems.length > 0
+                    ? 'bg-amber-100 text-amber-800'
+                    : 'bg-slate-200/70 text-slate-700'
+                }`}
+              >
+                {expiredDisabledItems.length}
+              </span>
+            </button>
           </div>
-          <div
-            className={`mt-1 font-mono text-sm sm:text-xl font-bold tabular-nums ${
-              exceededBudgetsCount > 0 || negativeAccounts.length > 0
-                ? 'text-rose-600'
-                : alertBudgetsCount > 0
-                ? 'text-amber-600'
-                : 'text-emerald-700'
-            }`}
-          >
-            {alertBudgetsCount + negativeAccounts.length === 0
-              ? 'Healthy'
-              : `${alertBudgetsCount + negativeAccounts.length} Active`}
-          </div>
-          <div className="mt-0.5 text-[10px] sm:text-[11px] text-slate-500 truncate">
-            {exceededBudgetsCount} over ·{' '}
-            {Math.max(0, alertBudgetsCount - exceededBudgetsCount)} warn ·{' '}
-            {negativeAccounts.length} neg acct
-          </div>
+
+          <span className="text-[11px] font-medium text-slate-500">
+            {workspaceTab === 'budgets' &&
+              'Linked to expenses • Auto-recreates when enabled'}
+            {workspaceTab === 'goals' &&
+              'Linked to savings & transfers • Meets target for a cause'}
+            {workspaceTab === 'expired' &&
+              'Ended without auto-recreate • Disabled from active reach'}
+          </span>
         </div>
       </div>
 
-      {/* Active Alerts Banner (Budgets Exceeded / Warning or Accounts in Negative) */}
-      {(alertBudgetsCount > 0 || negativeAccounts.length > 0) && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3.5 sm:p-4 space-y-2">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <div className="text-xs font-bold text-slate-900">
-              Active Spend & Account Alerts
-            </div>
-            {alertBudgetsCount > 0 && (
-              <button
-                type="button"
-                onClick={() =>
-                  setPeriodFilter((prev) =>
-                    prev === 'alerts' ? 'all' : 'alerts'
-                  )
-                }
-                className="self-start sm:self-auto rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-800 hover:bg-amber-100/50"
-              >
-                {periodFilter === 'alerts'
-                  ? 'Show All Budgets'
-                  : 'Filter Alert Budgets'}
-              </button>
-            )}
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            {evaluatedBudgets
-              .filter(
-                (eb) =>
-                  eb.status === 'exceeded' ||
-                  eb.status === 'at_limit' ||
-                  eb.status === 'warning'
-              )
-              .map((eb) => (
-                <div
-                  key={`alert_${eb.budget.id}`}
-                  className={`flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs ${
-                    eb.status === 'exceeded'
-                      ? 'border-rose-200 bg-rose-50 text-rose-900'
-                      : 'border-amber-200 bg-white text-amber-900'
-                  }`}
-                >
-                  <div className="min-w-0">
-                    <div className="font-bold truncate">{eb.budget.name}</div>
-                    <div className="text-[11px] opacity-85 truncate">
-                      {eb.periodWindow.periodBadge} ·{' '}
-                      {eb.budget.subcategories.join(', ')}
-                    </div>
-                  </div>
-                  <div className="text-right font-mono shrink-0 tabular-nums">
-                    <div
-                      className={`font-bold ${
-                        eb.status === 'exceeded'
-                          ? 'text-rose-600'
-                          : 'text-amber-700'
-                      }`}
-                    >
-                      {eb.usagePercentage}% used
-                    </div>
-                    <div className="text-[11px]">
-                      {eb.residualAmount < 0
-                        ? `Over by ${formatAmount(
-                            Math.abs(eb.residualAmount),
-                            eb.budget.currency
-                          )}`
-                        : `Residual: ${formatAmount(
-                            eb.residualAmount,
-                            eb.budget.currency
-                          )}`}
-                    </div>
-                  </div>
-                </div>
-              ))}
-
-            {negativeAccounts.map((accSum) => {
-              const accCurr = getAccountCurrency(accSum.account, currency);
-              const natBal =
-                accSum.nativeCurrentCashBalance ??
-                getAccountNativeBalance(
-                  accSum.currentCashBalance,
-                  accSum.account,
-                  currency,
-                  fxSnapshot
-                ).amount;
-              return (
-                <div
-                  key={`neg_acc_${accSum.account.id}`}
-                  className="flex items-center justify-between gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-900"
-                >
-                  <div className="min-w-0">
-                    <div className="font-bold truncate">
-                      Account Negative: {accSum.account.name}
-                    </div>
-                    <div className="text-[11px] opacity-85 truncate">
-                      Spending exceeded available account balance
-                    </div>
-                  </div>
-                  <div className="font-mono font-bold text-rose-600 shrink-0 tabular-nums">
-                    {formatAmount(natBal, accCurr)}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Create / Edit Budget Form */}
+      {/* Create / Edit Budget or Goal Form */}
       {isFormOpen && (
         <form
           onSubmit={handleSubmit}
-          className="rounded-xl border border-slate-200 bg-white p-3.5 sm:p-5 space-y-4"
+          className="bg-white rounded-2xl border border-slate-200/90 p-4 sm:p-6 shadow-xs space-y-5"
         >
-          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-            <h2 className="font-display text-sm font-bold text-slate-900 truncate">
-              {editingBudget ? `Edit Budget: ${editingBudget.name}` : 'Create Budget'}
-            </h2>
+          <div className="flex items-center justify-between border-b border-slate-100 pb-3.5">
+            <div className="flex items-center gap-2">
+              <Target className="h-4 w-4 text-emerald-600 stroke-[2.3]" />
+              <h3 className="text-sm font-bold text-slate-900">
+                {editingBudget
+                  ? `Edit ${purposeType === 'goal' ? 'Goal' : 'Budget'}`
+                  : 'Create Budget or Goal'}
+              </h3>
+            </div>
             <button
               type="button"
               onClick={() => {
                 setIsFormOpen(false);
                 resetForm();
               }}
-              className="text-xs font-semibold text-slate-500 hover:text-slate-800 shrink-0"
+              className="text-xs font-semibold text-slate-400 hover:text-slate-600 cursor-pointer"
             >
               Cancel
             </button>
           </div>
 
           {formError && (
-            <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">
-              {formError}
+            <div className="rounded-xl bg-rose-50 border border-rose-200 px-3.5 py-2.5 text-xs font-semibold text-rose-700 flex items-center gap-2">
+              <span>{formError}</span>
             </div>
           )}
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-            {/* 1. Budget Name */}
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Budget Name
+          {/* Purpose Selector: Budget (Expenses) vs Goal (Savings / Transfers) */}
+          <div>
+            <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+              Purpose Type
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                onClick={() => setPurposeType('budget')}
+                className={`flex items-start gap-3 rounded-xl border p-3 text-left transition-all cursor-pointer ${
+                  purposeType === 'budget'
+                    ? 'border-slate-900 bg-slate-900 text-white shadow-2xs'
+                    : 'border-slate-200 bg-slate-50/70 text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <Target
+                  className={`h-4 w-4 mt-0.5 shrink-0 ${
+                    purposeType === 'budget' ? 'text-emerald-400' : 'text-slate-500'
+                  }`}
+                />
+                <div>
+                  <p className="text-xs font-bold">Budget (Expense-Linked)</p>
+                  <p
+                    className={`text-[11px] mt-0.5 ${
+                      purposeType === 'budget' ? 'text-slate-300' : 'text-slate-500'
+                    }`}
+                  >
+                    Tracks spending across single or multiple expense subcategories
+                  </p>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPurposeType('goal')}
+                className={`flex items-start gap-3 rounded-xl border p-3 text-left transition-all cursor-pointer ${
+                  purposeType === 'goal'
+                    ? 'border-slate-900 bg-slate-900 text-white shadow-2xs'
+                    : 'border-slate-200 bg-slate-50/70 text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <TrendingUp
+                  className={`h-4 w-4 mt-0.5 shrink-0 ${
+                    purposeType === 'goal' ? 'text-indigo-400' : 'text-slate-500'
+                  }`}
+                />
+                <div>
+                  <p className="text-xs font-bold">
+                    Goal (Savings & Transfers)
+                  </p>
+                  <p
+                    className={`text-[11px] mt-0.5 ${
+                      purposeType === 'goal' ? 'text-slate-300' : 'text-slate-500'
+                    }`}
+                  >
+                    Tracks transfers or savings allocations to meet a target for a cause
+                  </p>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Budget / Goal Name */}
+            <div className="sm:col-span-2">
+              <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                {purposeType === 'goal' ? 'Goal Name' : 'Budget Name'}
               </label>
               <input
                 type="text"
-                required
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Monthly Utilities, Annual Insurance"
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
+                placeholder={
+                  purposeType === 'goal'
+                    ? 'e.g., Land Acquisition Reserve, Emergency Fund'
+                    : 'e.g., Monthly Groceries & Fuel, Q1 Software'
+                }
+                className="w-full rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-2.5 text-sm font-semibold text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:bg-white focus:outline-none"
               />
             </div>
 
-            {/* 2. Recurrence / Period Type (Weekly, Monthly, Yearly, Custom) */}
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Period Type
+            {/* Period Type */}
+            <div className="sm:col-span-2">
+              <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                Period
               </label>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 rounded-lg border border-slate-200 bg-slate-100 p-1">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 rounded-xl bg-slate-100 p-1">
                 {(
                   [
                     { id: 'weekly', label: 'Weekly' },
                     { id: 'monthly', label: 'Monthly' },
                     { id: 'yearly', label: 'Yearly' },
                     { id: 'custom', label: 'Custom' },
-                  ] as { id: BudgetPeriodType; label: string }[]
-                ).map((item) => (
+                  ] as const
+                ).map((opt) => (
                   <button
-                    key={item.id}
+                    key={opt.id}
                     type="button"
-                    onClick={() => setPeriodType(item.id)}
-                    className={`rounded-md py-1.5 px-1.5 text-xs font-bold transition-colors ${
-                      periodType === item.id
-                        ? 'bg-slate-900 text-white'
+                    onClick={() => handlePeriodTypeSelect(opt.id)}
+                    className={`rounded-lg py-2 px-2 text-xs font-bold transition-all cursor-pointer ${
+                      periodType === opt.id
+                        ? 'bg-white text-slate-900 shadow-2xs'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    {item.label}
+                    {opt.label}
                   </button>
                 ))}
               </div>
-              {periodType !== 'custom' && (
-                <div className="mt-1 text-[10px] text-slate-500">
-                  Auto-recreates each {periodType} period.
+            </div>
+          </div>
+
+          {/* Custom Date Range Pickers */}
+          {periodType === 'custom' && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 rounded-xl bg-slate-50 border border-slate-200/80 p-3.5">
+              <div>
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
+                  Start Date
+                </label>
+                <input
+                  type="date"
+                  value={customStartDate}
+                  onChange={(e) => setCustomStartDate(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
+                  End Date
+                </label>
+                <input
+                  type="date"
+                  value={customEndDate}
+                  onChange={(e) => setCustomEndDate(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Auto-Recreation After Period Expires & Recreation Days */}
+          <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <RotateCcw className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-xs font-bold text-slate-900">
+                    Recreate After Date Period Expires
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    {autoRecreate
+                      ? `Automatically recreates for ${recreateDays || 30} days when the period ends.`
+                      : 'Will be disabled from reach and moved to Expired / Disabled once its period ends.'}
+                  </p>
                 </div>
-              )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAutoRecreate((prev) => !prev)}
+                  className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-all cursor-pointer ${
+                    autoRecreate
+                      ? 'bg-emerald-600 text-white shadow-2xs'
+                      : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
+                  }`}
+                >
+                  {autoRecreate ? 'Enabled' : 'Disabled'}
+                </button>
+              </div>
             </div>
 
-            {/* 3. Budget Limit & Currency */}
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Budget Amount ({budgetCurrency})
-              </label>
-              <div className="flex items-center gap-1.5">
-                <select
-                  value={budgetCurrency}
-                  onChange={(e) => setBudgetCurrency(e.target.value)}
-                  className="rounded-lg border border-slate-300 bg-slate-50 px-2 py-2 font-mono text-xs font-semibold text-slate-800 focus:border-slate-900 focus:outline-none shrink-0"
-                >
-                  {SUPPORTED_CURRENCIES.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
+            {autoRecreate && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-200/70">
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
+                    Recreation Duration (Days)
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="1"
+                      max="3650"
+                      value={recreateDays}
+                      onChange={(e) => setRecreateDays(e.target.value)}
+                      className="w-28 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-mono font-bold text-slate-900 focus:border-emerald-500 focus:outline-none"
+                    />
+                    <span className="text-xs font-semibold text-slate-600">
+                      days per recreated cycle
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {[7, 14, 30, 90, 365].map((presetDays) => (
+                    <button
+                      key={presetDays}
+                      type="button"
+                      onClick={() => setRecreateDays(String(presetDays))}
+                      className={`rounded-lg px-2.5 py-1 text-[11px] font-mono font-bold transition-all cursor-pointer ${
+                        Number(recreateDays) === presetDays
+                          ? 'bg-slate-900 text-white'
+                          : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      {presetDays}d
+                    </button>
                   ))}
-                </select>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Amount, Currency, Account/Vault Scope, and Alert Threshold */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Account or Savings Vault Scope */}
+            <div>
+              <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                {purposeType === 'goal'
+                  ? 'Target Savings Vault / Account'
+                  : 'Account Scope'}
+              </label>
+              <select
+                value={accountId}
+                onChange={(e) => handleAccountSelectChange(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2.5 text-xs font-semibold text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none"
+              >
+                <option value="">
+                  {purposeType === 'goal'
+                    ? 'All Savings Vaults & Transfers'
+                    : 'All Accounts (Global)'}
+                </option>
+                {accounts.map((acc) => {
+                  const accCurr = getAccountCurrency(acc, baseCurrency);
+                  return (
+                    <option key={acc.id} value={acc.id}>
+                      {acc.name} ({accCurr}){acc.isVirtual ? ' • Vault' : ''}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            {/* Currency */}
+            <div>
+              <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                Currency
+              </label>
+              <select
+                value={budgetCurrency}
+                onChange={(e) => setBudgetCurrency(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2.5 text-xs font-semibold text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none"
+              >
+                {SUPPORTED_CURRENCIES.map((code) => (
+                  <option key={code} value={code}>
+                    {code}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Limit / Target Amount */}
+            <div>
+              <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                {purposeType === 'goal'
+                  ? `Target Amount (${budgetCurrency})`
+                  : `Budget Limit (${budgetCurrency})`}
+              </label>
+              <div className="relative">
+                <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-[11px] font-mono font-bold text-slate-400">
+                  {budgetCurrency}
+                </span>
                 <input
                   type="number"
                   step="0.01"
-                  min="0.01"
-                  required
+                  min="0"
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
                   placeholder="0.00"
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs font-semibold text-slate-900 tabular-nums focus:border-slate-900 focus:outline-none"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50/60 pl-12 pr-3 py-2.5 text-sm font-mono font-bold text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:bg-white focus:outline-none"
                 />
               </div>
-              {budgetCurrency !== currency && parseFloat(amount) > 0 && (
-                <div className="mt-1 font-mono text-[11px] text-slate-500 tabular-nums">
-                  ≈{' '}
-                  {formatAmount(
-                    convertCurrency2dp(
-                      parseFloat(amount) || 0,
-                      budgetCurrency,
-                      currency,
-                      fxSnapshot
-                    ).convertedAmount,
-                    currency
-                  )}{' '}
-                  (Rate:{' '}
-                  {format2PointFloat(
-                    convertCurrency2dp(
-                      1,
-                      budgetCurrency,
-                      currency,
-                      fxSnapshot
-                    ).exchangeRate2dp
-                  )}
-                  )
-                </div>
-              )}
             </div>
 
-            {/* 4. Optional Account Scope & Alert Threshold */}
-            <div className="grid grid-cols-3 gap-2">
-              <div className="col-span-2">
-                <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Account to Check
-                </label>
-                <select
-                  value={accountId}
-                  onChange={(e) => {
-                    const nextAccId = e.target.value;
-                    setAccountId(nextAccId);
-                    if (nextAccId) {
-                      const matchedAcc = accounts.find(
-                        (a) => a.id === nextAccId
-                      );
-                      if (matchedAcc) {
-                        setBudgetCurrency(
-                          getAccountCurrency(matchedAcc, currency)
-                        );
-                      }
-                    }
-                  }}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
-                >
-                  <option value="">All Accounts</option>
-                  {accounts.map((acc) => (
-                    <option key={acc.id} value={acc.id}>
-                      {acc.name} ({getAccountCurrency(acc, currency)})
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Alert %
-                </label>
+            {/* Alert / Milestone Threshold % */}
+            <div>
+              <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                {purposeType === 'goal'
+                  ? 'Milestone Mark (%)'
+                  : 'Alert Threshold (%)'}
+              </label>
+              <div className="relative">
                 <input
                   type="number"
                   min="10"
                   max="100"
                   value={alertThresholdPercent}
                   onChange={(e) => setAlertThresholdPercent(e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 font-mono text-xs text-slate-900 tabular-nums focus:border-slate-900 focus:outline-none"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50/60 px-3 pr-8 py-2.5 text-sm font-mono font-bold text-slate-900 focus:border-emerald-500 focus:bg-white focus:outline-none"
                 />
+                <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3 text-xs font-bold text-slate-400">
+                  %
+                </span>
               </div>
             </div>
           </div>
 
-          {/* Custom Date Range Picker (when periodType === 'custom') */}
-          {periodType === 'custom' && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+          {/* Goal Cause & Funding Source OR Expense Subcategories */}
+          {purposeType === 'goal' ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 rounded-xl border border-slate-200/80 bg-slate-50/50 p-4">
               <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Start Date
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                  Target Cause / Objective
                 </label>
                 <input
-                  type="date"
-                  required
-                  value={customStartDate}
-                  onChange={(e) => setCustomStartDate(e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 font-mono text-xs text-slate-900 focus:outline-none"
+                  type="text"
+                  value={goalCause}
+                  onChange={(e) => setGoalCause(e.target.value)}
+                  placeholder="e.g., Treasury Bond, Building Project, Emergency Reserve"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none"
                 />
               </div>
+
               <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">
-                  End Date
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                  Goal Funding Source
                 </label>
-                <input
-                  type="date"
-                  required
-                  value={customEndDate}
-                  onChange={(e) => setCustomEndDate(e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 font-mono text-xs text-slate-900 focus:outline-none"
-                />
+                <select
+                  value={goalSourceType}
+                  onChange={(e) =>
+                    setGoalSourceType(e.target.value as GoalSourceType)
+                  }
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none"
+                >
+                  <option value="savings_and_transfers">
+                    Savings Allocations & Account Transfers
+                  </option>
+                  <option value="savings_only">
+                    Savings Allocations Only
+                  </option>
+                  <option value="transfers_only">
+                    Account Transfers Only
+                  </option>
+                </select>
               </div>
             </div>
-          )}
-
-          {/* Subcategory Scope Selector (Single vs. Multiple) */}
-          <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3 sm:p-3.5 space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-              <div className="text-xs font-bold text-slate-900">
-                Subcategories
-              </div>
-
-              <div className="grid grid-cols-2 gap-1 rounded-lg border border-slate-200 bg-white p-1 w-full sm:w-auto shrink-0">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setScopeType('single');
-                    if (selectedSubcategories.length > 1) {
-                      setSelectedSubcategories([selectedSubcategories[0]]);
-                    }
-                  }}
-                  className={`rounded-md px-3 py-1 text-xs font-bold transition-colors ${
-                    scopeType === 'single'
-                      ? 'bg-slate-900 text-white'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Single
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setScopeType('multiple')}
-                  className={`rounded-md px-3 py-1 text-xs font-bold transition-colors ${
-                    scopeType === 'multiple'
-                      ? 'bg-slate-900 text-white'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Multiple
-                </button>
-              </div>
-            </div>
-
-            {scopeType === 'single' ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          ) : (
+            <div className="space-y-3 rounded-xl border border-slate-200/80 bg-slate-50/50 p-4">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                 <div>
-                  <label className="block text-[11px] font-medium text-slate-600 mb-1">
-                    Select Subcategory
-                  </label>
-                  <select
-                    value={selectedSubcategories[0] || ''}
-                    onChange={(e) =>
-                      setSelectedSubcategories(
-                        e.target.value ? [e.target.value] : []
-                      )
-                    }
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
-                  >
-                    <option value="">Select subcategory...</option>
-                    {categoryPreferences.map((pref) => (
-                      <optgroup key={pref.id} label={pref.name}>
-                        {(pref.subcategories || []).map((sub) => (
-                          <option key={`${pref.id}_${sub}`} value={sub}>
-                            {sub} ({pref.name})
-                          </option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
+                  <span className="text-xs font-bold text-slate-900">
+                    Subcategory Coverage
+                  </span>
                 </div>
 
-                <div>
-                  <label className="block text-[11px] font-medium text-slate-600 mb-1">
-                    Or Enter Custom Subcategory
-                  </label>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      type="text"
-                      value={customSubcategoryInput}
-                      onChange={(e) =>
-                        setCustomSubcategoryInput(e.target.value)
-                      }
-                      placeholder="e.g. Fuel, Internet"
-                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
-                    />
+                <div className="flex items-center gap-2">
+                  <div className="inline-flex rounded-lg bg-white border border-slate-200 p-0.5">
                     <button
                       type="button"
-                      onClick={handleAddCustomSubcategory}
-                      className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-800 hover:bg-slate-100 shrink-0"
+                      onClick={() => handleScopeTypeChange('single')}
+                      className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-bold transition-all cursor-pointer ${
+                        scopeType === 'single'
+                          ? 'bg-slate-900 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
                     >
-                      Set
+                      <Tag className="h-3 w-3" />
+                      Single
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => handleScopeTypeChange('multiple')}
+                      className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-bold transition-all cursor-pointer ${
+                        scopeType === 'multiple'
+                          ? 'bg-slate-900 text-white'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <Layers className="h-3 w-3" />
+                      Multiple
+                    </button>
+                  </div>
+
+                  <div className="relative w-full sm:w-52">
+                    <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                    <input
+                      type="text"
+                      value={subSearch}
+                      onChange={(e) => setSubSearch(e.target.value)}
+                      placeholder="Filter subcategories..."
+                      className="w-full rounded-lg border border-slate-200 bg-white pl-8 pr-2.5 py-1.5 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none"
+                    />
                   </div>
                 </div>
               </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {availableSubcategories.map(({ subcategory, category }) => {
-                    const isSelected = selectedSubcategories.some(
-                      (s) => s.toLowerCase() === subcategory.toLowerCase()
+
+              {/* Selected Pills */}
+              {selectedSubcategories.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                  {selectedSubcategories.map((sub) => {
+                    const meta = allSubcategoryCatalog.find(
+                      (c) =>
+                        normalizeSubcategoryKey(c.subcategory) ===
+                        normalizeSubcategoryKey(sub)
                     );
-                    const dotColor = resolveIntuitiveSubcategoryColor(
-                      subcategory,
-                      category,
-                      settings,
-                      expenses
-                    );
+                    const dotColor = meta?.color || '#10b981';
                     return (
-                      <button
-                        key={`${category}_${subcategory}`}
-                        type="button"
-                        onClick={() => handleToggleSubcategory(subcategory)}
-                        className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition-all ${
-                          isSelected
-                            ? 'border-slate-900 bg-slate-900 text-white font-bold shadow-2xs'
-                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100 font-medium'
-                        }`}
+                      <span
+                        key={sub}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-white border border-slate-200 px-2.5 py-1 text-xs font-bold text-slate-800 shadow-2xs"
                       >
                         <span
                           className="h-2 w-2 rounded-full shrink-0"
                           style={{ backgroundColor: dotColor }}
                         />
-                        <span>{subcategory}</span>
-                        <span
-                          className={`text-[10px] ${
-                            isSelected ? 'text-slate-300' : 'text-slate-400'
-                          }`}
+                        {sub}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSelectedSubcategories((prev) =>
+                              prev.filter((s) => s !== sub)
+                            )
+                          }
+                          className="text-slate-400 hover:text-rose-600 cursor-pointer"
                         >
-                          ({category})
-                        </span>
-                      </button>
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
                     );
                   })}
                 </div>
+              )}
 
-                {/* Add custom subcategory to multiple selection */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-slate-200/70">
-                  <div className="text-[11px] font-medium text-slate-600">
-                    Selected ({selectedSubcategories.length}):{' '}
-                    <span className="font-bold text-slate-900">
-                      {selectedSubcategories.join(', ') || 'None'}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      type="text"
-                      value={customSubcategoryInput}
-                      onChange={(e) =>
-                        setCustomSubcategoryInput(e.target.value)
-                      }
-                      placeholder="Add custom subcategory..."
-                      className="w-full sm:w-auto rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-900 focus:outline-none"
-                    />
+              {/* Subcategory Grid */}
+              <div className="max-h-48 overflow-y-auto pr-1 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 pt-1">
+                {filteredSubcategoryCatalog.map((item) => {
+                  const isSelected = selectedSubcategories.some(
+                    (s) =>
+                      normalizeSubcategoryKey(s) ===
+                      normalizeSubcategoryKey(item.subcategory)
+                  );
+                  return (
                     <button
+                      key={`${item.category}:${item.subcategory}`}
                       type="button"
-                      onClick={handleAddCustomSubcategory}
-                      className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-bold text-slate-800 hover:bg-slate-100 shrink-0"
+                      onClick={() => handleToggleSubcategory(item.subcategory)}
+                      className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left transition-all cursor-pointer ${
+                        isSelected
+                          ? 'border-emerald-500 bg-emerald-50/70 text-emerald-950 shadow-2xs'
+                          : 'border-slate-200/80 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'
+                      }`}
                     >
-                      + Add
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className="h-2.5 w-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: item.color }}
+                        />
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold truncate">
+                            {item.subcategory}
+                          </p>
+                          <p className="text-[10px] text-slate-400 truncate">
+                            {item.category}
+                          </p>
+                        </div>
+                      </div>
+                      {isSelected && (
+                        <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600 stroke-[2.5]" />
+                      )}
                     </button>
-                  </div>
-                </div>
+                  );
+                })}
               </div>
-            )}
-          </div>
 
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+              {/* Add custom subcategory */}
+              <div className="flex items-center gap-2 pt-2 border-t border-slate-200/60">
+                <input
+                  type="text"
+                  value={customSubInput}
+                  onChange={(e) => setCustomSubInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleAddCustomSubcategory();
+                    }
+                  }}
+                  placeholder="Or type a custom subcategory name..."
+                  className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={handleAddCustomSubcategory}
+                  className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-slate-800 cursor-pointer shrink-0"
+                >
+                  Add Subcategory
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Submit Row */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-1">
             <input
               type="text"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               placeholder="Optional note..."
-              className="w-full sm:max-w-md rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-800 focus:border-slate-900 focus:outline-none"
+              className="flex-1 rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-2 text-xs font-medium text-slate-800 placeholder:text-slate-400 focus:border-emerald-500 focus:bg-white focus:outline-none"
             />
-            <div className="grid grid-cols-2 sm:flex sm:items-center justify-end gap-2">
+            <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
                 onClick={() => {
                   setIsFormOpen(false);
                   resetForm();
                 }}
-                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                disabled={isSubmitting}
-                className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-xl px-5 py-2 text-xs font-bold text-white shadow-2xs transition-all hover:opacity-95 cursor-pointer"
+                style={{ backgroundColor: 'var(--app-accent)' }}
               >
-                {isSubmitting
-                  ? 'Saving...'
-                  : editingBudget
-                  ? 'Update Budget'
-                  : 'Save Budget'}
+                <Check className="h-4 w-4 stroke-[2.5]" />
+                {editingBudget
+                  ? `Update ${purposeType === 'goal' ? 'Goal' : 'Budget'}`
+                  : `Save ${purposeType === 'goal' ? 'Goal' : 'Budget'}`}
               </button>
             </div>
           </div>
         </form>
       )}
 
-      {/* Filter & Search Bar — Mobile-Fitted 3-Column Grid on Small Screens */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-        <div className="grid grid-cols-3 sm:flex sm:flex-wrap sm:items-center gap-1 rounded-lg border border-slate-200 bg-white p-1">
-          {(
-            [
-              { id: 'all', label: 'All' },
-              { id: 'weekly', label: 'Weekly' },
-              { id: 'monthly', label: 'Monthly' },
-              { id: 'yearly', label: 'Yearly' },
-              { id: 'custom', label: 'Custom' },
-              { id: 'alerts', label: 'Alerts' },
-            ] as const
-          ).map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setPeriodFilter(tab.id)}
-              className={`rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors text-center ${
-                periodFilter === tab.id
-                  ? 'bg-slate-900 text-white'
-                  : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex items-center gap-2">
-          {archivedBudgetsCount > 0 && (
-            <button
-              type="button"
-              onClick={() => setShowArchivedCycles((prev) => !prev)}
-              className={`rounded-lg border px-2.5 py-1.5 text-xs font-semibold shrink-0 transition-colors ${
-                showArchivedCycles
-                  ? 'border-slate-900 bg-slate-900 text-white'
-                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-              }`}
-            >
-              {showArchivedCycles
-                ? 'Hide Past Cycles'
-                : `Past Cycles (${archivedBudgetsCount})`}
-            </button>
-          )}
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search budget or subcategory..."
-            className="w-full sm:w-60 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
-          />
-        </div>
-      </div>
-
-      {/* Budget Cards Grid */}
-      {filteredEvaluatedBudgets.length === 0 ? (
-        <div className="rounded-xl border border-slate-200 bg-white p-6 sm:p-8 text-center space-y-3">
-          <div className="font-display text-sm font-bold text-slate-900">
-            {activeBudgetsCount === 0
-              ? 'No Budgets Defined Yet'
-              : 'No Budgets Match Your Filter'}
+      {/* Period Filter Bar */}
+      {(activeExpenseBudgets.length > 0 ||
+        activeGoals.length > 0 ||
+        expiredDisabledItems.length > 0) && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+            {(
+              [
+                { id: 'all', label: 'All Periods' },
+                { id: 'weekly', label: 'Weekly' },
+                { id: 'monthly', label: 'Monthly' },
+                { id: 'yearly', label: 'Yearly' },
+                { id: 'custom', label: 'Custom' },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setFilterPeriod(tab.id)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-bold transition-all cursor-pointer shrink-0 ${
+                  filterPeriod === tab.id
+                    ? 'bg-slate-900 text-white shadow-2xs'
+                    : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
           </div>
+
+          <span className="text-[11px] font-medium text-slate-400">
+            Click any card for options & history
+          </span>
+        </div>
+      )}
+
+      {/* Budgets / Goals / Expired Cards Grid */}
+      {displayedEvaluatedBudgets.length === 0 ? (
+        <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-8 sm:p-12 text-center space-y-3">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-500">
+            {workspaceTab === 'goals' ? (
+              <TrendingUp className="h-6 w-6" />
+            ) : workspaceTab === 'expired' ? (
+              <Archive className="h-6 w-6" />
+            ) : (
+              <Target className="h-6 w-6" />
+            )}
+          </div>
+          <h3 className="text-sm font-bold text-slate-900">
+            {workspaceTab === 'goals'
+              ? 'No active savings or transfer goals'
+              : workspaceTab === 'expired'
+              ? 'No expired or disabled budgets'
+              : 'No active expense budgets'}
+          </h3>
           <p className="text-xs text-slate-500 max-w-md mx-auto">
-            Create weekly, monthly, yearly, or custom-period budgets to track progress, residual balances, and spending alerts.
+            {workspaceTab === 'goals'
+              ? 'Create a goal linked to savings allocations or account transfers to track progress toward a cause.'
+              : workspaceTab === 'expired'
+              ? 'Budgets without auto-recreate move here automatically once their date period expires.'
+              : 'Create a weekly, monthly, yearly, or custom budget with optional auto-recreation.'}
           </p>
-          {activeBudgetsCount === 0 && (
+          {workspaceTab !== 'expired' && !isFormOpen && (
             <button
               type="button"
-              onClick={handleOpenCreate}
-              className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:bg-slate-800"
+              onClick={() =>
+                handleOpenCreate(workspaceTab === 'goals' ? 'goal' : 'budget')
+              }
+              className="inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold text-white shadow-2xs cursor-pointer"
+              style={{ backgroundColor: 'var(--app-accent)' }}
             >
-              + Create First Budget
+              <Plus className="h-4 w-4 stroke-[2.5]" />
+              {workspaceTab === 'goals' ? 'Create First Goal' : 'Create First Budget'}
             </button>
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5 sm:gap-4">
-          {filteredEvaluatedBudgets.map((eb) => {
-            const { budget, periodWindow } = eb;
-            const isOver = eb.status === 'exceeded';
-            const isWarn =
-              eb.status === 'warning' || eb.status === 'at_limit';
-            const alertMarkPct = Math.min(
-              100,
-              Math.max(0, eb.alertThresholdPercent)
-            );
-            const fillPct = Math.min(
-              100,
-              Math.max(0, eb.usagePercentage)
-            );
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {displayedEvaluatedBudgets.map((ev) => {
+            const { budget, periodWindow } = ev;
+            const isGoal = ev.purposeType === 'goal';
+            const isDisabledCard = ev.isDisabledFromReach;
+            const barColor = isDisabledCard
+              ? 'bg-slate-400'
+              : isGoal
+              ? ev.isGoalMet
+                ? 'bg-emerald-500'
+                : 'bg-indigo-500'
+              : ev.status === 'exceeded'
+              ? 'bg-rose-500'
+              : ev.status === 'at_limit' || ev.status === 'warning'
+              ? 'bg-amber-500'
+              : 'bg-emerald-500';
+
+            const startLabel = formatDateDDMMYYYY(periodWindow.startYmd);
+            const endLabel = formatDateDDMMYYYY(periodWindow.endYmd);
 
             return (
               <div
                 key={budget.id}
                 role="button"
                 tabIndex={0}
-                onClick={() => setSelectedBudgetModalId(budget.id)}
+                onClick={() => {
+                  setModalGroupBy('none');
+                  setActiveModalBudgetId(budget.id);
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
-                    setSelectedBudgetModalId(budget.id);
+                    setModalGroupBy('none');
+                    setActiveModalBudgetId(budget.id);
                   }
                 }}
-                className={`group cursor-pointer rounded-xl border bg-white p-4 sm:p-5 space-y-2.5 text-left transition-all hover:shadow-md focus:outline-none focus:ring-2 focus:ring-slate-900/20 ${
-                  isOver
-                    ? 'border-rose-300 hover:border-rose-400'
-                    : isWarn
-                    ? 'border-amber-300 hover:border-amber-400'
-                    : 'border-slate-200 hover:border-slate-300'
+                className={`group rounded-2xl border p-4 sm:p-5 shadow-2xs transition-all text-left cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-500/40 ${
+                  isDisabledCard
+                    ? 'bg-slate-50/90 border-slate-200/90 opacity-85 hover:opacity-100'
+                    : 'bg-white border-slate-200/90 hover:border-slate-300 hover:shadow-md'
                 }`}
               >
-                {/* Budget Name */}
-                <div className="font-display text-sm sm:text-base font-bold text-slate-900 truncate">
-                  {budget.name}
-                </div>
-
-                {/* Progress Bar Container with Top Row, Bar + Alert Mark, and Bottom Row */}
-                <div className="space-y-1.5">
-                  {/* Top of the Bar: Top-Left = Start Period, Middle = Percentage, Top-Right = End Period */}
-                  <div className="grid grid-cols-3 items-center text-[11px] font-mono tabular-nums">
-                    <span className="text-left text-slate-500 truncate">
-                      {formatDateDDMMYYYY(periodWindow.startYmd)}
-                    </span>
-                    <span
-                      className={`text-center font-bold ${
-                        isOver
-                          ? 'text-rose-600'
-                          : isWarn
-                          ? 'text-amber-600'
-                          : 'text-slate-900'
-                      }`}
-                    >
-                      {eb.usagePercentage}%
-                    </span>
-                    <span className="text-right text-slate-500 truncate">
-                      {formatDateDDMMYYYY(periodWindow.endYmd)}
-                    </span>
+                {/* 1. Just the Name + Minimal Auto-Recreate / Disabled Pill */}
+                <div className="flex items-center justify-between gap-2 mb-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    {isDisabledCard && (
+                      <Lock className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                    )}
+                    <h4 className="text-sm sm:text-base font-bold text-slate-900 truncate">
+                      {budget.name}
+                    </h4>
                   </div>
 
-                  {/* Progress Bar with Alert Mark inside the bar */}
-                  <div className="relative h-3.5 w-full overflow-hidden rounded-full bg-slate-100 border border-slate-200/80">
-                    {/* Progress Fill */}
-                    <div
-                      className={`h-full transition-all duration-300 ${
-                        isOver
-                          ? 'bg-rose-600'
-                          : isWarn
-                          ? 'bg-amber-500'
-                          : 'bg-emerald-600'
-                      }`}
-                      style={{ width: `${fillPct}%` }}
-                    />
-
-                    {/* Alert Mark within the bar */}
-                    <div
-                      className="pointer-events-none absolute inset-y-0 z-10 w-0.5 bg-slate-900/85 shadow-[0_0_0_1px_rgba(255,255,255,0.85)]"
-                      style={{ left: `${alertMarkPct}%` }}
-                      title={`Alert mark: ${eb.alertThresholdPercent}%`}
-                    />
-                  </div>
-
-                  {/* Right beneath the Bar: Bottom-Left = Starting Currency 0.00, Middle = Spent Currency, Bottom-Right = Budget Amount */}
-                  <div className="grid grid-cols-3 items-center text-[11px] font-mono tabular-nums">
-                    <span className="text-left text-slate-500 truncate">
-                      {formatAmount(0, budget.currency)}
-                    </span>
-                    <span
-                      className={`text-center font-bold truncate ${
-                        isOver
-                          ? 'text-rose-600'
-                          : isWarn
-                          ? 'text-amber-600'
-                          : 'text-slate-800'
-                      }`}
-                    >
-                      {formatAmount(eb.spentAmount, budget.currency)}
-                    </span>
-                    <span className="text-right font-semibold text-slate-900 truncate">
-                      {formatAmount(eb.budgetLimit, budget.currency)}
-                    </span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {isDisabledCard ? (
+                      <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
+                        Expired • Disabled
+                      </span>
+                    ) : budget.autoRecreate ? (
+                      <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-mono font-bold text-emerald-700">
+                        <RotateCcw className="h-2.5 w-2.5" />
+                        {ev.recreateDays}d
+                      </span>
+                    ) : null}
+                    <ChevronRight className="h-4 w-4 text-slate-300 group-hover:text-slate-600 transition-colors shrink-0" />
                   </div>
                 </div>
 
-                {/* Beneath that, on its left: Residual Amount */}
-                <div className="pt-0.5 text-left">
+                {/* 2. Top of the bar: Top Left = Start Period, Middle = Percentage, Top Right = End Period */}
+                <div className="grid grid-cols-3 items-end text-[11px] font-mono mb-1.5">
+                  <span className="text-left font-semibold text-slate-500 truncate">
+                    {startLabel}
+                  </span>
                   <span
-                    className={`font-mono text-xs font-bold tabular-nums ${
-                      eb.residualAmount < 0
+                    className={`text-center font-bold ${
+                      isDisabledCard
+                        ? 'text-slate-600'
+                        : isGoal
+                        ? ev.isGoalMet
+                          ? 'text-emerald-600'
+                          : 'text-indigo-600'
+                        : ev.status === 'exceeded'
+                        ? 'text-rose-600'
+                        : ev.status === 'warning' || ev.status === 'at_limit'
+                        ? 'text-amber-600'
+                        : 'text-emerald-600'
+                    }`}
+                  >
+                    {ev.usagePercentage.toFixed(1)}%
+                  </span>
+                  <span className="text-right font-semibold text-slate-500 truncate">
+                    {endLabel}
+                  </span>
+                </div>
+
+                {/* 3. Progress bar with the alert mark within the bar */}
+                <div className="relative h-3.5 w-full rounded-full bg-slate-100 overflow-hidden border border-slate-200/70">
+                  <div
+                    className={`h-full transition-all duration-300 ${barColor}`}
+                    style={{ width: `${ev.clampedProgressPercent}%` }}
+                  />
+                  {/* Alert mark within the bar */}
+                  {ev.alertThresholdPercent > 0 &&
+                    ev.alertThresholdPercent < 100 && (
+                      <div
+                        className="absolute top-0 bottom-0 w-0.5 bg-slate-900/60 z-10"
+                        style={{ left: `${ev.alertThresholdPercent}%` }}
+                        title={`Threshold: ${ev.alertThresholdPercent}%`}
+                      />
+                    )}
+                </div>
+
+                {/* 4. Right beneath the bar: Bottom Left = starting currency 0.00, Middle = Spent/Saved, Bottom Right = Budget/Target Amount */}
+                <div className="grid grid-cols-3 items-center text-[11px] font-mono mt-1.5">
+                  <span className="text-left font-semibold text-slate-500 truncate">
+                    {formatCurrency(0, budget.currency)}
+                  </span>
+                  <span
+                    className={`text-center font-bold truncate ${
+                      isDisabledCard
+                        ? 'text-slate-700'
+                        : isGoal
+                        ? 'text-indigo-600'
+                        : ev.status === 'exceeded'
+                        ? 'text-rose-600'
+                        : 'text-slate-900'
+                    }`}
+                  >
+                    {formatCurrency(ev.spentAmount, budget.currency)}
+                  </span>
+                  <span className="text-right font-bold text-slate-900 truncate">
+                    {formatCurrency(ev.budgetLimit, budget.currency)}
+                  </span>
+                </div>
+
+                {/* 5. Beneath that: Residual / Remaining amount on its left */}
+                <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between">
+                  <span
+                    className={`text-xs font-mono font-bold ${
+                      isGoal
+                        ? ev.isGoalMet
+                          ? 'text-emerald-700'
+                          : 'text-slate-700'
+                        : ev.residualAmount < 0
                         ? 'text-rose-600'
                         : 'text-emerald-700'
                     }`}
                   >
-                    Residual:{' '}
-                    {eb.residualAmount < 0
-                      ? `-${formatAmount(
-                          Math.abs(eb.residualAmount),
+                    {isGoal
+                      ? ev.isGoalMet
+                        ? `Target Met (+${formatCurrency(
+                            ev.overageAmount,
+                            budget.currency
+                          )})`
+                        : `Remaining: ${formatCurrency(
+                            ev.residualAmount,
+                            budget.currency
+                          )}`
+                      : ev.residualAmount >= 0
+                      ? `Residual: ${formatCurrency(
+                          ev.residualAmount,
                           budget.currency
                         )}`
-                      : formatAmount(eb.residualAmount, budget.currency)}
+                      : `Residual: -${formatCurrency(
+                          ev.overageAmount,
+                          budget.currency
+                        )}`}
                   </span>
                 </div>
               </div>
@@ -1333,205 +1582,307 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
         </div>
       )}
 
-      {/* Pop-Up Budget Options Modal */}
-      {(() => {
-        if (!selectedBudgetModalId) return null;
-        const selectedEb =
-          evaluatedBudgets.find(
-            (item) => item.budget.id === selectedBudgetModalId
-          ) || null;
-        if (!selectedEb) return null;
-
-        const { budget, periodWindow } = selectedEb;
-        const isOver = selectedEb.status === 'exceeded';
-        const isWarn =
-          selectedEb.status === 'warning' || selectedEb.status === 'at_limit';
-        const alertMarkPct = Math.min(
-          100,
-          Math.max(0, selectedEb.alertThresholdPercent)
-        );
-        const fillPct = Math.min(
-          100,
-          Math.max(0, selectedEb.usagePercentage)
-        );
-
-        return (
+      {/* Clickable Budget / Goal Options Pop-up Modal */}
+      {activeModalEvaluated && (
+        <div
+          className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-slate-900/50 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto"
+          onClick={() => setActiveModalBudgetId(null)}
+        >
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-2.5 sm:p-4 backdrop-blur-[2px] overflow-y-auto"
-            onClick={() => setSelectedBudgetModalId(null)}
+            className="w-full max-w-lg rounded-2xl bg-white border border-slate-200 shadow-xl overflow-hidden flex flex-col max-h-[90vh] my-auto"
+            onClick={(e) => e.stopPropagation()}
           >
-            <div
-              className="w-full max-w-lg max-h-[88dvh] sm:max-h-[90vh] flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl my-auto"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {/* Modal Header */}
-              <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-3.5 sm:px-5 shrink-0 bg-white">
-                <div className="min-w-0">
-                  <h3 className="font-display text-base sm:text-lg font-bold text-slate-900 break-words">
-                    {budget.name}
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-bold text-slate-900 truncate">
+                    {activeModalEvaluated.budget.name}
                   </h3>
-                  <p className="mt-0.5 text-xs text-slate-500">
-                    {periodWindow.label} • Alert at {selectedEb.alertThresholdPercent}%
-                  </p>
+                  <span
+                    className={`rounded-md px-2 py-0.5 text-[10px] font-bold uppercase ${
+                      activeModalEvaluated.purposeType === 'goal'
+                        ? 'bg-indigo-50 text-indigo-700'
+                        : 'bg-emerald-50 text-emerald-700'
+                    }`}
+                  >
+                    {activeModalEvaluated.purposeType === 'goal'
+                      ? 'Goal'
+                      : 'Budget'}
+                  </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setSelectedBudgetModalId(null)}
-                  className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50 shrink-0"
-                >
-                  Close
-                </button>
+                <p className="text-[11px] font-mono text-slate-500">
+                  {activeModalEvaluated.periodWindow.periodBadge} •{' '}
+                  {formatDateDDMMYYYY(
+                    activeModalEvaluated.periodWindow.startYmd
+                  )}{' '}
+                  –{' '}
+                  {formatDateDDMMYYYY(activeModalEvaluated.periodWindow.endYmd)}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveModalBudgetId(null)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 cursor-pointer"
+              >
+                <X className="h-4 w-4 stroke-[2.5]" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto space-y-5 flex-1">
+              {/* Summary Bar */}
+              <div className="rounded-xl bg-slate-50 border border-slate-200/80 p-3.5 space-y-2">
+                <div className="grid grid-cols-3 items-end text-[11px] font-mono">
+                  <span className="text-left font-semibold text-slate-500">
+                    {formatDateDDMMYYYY(
+                      activeModalEvaluated.periodWindow.startYmd
+                    )}
+                  </span>
+                  <span className="text-center font-bold text-slate-900">
+                    {activeModalEvaluated.usagePercentage.toFixed(1)}%
+                  </span>
+                  <span className="text-right font-semibold text-slate-500">
+                    {formatDateDDMMYYYY(
+                      activeModalEvaluated.periodWindow.endYmd
+                    )}
+                  </span>
+                </div>
+
+                <div className="relative h-3 w-full rounded-full bg-slate-200/80 overflow-hidden">
+                  <div
+                    className={`h-full ${
+                      activeModalEvaluated.purposeType === 'goal'
+                        ? activeModalEvaluated.isGoalMet
+                          ? 'bg-emerald-500'
+                          : 'bg-indigo-500'
+                        : activeModalEvaluated.status === 'exceeded'
+                        ? 'bg-rose-500'
+                        : activeModalEvaluated.status === 'warning' ||
+                          activeModalEvaluated.status === 'at_limit'
+                        ? 'bg-amber-500'
+                        : 'bg-emerald-500'
+                    }`}
+                    style={{
+                      width: `${activeModalEvaluated.clampedProgressPercent}%`,
+                    }}
+                  />
+                  {activeModalEvaluated.alertThresholdPercent > 0 &&
+                    activeModalEvaluated.alertThresholdPercent < 100 && (
+                      <div
+                        className="absolute top-0 bottom-0 w-0.5 bg-slate-900/60"
+                        style={{
+                          left: `${activeModalEvaluated.alertThresholdPercent}%`,
+                        }}
+                      />
+                    )}
+                </div>
+
+                <div className="grid grid-cols-3 items-center text-[11px] font-mono">
+                  <span className="text-left text-slate-500">
+                    {formatCurrency(
+                      0,
+                      activeModalEvaluated.budget.currency
+                    )}
+                  </span>
+                  <span className="text-center font-bold text-slate-900">
+                    {formatCurrency(
+                      activeModalEvaluated.spentAmount,
+                      activeModalEvaluated.budget.currency
+                    )}
+                  </span>
+                  <span className="text-right font-bold text-slate-900">
+                    {formatCurrency(
+                      activeModalEvaluated.budgetLimit,
+                      activeModalEvaluated.budget.currency
+                    )}
+                  </span>
+                </div>
+
+                <div className="pt-1 border-t border-slate-200/60 flex items-center justify-between text-xs font-mono font-bold">
+                  <span
+                    className={
+                      activeModalEvaluated.purposeType === 'goal'
+                        ? 'text-indigo-700'
+                        : activeModalEvaluated.residualAmount < 0
+                        ? 'text-rose-600'
+                        : 'text-emerald-700'
+                    }
+                  >
+                    {activeModalEvaluated.purposeType === 'goal'
+                      ? `Remaining: ${formatCurrency(
+                          activeModalEvaluated.residualAmount,
+                          activeModalEvaluated.budget.currency
+                        )}`
+                      : activeModalEvaluated.residualAmount >= 0
+                      ? `Residual: ${formatCurrency(
+                          activeModalEvaluated.residualAmount,
+                          activeModalEvaluated.budget.currency
+                        )}`
+                      : `Residual: -${formatCurrency(
+                          activeModalEvaluated.overageAmount,
+                          activeModalEvaluated.budget.currency
+                        )}`}
+                  </span>
+                  <span className="text-[11px] font-sans font-semibold text-slate-500">
+                    Threshold: {activeModalEvaluated.alertThresholdPercent}%
+                  </span>
+                </div>
               </div>
 
-              {/* Scrollable Modal Body */}
-              <div className="flex-1 overflow-y-auto overscroll-contain p-4 sm:p-5 space-y-4">
-                {/* Progress Bar Summary inside Modal */}
-                <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2">
-                  <div className="grid grid-cols-3 items-center text-[11px] font-mono tabular-nums">
-                    <span className="text-left text-slate-500">
-                      {formatDateDDMMYYYY(periodWindow.startYmd)}
-                    </span>
-                    <span
-                      className={`text-center font-bold ${
-                        isOver
-                          ? 'text-rose-600'
-                          : isWarn
-                          ? 'text-amber-600'
-                          : 'text-slate-900'
-                      }`}
-                    >
-                      {selectedEb.usagePercentage}%
-                    </span>
-                    <span className="text-right text-slate-500">
-                      {formatDateDDMMYYYY(periodWindow.endYmd)}
+              {/* Auto-Recreation Settings for Existing or Expired Budgets */}
+              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <RotateCcw className="h-3.5 w-3.5 text-emerald-600" />
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-700">
+                      Auto-Recreation After Expiry
                     </span>
                   </div>
-
-                  <div className="relative h-3.5 w-full overflow-hidden rounded-full bg-slate-200/80 border border-slate-300/70">
-                    <div
-                      className={`h-full transition-all duration-300 ${
-                        isOver
-                          ? 'bg-rose-600'
-                          : isWarn
-                          ? 'bg-amber-500'
-                          : 'bg-emerald-600'
-                      }`}
-                      style={{ width: `${fillPct}%` }}
-                    />
-                    <div
-                      className="pointer-events-none absolute inset-y-0 z-10 w-0.5 bg-slate-900/85 shadow-[0_0_0_1px_rgba(255,255,255,0.85)]"
-                      style={{ left: `${alertMarkPct}%` }}
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-3 items-center text-[11px] font-mono tabular-nums">
-                    <span className="text-left text-slate-500">
-                      {formatAmount(0, budget.currency)}
-                    </span>
-                    <span className="text-center font-bold text-slate-900">
-                      {formatAmount(selectedEb.spentAmount, budget.currency)}
-                    </span>
-                    <span className="text-right font-semibold text-slate-900">
-                      {formatAmount(selectedEb.budgetLimit, budget.currency)}
-                    </span>
-                  </div>
-
-                  <div className="pt-0.5 text-left">
-                    <span
-                      className={`font-mono text-xs font-bold tabular-nums ${
-                        selectedEb.residualAmount < 0
-                          ? 'text-rose-600'
-                          : 'text-emerald-700'
-                      }`}
-                    >
-                      Residual:{' '}
-                      {selectedEb.residualAmount < 0
-                        ? `-${formatAmount(
-                            Math.abs(selectedEb.residualAmount),
-                            budget.currency
-                          )}`
-                        : formatAmount(selectedEb.residualAmount, budget.currency)}
-                    </span>
-                  </div>
+                  <span
+                    className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${
+                      activeModalEvaluated.budget.autoRecreate
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : 'bg-amber-100 text-amber-800'
+                    }`}
+                  >
+                    {activeModalEvaluated.budget.autoRecreate
+                      ? `Every ${activeModalEvaluated.recreateDays} Days`
+                      : 'Disabled'}
+                  </span>
                 </div>
 
-                {/* Account Chosen */}
-                <div className="rounded-xl border border-slate-200 bg-white p-3 flex items-center justify-between gap-2">
-                  <span className="text-xs font-semibold text-slate-500">
-                    Accounts Chosen
-                  </span>
-                  <span className="text-xs font-bold text-slate-900">
-                    {selectedEb.linkedAccount
-                      ? `${selectedEb.linkedAccount.name} (${getAccountCurrency(
-                          selectedEb.linkedAccount,
-                          currency
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="number"
+                    min="1"
+                    max="3650"
+                    value={quickRecreateDays}
+                    onChange={(e) => setQuickRecreateDays(e.target.value)}
+                    className="w-20 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-mono font-bold text-slate-900"
+                  />
+                  <span className="text-xs text-slate-600">days</span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleQuickUpdateRecreation(
+                        activeModalEvaluated.budget,
+                        true,
+                        quickRecreateDays
+                      )
+                    }
+                    className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-bold text-white hover:bg-emerald-700 cursor-pointer"
+                  >
+                    {activeModalEvaluated.isDisabledFromReach
+                      ? 'Recreate & Activate'
+                      : 'Save Recreation Days'}
+                  </button>
+                  {activeModalEvaluated.budget.autoRecreate && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleQuickUpdateRecreation(
+                          activeModalEvaluated.budget,
+                          false,
+                          quickRecreateDays
+                        )
+                      }
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-bold text-slate-600 hover:bg-slate-100 cursor-pointer"
+                    >
+                      Disable Auto-Recreate
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Accounts / Vault Chosen */}
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">
+                  {activeModalEvaluated.purposeType === 'goal'
+                    ? 'Target Vault / Account & Cause'
+                    : 'Accounts Chosen'}
+                </p>
+                <div className="inline-flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-800">
+                  <Wallet className="h-3.5 w-3.5 text-slate-500" />
+                  <span>
+                    {activeModalEvaluated.linkedAccount
+                      ? `${activeModalEvaluated.linkedAccount.name} (${getAccountCurrency(
+                          activeModalEvaluated.linkedAccount,
+                          baseCurrency
                         )})`
+                      : activeModalEvaluated.purposeType === 'goal'
+                      ? 'All Savings Vaults & Transfers'
                       : 'All Accounts'}
                   </span>
+                  {activeModalEvaluated.purposeType === 'goal' &&
+                    activeModalEvaluated.budget.goalCause && (
+                      <span className="rounded-md bg-indigo-50 px-2 py-0.5 text-[11px] font-bold text-indigo-700">
+                        Cause: {activeModalEvaluated.budget.goalCause}
+                      </span>
+                    )}
                 </div>
+              </div>
 
-                {/* Selected Subcategories */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-slate-800">
-                      Selected Subcategory ({selectedEb.subcategoryBreakdowns.length})
-                    </span>
-                    <span className="text-[11px] text-slate-500">
-                      Spent / Share of Budget
-                    </span>
-                  </div>
+              {/* Selected Subcategories / Sources Breakdown */}
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">
+                  {activeModalEvaluated.purposeType === 'goal'
+                    ? 'Funding Sources Breakdown'
+                    : `Selected ${
+                        activeModalEvaluated.subcategoryBreakdowns.length === 1
+                          ? 'Subcategory'
+                          : 'Subcategories'
+                      }`}
+                </p>
+                {activeModalEvaluated.subcategoryBreakdowns.length === 0 ? (
+                  <p className="text-xs text-slate-400">
+                    No contributions recorded in this period yet.
+                  </p>
+                ) : (
                   <div className="space-y-1.5">
-                    {selectedEb.subcategoryBreakdowns.map((subItem) => {
-                      const badgeStyle = getSubcategoryBadgeStyle(subItem.color);
-                      const subWidth = Math.min(
-                        100,
-                        Math.max(0, subItem.shareOfBudgetPercent)
-                      );
-                      return (
-                        <div
-                          key={subItem.subcategory}
-                          className="rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2 space-y-1.5"
-                        >
-                          <div className="flex items-center justify-between gap-2 text-xs">
-                            <span
-                              className="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-semibold"
-                              style={badgeStyle}
-                            >
-                              <span
-                                className="h-2 w-2 rounded-full shrink-0"
-                                style={{ backgroundColor: subItem.color }}
-                              />
-                              {subItem.subcategory}
-                            </span>
-                            <span className="font-mono text-xs font-bold text-slate-900 tabular-nums">
-                              {formatAmount(subItem.spentAmount, budget.currency)}{' '}
-                              <span className="text-slate-500 font-normal">
-                                ({subItem.shareOfBudgetPercent}%)
-                              </span>
-                            </span>
-                          </div>
-                          <div className="h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
-                            <div
-                              className="h-full rounded-full transition-all"
-                              style={{
-                                width: `${subWidth}%`,
-                                backgroundColor: subItem.color,
-                              }}
-                            />
-                          </div>
+                    {activeModalEvaluated.subcategoryBreakdowns.map((sub) => (
+                      <div
+                        key={sub.subcategory}
+                        className="flex items-center justify-between rounded-xl border border-slate-200/80 bg-white px-3 py-2 text-xs"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span
+                            className="h-2.5 w-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: sub.color }}
+                          />
+                          <span className="font-bold text-slate-800 truncate">
+                            {sub.subcategory}
+                          </span>
+                          <span className="text-[10px] text-slate-400">
+                            ({sub.transactionCount} tx)
+                          </span>
                         </div>
-                      );
-                    })}
+                        <span className="font-mono font-bold text-slate-900 shrink-0">
+                          {formatCurrency(
+                            sub.spentAmount,
+                            activeModalEvaluated.budget.currency
+                          )}{' '}
+                          <span className="text-[10px] font-normal text-slate-400">
+                            ({sub.shareOfBudgetPercent.toFixed(1)}%)
+                          </span>
+                        </span>
+                      </div>
+                    ))}
                   </div>
-                </div>
+                )}
+              </div>
 
-                {/* History of Transactions */}
-                <div className="space-y-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-slate-800">
-                      History of Transactions ({selectedEb.matchedExpenses.length})
-                    </span>
-                    <div className="inline-flex items-center rounded-lg bg-slate-100 p-0.5">
+              {/* History of Transactions / Transfers */}
+              <div>
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    {activeModalEvaluated.purposeType === 'goal'
+                      ? `Transfers & Savings History (${activeModalEvaluated.matchedTransfers.length})`
+                      : `History of Transactions (${activeModalEvaluated.matchedExpenses.length})`}
+                  </p>
+                  {(activeModalEvaluated.matchedExpenses.length > 0 ||
+                    activeModalEvaluated.matchedTransfers.length > 0) && (
+                    <div className="inline-flex items-center rounded-lg border border-slate-200 bg-slate-50 p-0.5">
                       {(
                         [
                           { id: 'none', label: 'All' },
@@ -1539,147 +1890,220 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
                           { id: 'month', label: 'Month' },
                           { id: 'year', label: 'Year' },
                         ] as { id: RecordGroupPeriod; label: string }[]
-                      ).map((g) => (
+                      ).map((opt) => (
                         <button
-                          key={g.id}
+                          key={opt.id}
                           type="button"
-                          onClick={() => setTxGroupBy(g.id)}
-                          className={`rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
-                            txGroupBy === g.id
+                          onClick={() => setModalGroupBy(opt.id)}
+                          className={`rounded-md px-2 py-0.5 text-[10px] font-bold transition-all cursor-pointer ${
+                            modalGroupBy === opt.id
                               ? 'bg-slate-900 text-white'
-                              : 'text-slate-600 hover:text-slate-900'
+                              : 'text-slate-500 hover:text-slate-800'
                           }`}
                         >
-                          {g.label}
+                          {opt.label}
                         </button>
                       ))}
                     </div>
-                  </div>
-                  {selectedEb.matchedExpenses.length === 0 ? (
-                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 text-center">
-                      No transactions recorded for this budget period.
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      {groupRecordsByPeriod(selectedEb.matchedExpenses, txGroupBy).map(
-                        (group) => (
-                          <div key={group.key} className="space-y-1">
-                            {txGroupBy !== 'none' && (
-                              <div className="rounded bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-700">
-                                {group.label} ({group.items.length})
-                              </div>
-                            )}
-                            <div className="divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white">
-                              {group.items.map((exp) => {
-                                const subColor = resolveIntuitiveSubcategoryColor(
-                                  exp.subcategory || exp.category,
-                                  exp.category,
-                                  settings,
-                                  expenses
-                                );
-                                const subBadge = getSubcategoryBadgeStyle(subColor);
-                                return (
-                                  <div
-                                    key={exp.id}
-                                    className="flex items-center justify-between gap-2 px-3 py-2 text-xs"
-                                  >
-                                    <div className="min-w-0 flex-1">
-                                      <div className="font-semibold text-slate-800 truncate">
-                                        {exp.recipient || exp.subcategory || exp.category}
-                                      </div>
-                                      <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
-                                        <span className="font-mono">
-                                          {formatDateTimeDDMMYYYY(
-                                            exp.date,
-                                            exp.createdAt
-                                          )}
-                                        </span>
-                                        <span
-                                          className="inline-flex items-center gap-1 rounded border px-1.5 py-0.2 text-[10px] font-semibold"
-                                          style={subBadge}
-                                        >
-                                          <span
-                                            className="h-1.5 w-1.5 rounded-full"
-                                            style={{ backgroundColor: subColor }}
-                                          />
-                                          {exp.subcategory || exp.category}
-                                        </span>
-                                      </div>
-                                    </div>
-                                    <div className="flex items-center gap-2 shrink-0">
-                                      <div className="font-mono font-bold text-rose-600 tabular-nums">
-                                        -
-                                        {formatAmount(
-                                          exp.originalAmount ?? exp.amount,
-                                          exp.currency || currency
-                                        )}
-                                      </div>
-                                      {onEditExpense && (
-                                        <button
-                                          type="button"
-                                          onClick={() => onEditExpense(exp)}
-                                          className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-50"
-                                        >
-                                          Edit
-                                        </button>
-                                      )}
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )
-                      )}
-                    </div>
                   )}
                 </div>
-              </div>
 
-              {/* Sticky Action Footer: Edit Budget & Delete Budget */}
-              <div className="grid grid-cols-2 gap-2.5 px-4 py-3 sm:px-5 border-t border-slate-100 bg-slate-50/80 shrink-0">
+                {activeModalEvaluated.purposeType === 'goal' ? (
+                  activeModalEvaluated.matchedTransfers.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-slate-200 p-4 text-center text-xs text-slate-400">
+                      No transfers or savings allocations recorded in this period.
+                    </div>
+                  ) : (
+                    <div className="max-h-56 overflow-y-auto space-y-2 pr-1">
+                      {groupRecordsByPeriod(
+                        activeModalEvaluated.matchedTransfers,
+                        modalGroupBy
+                      ).map((group) => (
+                        <div key={group.key} className="space-y-1.5">
+                          {modalGroupBy !== 'none' && (
+                            <div className="flex items-center justify-between px-2 py-1 rounded-lg bg-slate-100 text-[10px] font-bold text-slate-600">
+                              <span>{group.label}</span>
+                              <span className="font-mono">
+                                {group.items.length} tx
+                              </span>
+                            </div>
+                          )}
+                          {group.items.map((tr) => {
+                            const sourceAcc = accounts.find(
+                              (a) => a.id === tr.sourceAccountId
+                            );
+                            const destAcc = accounts.find(
+                              (a) => a.id === tr.destinationAccountId
+                            );
+                            const trCurr =
+                              tr.destinationCurrency ||
+                              tr.sourceCurrency ||
+                              baseCurrency;
+                            const trAmt = tr.destinationAmount ?? tr.amount;
+                            const transferSubLabel = tr.id.startsWith(
+                              'trans_sav_'
+                            )
+                              ? 'Savings Allocation'
+                              : tr.id.startsWith('trans_net_')
+                              ? 'Net Income Transfer'
+                              : 'Fund Transfer';
+                            return (
+                              <RecordCard
+                                key={tr.id}
+                                topLeftSubcategory={transferSubLabel}
+                                subcategoryColor="#2563EB"
+                                bottomLeftAccount={`${
+                                  sourceAcc?.name || 'Source'
+                                } → ${destAcc?.name || 'Destination'}`}
+                                topRightAmount={`+${formatCurrency(
+                                  trAmt,
+                                  trCurr
+                                )}`}
+                                recordType="transfer"
+                                bottomRightDate={formatDateDDMMYYYY(tr.date)}
+                                onClick={() => setSelectedPopupTransfer(tr)}
+                              />
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  )
+                ) : activeModalEvaluated.matchedExpenses.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-200 p-4 text-center text-xs text-slate-400">
+                    No expenses recorded for this budget period yet.
+                  </div>
+                ) : (
+                  <div className="max-h-56 overflow-y-auto space-y-2 pr-1">
+                    {groupRecordsByPeriod(
+                      activeModalEvaluated.matchedExpenses,
+                      modalGroupBy
+                    ).map((group) => (
+                      <div key={group.key} className="space-y-1.5">
+                        {modalGroupBy !== 'none' && (
+                          <div className="flex items-center justify-between px-2 py-1 rounded-lg bg-slate-100 text-[10px] font-bold text-slate-600">
+                            <span>{group.label}</span>
+                            <span className="font-mono">
+                              {group.items.length} tx
+                            </span>
+                          </div>
+                        )}
+                        {group.items.map((exp) => {
+                          const expAcc = exp.accountId
+                            ? accounts.find((a) => a.id === exp.accountId)
+                            : undefined;
+                          const expCurr = (
+                            exp.currency ||
+                            getAccountCurrency(expAcc, baseCurrency)
+                          ).toUpperCase();
+                          const rawAmt =
+                            exp.originalAmount !== undefined &&
+                            exp.originalAmount > 0
+                              ? exp.originalAmount
+                              : exp.amount;
+                          const subLabel =
+                            exp.subcategory?.trim() ||
+                            exp.category?.trim() ||
+                            'Expense';
+                          const subColor = resolveIntuitiveSubcategoryColor(
+                            subLabel,
+                            exp.category,
+                            settings,
+                            expenses
+                          );
+                          return (
+                            <RecordCard
+                              key={exp.id}
+                              topLeftSubcategory={subLabel}
+                              subcategoryColor={subColor}
+                              bottomLeftAccount={expAcc?.name || 'Account'}
+                              topRightAmount={`-${formatCurrency(
+                                rawAmt,
+                                expCurr
+                              )}`}
+                              recordType="expense"
+                              bottomRightDate={formatDateDDMMYYYY(exp.date)}
+                              onClick={() => setSelectedPopupExpense(exp)}
+                            />
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer: Edit & Delete */}
+            <div className="flex items-center justify-between gap-2 px-5 py-3.5 bg-slate-50 border-t border-slate-200/80">
+              {onNavigateToTab ? (
                 <button
                   type="button"
                   onClick={() => {
-                    setSelectedBudgetModalId(null);
-                    handleOpenEdit(budget);
+                    const targetTab =
+                      activeModalEvaluated.purposeType === 'goal'
+                        ? 'accounts'
+                        : 'flexible_expenses';
+                    setActiveModalBudgetId(null);
+                    onNavigateToTab(targetTab);
                   }}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-800 hover:bg-slate-50 text-center"
+                  className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700 hover:text-emerald-800 cursor-pointer"
                 >
-                  Edit Budget
+                  {activeModalEvaluated.purposeType === 'goal'
+                    ? 'Open Accounts & Transfers'
+                    : 'Open Expenses'}
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              ) : (
+                <div />
+              )}
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleOpenEdit(activeModalEvaluated.budget)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100 cursor-pointer"
+                >
+                  <Edit2 className="h-3.5 w-3.5" />
+                  Edit{' '}
+                  {activeModalEvaluated.purposeType === 'goal'
+                    ? 'Goal'
+                    : 'Budget'}
                 </button>
                 <button
                   type="button"
                   onClick={() => {
-                    setSelectedBudgetModalId(null);
-                    setPendingDeleteBudget(budget);
+                    const id = activeModalEvaluated.budget.id;
+                    setActiveModalBudgetId(null);
+                    onDeleteBudget(id);
                   }}
-                  className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 text-center"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 cursor-pointer"
                 >
-                  Delete Budget
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete
                 </button>
               </div>
             </div>
           </div>
-        );
-      })()}
+        </div>
+      )}
 
-      {/* Delete Confirmation Modal */}
-      <ConfirmDeleteModal
-        isOpen={Boolean(pendingDeleteBudget)}
-        title="Delete Budget"
-        message={
-          pendingDeleteBudget
-            ? `Delete budget "${pendingDeleteBudget.name}"? Existing expense records will not be affected.`
-            : ''
-        }
-        onCancel={() => setPendingDeleteBudget(null)}
-        onConfirm={async () => {
-          if (!pendingDeleteBudget) return;
-          const id = pendingDeleteBudget.id;
-          setPendingDeleteBudget(null);
-          await onDeleteBudget(id);
-        }}
+      {/* Record Detail Pop-Up Modals */}
+      <ExpenseDetailPopupModal
+        expense={selectedPopupExpense}
+        accounts={accounts}
+        settings={settings}
+        currency={baseCurrency}
+        onClose={() => setSelectedPopupExpense(null)}
+        onEditExpense={onEditExpense}
+        onDeleteExpense={onDeleteExpense}
+      />
+
+      <TransferDetailPopupModal
+        transfer={selectedPopupTransfer}
+        accounts={accounts}
+        currency={baseCurrency}
+        onClose={() => setSelectedPopupTransfer(null)}
       />
     </div>
   );

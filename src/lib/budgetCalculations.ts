@@ -13,6 +13,8 @@ import {
 import {
   calculateAccountSummaries,
   getIncomeDeductionExpenses,
+  getSavingsSplitTransfers,
+  isSavingsVaultAccount,
   resolveIntuitiveSubcategoryColor,
 } from './calculations.ts';
 import {
@@ -53,12 +55,13 @@ export interface BudgetSubcategoryBreakdown {
 
 export interface EvaluatedBudget {
   budget: FinancialBudget;
+  purposeType: 'budget' | 'goal';
   periodWindow: BudgetPeriodWindow;
   budgetLimit: number; // In budget.currency
   budgetLimitBase: number; // In settings.currency
-  spentAmount: number; // In budget.currency
+  spentAmount: number; // In budget.currency (for Goal: achieved/funded amount)
   spentAmountBase: number; // In settings.currency
-  residualAmount: number; // budgetLimit - spentAmount (negative when exceeded)
+  residualAmount: number; // budgetLimit - spentAmount (for Goal: remaining to target)
   residualAmountBase: number; // budgetLimitBase - spentAmountBase
   usagePercentage: number; // (spentAmount / budgetLimit) * 100
   clampedProgressPercent: number; // 0..100
@@ -67,8 +70,13 @@ export interface EvaluatedBudget {
   overagePercent: number; // max(0, usagePercentage - 100)
   alertThresholdPercent: number;
   status: BudgetHealthStatus;
+  isGoalMet: boolean;
+  isExpired: boolean;
+  isDisabledFromReach: boolean;
+  recreateDays: number;
   subcategoryBreakdowns: BudgetSubcategoryBreakdown[];
   matchedExpenses: FlexibleExpense[];
+  matchedTransfers: AccountTransfer[];
   linkedAccount?: FinancialAccount;
 }
 
@@ -118,6 +126,27 @@ function toYmd(d: Date): string {
 
 function formatShortDate(d: Date): string {
   return formatDateDDMMYYYY(toYmd(d));
+}
+
+export function getDefaultRecreateDaysForPeriod(
+  periodType: 'weekly' | 'monthly' | 'yearly' | 'custom',
+  customStartDate?: string,
+  customEndDate?: string
+): number {
+  if (periodType === 'weekly') return 7;
+  if (periodType === 'monthly') return 30;
+  if (periodType === 'yearly') return 365;
+  if (customStartDate && customEndDate) {
+    const s = parseLocalCalendarDate(customStartDate);
+    const e = parseLocalCalendarDate(customEndDate);
+    if (s && e && e.getTime() >= s.getTime()) {
+      return Math.max(
+        1,
+        Math.round((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)) + 1
+      );
+    }
+  }
+  return 30;
 }
 
 /**
@@ -185,7 +214,7 @@ export function computeRecurringPeriodBounds(
  * - 'weekly': Monday 00:00:00 through Sunday 23:59:59 (or locked activePeriodStart..activePeriodEnd)
  * - 'monthly': 1st of month through last day of month (or locked activePeriodStart..activePeriodEnd)
  * - 'yearly': Jan 1 through Dec 31 of the year (or locked activePeriodStart..activePeriodEnd)
- * - 'custom': budget.customStartDate through budget.customEndDate
+ * - 'custom': budget.customStartDate through budget.customEndDate (or activePeriodStart..activePeriodEnd)
  */
 export function resolveBudgetPeriodWindow(
   budget: FinancialBudget,
@@ -207,12 +236,10 @@ export function resolveBudgetPeriodWindow(
 
   if (budget.periodType === 'custom') {
     periodBadge = 'Custom Period';
-    const parsedStart = budget.customStartDate
-      ? parseLocalCalendarDate(budget.customStartDate)
-      : null;
-    const parsedEnd = budget.customEndDate
-      ? parseLocalCalendarDate(budget.customEndDate)
-      : null;
+    const rawStart = budget.activePeriodStart || budget.customStartDate;
+    const rawEnd = budget.activePeriodEnd || budget.customEndDate;
+    const parsedStart = rawStart ? parseLocalCalendarDate(rawStart) : null;
+    const parsedEnd = rawEnd ? parseLocalCalendarDate(rawEnd) : null;
 
     startDate = parsedStart
       ? new Date(
@@ -316,11 +343,15 @@ export function resolveBudgetPeriodWindow(
       (endMidnight.getTime() - startMidnight.getTime()) / (1000 * 60 * 60 * 24)
     ) + 1
   );
-  const daysRemaining = Math.max(
-    0,
-    Math.round((endMidnight.getTime() - refDay.getTime()) / (1000 * 60 * 60 * 24)) +
-      1
-  );
+  const daysRemaining =
+    refDay.getTime() > endMidnight.getTime()
+      ? 0
+      : Math.max(
+          0,
+          Math.round(
+            (endMidnight.getTime() - refDay.getTime()) / (1000 * 60 * 60 * 24)
+          ) + 1
+        );
 
   return {
     startDate,
@@ -335,9 +366,11 @@ export function resolveBudgetPeriodWindow(
 }
 
 /**
- * Automatically reconciles and recreates recurring budgets ('weekly', 'monthly', 'yearly')
- * when their specified period has elapsed, ensuring a fresh budget instance is created
- * for the current time period while archiving the completed cycle.
+ * Reconciles budgets and goals when their active date period expires:
+ * - If `autoRecreate` is enabled, recreates the budget/goal for the configured `recreateDays` duration
+ *   (or standard period bounds) and archives the completed period.
+ * - If `autoRecreate` is NOT enabled (`!b.autoRecreate`), marks the expired budget as `isExpiredDisabled: true`
+ *   so it is disabled from active reach and placed in the Expired / Disabled tab.
  */
 export function reconcileRecurringBudgets(
   budgets: FinancialBudget[],
@@ -355,25 +388,20 @@ export function reconcileRecurringBudgets(
 
   for (let i = 0; i < budgets.length; i++) {
     const b = budgets[i];
-    if (b.periodType === 'custom' || b.isArchivedPeriod) {
+    if (b.isArchivedPeriod) {
       nextBudgets.push(b);
       continue;
     }
 
-    const recurringType: 'weekly' | 'monthly' | 'yearly' =
-      b.periodType === 'weekly' || b.periodType === 'yearly'
-        ? b.periodType
-        : 'monthly';
-    const currentBounds = computeRecurringPeriodBounds(
-      recurringType,
-      referenceDate
-    );
+    const window = resolveBudgetPeriodWindow(b, referenceDate);
+    let assignedStart = b.activePeriodStart || window.startYmd;
+    let assignedEnd = b.activePeriodEnd || window.endYmd;
 
-    // Determine the budget's assigned period bounds
-    let assignedStart = b.activePeriodStart;
-    let assignedEnd = b.activePeriodEnd;
-
-    if (!assignedStart || !assignedEnd) {
+    if (b.periodType !== 'custom' && (!b.activePeriodStart || !b.activePeriodEnd)) {
+      const recurringType: 'weekly' | 'monthly' | 'yearly' =
+        b.periodType === 'weekly' || b.periodType === 'yearly'
+          ? b.periodType
+          : 'monthly';
       const createdDate = b.createdAt
         ? parseLocalCalendarDate(b.createdAt.substring(0, 10))
         : null;
@@ -385,13 +413,108 @@ export function reconcileRecurringBudgets(
       assignedEnd = initialBounds.endYmd;
     }
 
-    // If the assigned period has elapsed (todayYmd > assignedEnd), archive this cycle and recreate for the current period
+    // Check if the budget's period has expired (todayYmd > assignedEnd)
     if (todayYmd > assignedEnd) {
+      const shouldAutoRecreate = Boolean(b.autoRecreate);
+
+      if (!shouldAutoRecreate) {
+        // Without autoRecreate enabled: disable from active reach and place in Expired tab
+        if (!b.isExpiredDisabled || b.activePeriodStart !== assignedStart || b.activePeriodEnd !== assignedEnd) {
+          const expiredBudget: FinancialBudget = {
+            ...b,
+            activePeriodStart: assignedStart,
+            activePeriodEnd: assignedEnd,
+            isExpiredDisabled: true,
+            updatedAt: nowIso,
+          };
+          nextBudgets.push(expiredBudget);
+          changedBudgets.push(expiredBudget);
+        } else {
+          nextBudgets.push(b);
+        }
+        continue;
+      }
+
+      // Auto-recreate is enabled: compute new period window using recreateDays (or periodType bounds)
+      const configuredDays =
+        b.recreateDays !== undefined && Number(b.recreateDays) > 0
+          ? Math.max(1, Math.round(Number(b.recreateDays)))
+          : getDefaultRecreateDaysForPeriod(
+              b.periodType,
+              b.customStartDate,
+              b.customEndDate
+            );
+
+      let newStartYmd: string;
+      let newEndYmd: string;
+
+      const prevEndDate = parseLocalCalendarDate(assignedEnd);
+      if (b.recreateDays !== undefined && Number(b.recreateDays) > 0) {
+        // Advance in increments of configuredDays until the new window covers todayYmd
+        let cycleStart = prevEndDate
+          ? new Date(
+              prevEndDate.getFullYear(),
+              prevEndDate.getMonth(),
+              prevEndDate.getDate() + 1,
+              0,
+              0,
+              0,
+              0
+            )
+          : new Date(
+              referenceDate.getFullYear(),
+              referenceDate.getMonth(),
+              referenceDate.getDate(),
+              0,
+              0,
+              0,
+              0
+            );
+        let cycleEnd = new Date(cycleStart);
+        cycleEnd.setDate(cycleStart.getDate() + configuredDays - 1);
+
+        while (toYmd(cycleEnd) < todayYmd) {
+          cycleStart = new Date(cycleEnd);
+          cycleStart.setDate(cycleEnd.getDate() + 1);
+          cycleEnd = new Date(cycleStart);
+          cycleEnd.setDate(cycleStart.getDate() + configuredDays - 1);
+        }
+
+        newStartYmd = toYmd(cycleStart);
+        newEndYmd = toYmd(cycleEnd);
+      } else if (b.periodType !== 'custom') {
+        const recurringType: 'weekly' | 'monthly' | 'yearly' =
+          b.periodType === 'weekly' || b.periodType === 'yearly'
+            ? b.periodType
+            : 'monthly';
+        const currentBounds = computeRecurringPeriodBounds(
+          recurringType,
+          referenceDate
+        );
+        newStartYmd = currentBounds.startYmd;
+        newEndYmd = currentBounds.endYmd;
+      } else {
+        const startD = new Date(
+          referenceDate.getFullYear(),
+          referenceDate.getMonth(),
+          referenceDate.getDate(),
+          0,
+          0,
+          0,
+          0
+        );
+        const endD = new Date(startD);
+        endD.setDate(startD.getDate() + configuredDays - 1);
+        newStartYmd = toYmd(startD);
+        newEndYmd = toYmd(endD);
+      }
+
       const archivedBudget: FinancialBudget = {
         ...b,
         activePeriodStart: assignedStart,
         activePeriodEnd: assignedEnd,
         isArchivedPeriod: true,
+        isExpiredDisabled: false,
         updatedAt: nowIso,
       };
       nextBudgets.push(archivedBudget);
@@ -402,17 +525,15 @@ export function reconcileRecurringBudgets(
         budgets.some(
           (other) =>
             !other.isArchivedPeriod &&
-            other.periodType === b.periodType &&
-            other.activePeriodStart === currentBounds.startYmd &&
-            other.activePeriodEnd === currentBounds.endYmd &&
+            other.activePeriodStart === newStartYmd &&
+            other.activePeriodEnd === newEndYmd &&
             (other.parentRecurringBudgetId === seriesRootId ||
               other.name.toLowerCase() === b.name.toLowerCase())
         ) ||
         newlyCreatedBudgets.some(
           (nb) =>
-            nb.periodType === b.periodType &&
-            nb.activePeriodStart === currentBounds.startYmd &&
-            nb.activePeriodEnd === currentBounds.endYmd &&
+            nb.activePeriodStart === newStartYmd &&
+            nb.activePeriodEnd === newEndYmd &&
             nb.parentRecurringBudgetId === seriesRootId
         );
 
@@ -420,10 +541,17 @@ export function reconcileRecurringBudgets(
         const recreatedBudget: FinancialBudget = {
           ...b,
           id: `bgt_rec_${Date.now()}_${i}`,
-          activePeriodStart: currentBounds.startYmd,
-          activePeriodEnd: currentBounds.endYmd,
+          customStartDate:
+            b.periodType === 'custom' ? newStartYmd : b.customStartDate,
+          customEndDate:
+            b.periodType === 'custom' ? newEndYmd : b.customEndDate,
+          activePeriodStart: newStartYmd,
+          activePeriodEnd: newEndYmd,
+          autoRecreate: true,
+          recreateDays: configuredDays,
           parentRecurringBudgetId: seriesRootId,
           isArchivedPeriod: false,
+          isExpiredDisabled: false,
           createdAt: nowIso,
           updatedAt: nowIso,
         };
@@ -432,12 +560,14 @@ export function reconcileRecurringBudgets(
       }
     } else if (
       b.activePeriodStart !== assignedStart ||
-      b.activePeriodEnd !== assignedEnd
+      b.activePeriodEnd !== assignedEnd ||
+      b.isExpiredDisabled
     ) {
       const stampedBudget: FinancialBudget = {
         ...b,
         activePeriodStart: assignedStart,
         activePeriodEnd: assignedEnd,
+        isExpiredDisabled: false,
       };
       nextBudgets.push(stampedBudget);
       changedBudgets.push(stampedBudget);
@@ -494,6 +624,49 @@ function getExpenseAmountInCurrency(
     .convertedAmount;
 }
 
+function getTransferAmountInCurrency(
+  tr: AccountTransfer,
+  targetCurrency: string,
+  baseCurrency: string,
+  accounts: FinancialAccount[],
+  fxSnapshot?: MarketFxSnapshot
+): number {
+  const destAcc = tr.destinationAccountId
+    ? accounts.find((a) => a.id === tr.destinationAccountId)
+    : undefined;
+  const srcAcc = tr.sourceAccountId
+    ? accounts.find((a) => a.id === tr.sourceAccountId)
+    : undefined;
+
+  if (
+    tr.destinationAmount !== undefined &&
+    tr.destinationAmount > 0 &&
+    tr.destinationCurrency
+  ) {
+    const destCurr = tr.destinationCurrency.toUpperCase();
+    if (destCurr === targetCurrency.toUpperCase()) {
+      return roundTo2Decimals(Number(tr.destinationAmount));
+    }
+    return convertCurrency2dp(
+      Number(tr.destinationAmount),
+      destCurr,
+      targetCurrency,
+      fxSnapshot
+    ).convertedAmount;
+  }
+
+  const trCurr = (
+    tr.sourceCurrency ||
+    getAccountCurrency(destAcc || srcAcc, baseCurrency)
+  ).toUpperCase();
+  const rawAmt = Number(tr.amount || 0);
+  if (trCurr === targetCurrency.toUpperCase()) {
+    return roundTo2Decimals(rawAmt);
+  }
+  return convertCurrency2dp(rawAmt, trCurr, targetCurrency, fxSnapshot)
+    .convertedAmount;
+}
+
 export function evaluateBudgetProgress(
   budget: FinancialBudget,
   expenses: FlexibleExpense[],
@@ -501,13 +674,201 @@ export function evaluateBudgetProgress(
   accounts: FinancialAccount[],
   settings: UserSettings,
   fxSnapshot?: MarketFxSnapshot,
-  referenceDate: Date = new Date()
+  referenceDate: Date = new Date(),
+  transfers: AccountTransfer[] = []
 ): EvaluatedBudget {
   const baseCurrency = (settings.currency || 'GHS').toUpperCase();
   const budgetCurrency = (budget.currency || baseCurrency).toUpperCase();
+  const purposeType: 'budget' | 'goal' =
+    budget.purposeType === 'goal' ? 'goal' : 'budget';
   const periodWindow = resolveBudgetPeriodWindow(budget, referenceDate);
+  const todayYmd = toYmd(referenceDate);
+  const isExpired =
+    Boolean(budget.isExpiredDisabled) || todayYmd > periodWindow.endYmd;
+  const isDisabledFromReach = isExpired && !budget.autoRecreate;
+  const recreateDays =
+    budget.recreateDays !== undefined && Number(budget.recreateDays) > 0
+      ? Math.max(1, Math.round(Number(budget.recreateDays)))
+      : getDefaultRecreateDaysForPeriod(
+          budget.periodType,
+          budget.customStartDate,
+          budget.customEndDate
+        );
 
-  // Include both standalone expenses and non-savings income deduction expenses
+  const budgetLimit = roundTo2Decimals(Math.max(0, Number(budget.amount || 0)));
+  const budgetLimitBase =
+    budgetCurrency === baseCurrency
+      ? budgetLimit
+      : convertCurrency2dp(budgetLimit, budgetCurrency, baseCurrency, fxSnapshot)
+          .convertedAmount;
+
+  const linkedAccount = budget.accountId
+    ? accounts.find((a) => a.id === budget.accountId)
+    : undefined;
+
+  if (purposeType === 'goal') {
+    // Goal evaluation: attached to transfers and/or savings allocations to meet a target for a cause
+    const sourceType = budget.goalSourceType || 'savings_and_transfers';
+    const savingsSplitTransfers =
+      sourceType === 'transfers_only'
+        ? []
+        : getSavingsSplitTransfers(incomes, settings, accounts);
+    const manualTransfers =
+      sourceType === 'savings_only' ? [] : transfers || [];
+    const candidateTransfers = [...manualTransfers, ...savingsSplitTransfers];
+
+    const goalCauseLower = (budget.goalCause || '').trim().toLowerCase();
+    const matchedTransfers: AccountTransfer[] = [];
+    const sourceBreakdownMap = new Map<
+      string,
+      { spent: number; spentBase: number; count: number; color: string }
+    >();
+
+    for (const tr of candidateTransfers) {
+      if (!isDateWithinBudgetWindow(tr.date, periodWindow)) continue;
+
+      if (budget.accountId) {
+        if (tr.destinationAccountId !== budget.accountId) continue;
+      } else if (goalCauseLower) {
+        const descMatch = (tr.description || '')
+          .toLowerCase()
+          .includes(goalCauseLower);
+        const destAcc = accounts.find((a) => a.id === tr.destinationAccountId);
+        const destNameMatch = (destAcc?.name || '')
+          .toLowerCase()
+          .includes(goalCauseLower);
+        const isSavingsAlloc =
+          tr.transferType === 'savings_deduction' ||
+          (destAcc ? isSavingsVaultAccount(destAcc, settings) : false);
+        if (!descMatch && !destNameMatch && !isSavingsAlloc) continue;
+      }
+
+      matchedTransfers.push(tr);
+
+      const amtInGoalCurr = getTransferAmountInCurrency(
+        tr,
+        budgetCurrency,
+        baseCurrency,
+        accounts,
+        fxSnapshot
+      );
+      const amtInBaseCurr = getTransferAmountInCurrency(
+        tr,
+        baseCurrency,
+        baseCurrency,
+        accounts,
+        fxSnapshot
+      );
+
+      const destAcc = accounts.find((a) => a.id === tr.destinationAccountId);
+      const label =
+        destAcc?.name ||
+        (tr.transferType === 'savings_deduction'
+          ? 'Savings Allocation'
+          : 'Account Transfer');
+      const bucket = sourceBreakdownMap.get(label) || {
+        spent: 0,
+        spentBase: 0,
+        count: 0,
+        color: destAcc?.color || '#10b981',
+      };
+      bucket.spent = roundTo2Decimals(bucket.spent + amtInGoalCurr);
+      bucket.spentBase = roundTo2Decimals(bucket.spentBase + amtInBaseCurr);
+      bucket.count += 1;
+      sourceBreakdownMap.set(label, bucket);
+    }
+
+    let achievedAmount = 0;
+    let achievedAmountBase = 0;
+    for (const item of sourceBreakdownMap.values()) {
+      achievedAmount += item.spent;
+      achievedAmountBase += item.spentBase;
+    }
+    achievedAmount = roundTo2Decimals(achievedAmount);
+    achievedAmountBase = roundTo2Decimals(achievedAmountBase);
+
+    const residualAmount = roundTo2Decimals(
+      Math.max(0, budgetLimit - achievedAmount)
+    );
+    const residualAmountBase = roundTo2Decimals(
+      Math.max(0, budgetLimitBase - achievedAmountBase)
+    );
+    const usagePercentage =
+      budgetLimit > 0
+        ? roundTo2Decimals((achievedAmount / budgetLimit) * 100)
+        : 0;
+    const clampedProgressPercent = Math.min(100, Math.max(0, usagePercentage));
+    const residualPercent = Math.max(
+      0,
+      roundTo2Decimals(100 - clampedProgressPercent)
+    );
+    const overageAmount =
+      achievedAmount > budgetLimit
+        ? roundTo2Decimals(achievedAmount - budgetLimit)
+        : 0;
+    const overagePercent =
+      usagePercentage > 100 ? roundTo2Decimals(usagePercentage - 100) : 0;
+
+    const alertThresholdPercent = Math.min(
+      100,
+      Math.max(1, Number(budget.alertThresholdPercent ?? 80))
+    );
+
+    const isGoalMet = budgetLimit > 0 && achievedAmount >= budgetLimit;
+    let status: BudgetHealthStatus = 'healthy';
+    if (isGoalMet) {
+      status = 'at_limit';
+    } else if (usagePercentage >= alertThresholdPercent) {
+      status = 'warning';
+    }
+
+    const subcategoryBreakdowns: BudgetSubcategoryBreakdown[] = Array.from(
+      sourceBreakdownMap.entries()
+    ).map(([label, stat]) => ({
+      subcategory: label,
+      color: stat.color,
+      spentAmount: stat.spent,
+      spentAmountBase: stat.spentBase,
+      shareOfBudgetPercent:
+        budgetLimit > 0
+          ? roundTo2Decimals((stat.spent / budgetLimit) * 100)
+          : 0,
+      shareOfSpentPercent:
+        achievedAmount > 0
+          ? roundTo2Decimals((stat.spent / achievedAmount) * 100)
+          : 0,
+      transactionCount: stat.count,
+    }));
+
+    return {
+      budget,
+      purposeType: 'goal',
+      periodWindow,
+      budgetLimit,
+      budgetLimitBase,
+      spentAmount: achievedAmount,
+      spentAmountBase: achievedAmountBase,
+      residualAmount,
+      residualAmountBase,
+      usagePercentage,
+      clampedProgressPercent,
+      residualPercent,
+      overageAmount,
+      overagePercent,
+      alertThresholdPercent,
+      status,
+      isGoalMet,
+      isExpired,
+      isDisabledFromReach,
+      recreateDays,
+      subcategoryBreakdowns,
+      matchedExpenses: [],
+      matchedTransfers: sortRecordsByArrivalTime(matchedTransfers),
+      linkedAccount,
+    };
+  }
+
+  // Standard Budget evaluation (linked to expenses)
   const deductionExpenses = getIncomeDeductionExpenses(
     incomes,
     settings,
@@ -552,7 +913,6 @@ export function evaluateBudgetProgress(
     const expSubKey = normalizeSubcategoryKey(exp.subcategory);
     const expCatKey = normalizeSubcategoryKey(exp.category);
 
-    // Match either exact subcategory or fallback to category if subcategory matches
     const matchedKey = targetSubMap.has(expSubKey)
       ? expSubKey
       : !expSubKey && targetSubMap.has(expCatKey)
@@ -591,13 +951,6 @@ export function evaluateBudgetProgress(
     }
     subSpentMap.set(matchedKey, bucket);
   }
-
-  const budgetLimit = roundTo2Decimals(Math.max(0, Number(budget.amount || 0)));
-  const budgetLimitBase =
-    budgetCurrency === baseCurrency
-      ? budgetLimit
-      : convertCurrency2dp(budgetLimit, budgetCurrency, baseCurrency, fxSnapshot)
-          .convertedAmount;
 
   let spentAmount = 0;
   let spentAmountBase = 0;
@@ -668,12 +1021,9 @@ export function evaluateBudgetProgress(
 
   const sortedMatchedExpenses = sortRecordsByArrivalTime(matchedExpenses);
 
-  const linkedAccount = budget.accountId
-    ? accounts.find((a) => a.id === budget.accountId)
-    : undefined;
-
   return {
     budget,
+    purposeType: 'budget',
     periodWindow,
     budgetLimit,
     budgetLimitBase,
@@ -688,8 +1038,13 @@ export function evaluateBudgetProgress(
     overagePercent,
     alertThresholdPercent,
     status,
+    isGoalMet: false,
+    isExpired,
+    isDisabledFromReach,
+    recreateDays,
     subcategoryBreakdowns,
     matchedExpenses: sortedMatchedExpenses,
+    matchedTransfers: [],
     linkedAccount,
   };
 }
@@ -702,7 +1057,8 @@ export function evaluateAllBudgets(
   settings: UserSettings,
   fxSnapshot?: MarketFxSnapshot,
   referenceDate: Date = new Date(),
-  includeArchived: boolean = false
+  includeArchived: boolean = false,
+  transfers: AccountTransfer[] = []
 ): EvaluatedBudget[] {
   return budgets
     .filter((b) => includeArchived || !b.isArchivedPeriod)
@@ -714,7 +1070,8 @@ export function evaluateAllBudgets(
         accounts,
         settings,
         fxSnapshot,
-        referenceDate
+        referenceDate,
+        transfers
       )
     );
 }
@@ -868,7 +1225,13 @@ export function checkSpendAgainstBudgetsAndAccount(params: {
 
   if (subKey || catKey) {
     for (const budget of budgets) {
-      if (budget.isArchivedPeriod) continue;
+      if (
+        budget.isArchivedPeriod ||
+        budget.isExpiredDisabled ||
+        budget.purposeType === 'goal'
+      ) {
+        continue;
+      }
       // Check if budget tracks this subcategory
       const tracksSub = (budget.subcategories || []).some((s) => {
         const k = normalizeSubcategoryKey(s);
@@ -890,6 +1253,10 @@ export function checkSpendAgainstBudgetsAndAccount(params: {
         fxSnapshot,
         refDate
       );
+
+      if (evaluated.isDisabledFromReach || evaluated.isExpired) {
+        continue;
+      }
 
       // Verify the expense date falls inside the budget's period window
       if (date && !isDateWithinBudgetWindow(date, evaluated.periodWindow)) {

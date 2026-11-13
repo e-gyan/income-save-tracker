@@ -39,10 +39,12 @@ import { getColorThemeConfig } from '../lib/colorThemes.ts';
 import {
   TimeRangePreset,
   getPresetLabel,
+  formatDateDDMMYYYY,
   formatDateTimeDDMMYYYY,
   sortRecordsByArrivalTime,
 } from '../lib/dateFilters.ts';
 import { ActiveTab } from './Navigation.tsx';
+import { RecordCard, ExpenseDetailPopupModal } from './RecordCard.tsx';
 
 interface AnalyticsViewProps {
   incomes: IncomeReceipt[];
@@ -54,6 +56,7 @@ interface AnalyticsViewProps {
   timeRange?: TimeRangePreset;
   onNavigateToTab: (tab: ActiveTab) => void;
   onEditExpense?: (expense: FlexibleExpense) => void;
+  onDeleteExpense?: (id: string) => void;
 }
 
 interface PieSliceDatum {
@@ -138,7 +141,10 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   timeRange = 'all',
   onNavigateToTab,
   onEditExpense,
+  onDeleteExpense,
 }) => {
+  const [selectedPopupExpense, setSelectedPopupExpense] =
+    useState<FlexibleExpense | null>(null);
   const [isVisualsCollapsed, setIsVisualsCollapsed] = useState(false);
   const [isPieSectionCollapsed, setIsPieSectionCollapsed] = useState(false);
   const [selectedPieQuarter, setSelectedPieQuarter] = useState<'ALL' | Quarter>('ALL');
@@ -3353,7 +3359,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         </div>
 
         {!isRecentExpensesCollapsed && (
-          <div className="divide-y divide-slate-100">
+          <div className="space-y-2">
             {filteredExpensesForAnalysis.slice(0, 20).map((exp) => {
               const acc = accounts.find((a) => a.id === exp.accountId);
               const { baseAmount } = getExpenseNativeAndBaseAmount(
@@ -3362,47 +3368,43 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                 accounts,
                 fxSnapshot
               );
+              const subLabel =
+                exp.subcategory?.trim() ||
+                exp.category?.trim() ||
+                'Expense';
+              const subColor = resolveIntuitiveSubcategoryColor(
+                subLabel,
+                exp.category,
+                settings,
+                expenses
+              );
               return (
-                <div
+                <RecordCard
                   key={exp.id}
-                  className="py-2.5 first:pt-0 last:pb-0 flex flex-wrap items-center justify-between gap-2 text-xs"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="font-semibold text-slate-900 break-words">
-                        {exp.recipient || exp.description || exp.category}
-                      </span>
-                      <span className="text-slate-400">·</span>
-                      <span className="text-slate-600">{exp.category}</span>
-                      {exp.subcategory && (
-                        <span className="text-slate-500">/ {exp.subcategory}</span>
-                      )}
-                    </div>
-                    <div className="text-[11px] text-slate-500 font-mono mt-0.5">
-                      {formatDateTimeDDMMYYYY(exp.date, exp.createdAt)}
-                      {acc ? ` · ${acc.name}` : ''}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="font-mono font-semibold text-rose-600 tabular-nums">
-                      -{formatAmount(baseAmount, currency)}
-                    </span>
-                    {onEditExpense && (
-                      <button
-                        type="button"
-                        onClick={() => onEditExpense(exp)}
-                        className="rounded border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
-                      >
-                        Edit
-                      </button>
-                    )}
-                  </div>
-                </div>
+                  topLeftSubcategory={subLabel}
+                  subcategoryColor={subColor}
+                  bottomLeftAccount={acc?.name || 'Account'}
+                  topRightAmount={`-${formatAmount(baseAmount, currency)}`}
+                  recordType="expense"
+                  bottomRightDate={formatDateDDMMYYYY(exp.date)}
+                  onClick={() => setSelectedPopupExpense(exp)}
+                />
               );
             })}
           </div>
         )}
       </div>
+
+      {/* Expense Record Detail Pop-Up Modal */}
+      <ExpenseDetailPopupModal
+        expense={selectedPopupExpense}
+        accounts={accounts}
+        settings={settings}
+        currency={currency}
+        onClose={() => setSelectedPopupExpense(null)}
+        onEditExpense={onEditExpense}
+        onDeleteExpense={onDeleteExpense}
+      />
     </div>
   );
 };

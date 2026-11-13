@@ -616,7 +616,12 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
       const catLabel = expCategory || 'General';
       const subLabel = expSubcategory || undefined;
       const subColor = subLabel
-        ? resolveIntuitiveSubcategoryColor(subLabel, catLabel, settings, expenses)
+        ? resolveIntuitiveSubcategoryColor(
+            subLabel,
+            catLabel,
+            settings,
+            expenses
+          )
         : undefined;
 
       await onAddExpenses([
@@ -628,9 +633,7 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
           subcategory: subLabel,
           subcategoryColor: subColor,
           notes: noteLabel || undefined,
-          description: toLabel
-            ? `${toLabel}${noteLabel ? ` — ${noteLabel}` : ''}`
-            : noteLabel || catLabel,
+          description: subLabel || catLabel,
           currency: selectedCurr,
           originalAmount: rawAmt,
           exchangeRate: exchangeRate2dp,
