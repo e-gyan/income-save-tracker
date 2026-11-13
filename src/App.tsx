@@ -25,6 +25,7 @@ import {
   LEGACY_AUTO_ACCOUNT_IDS,
   LEGACY_SEEDED_CUT_IDS,
   getEffectiveSavingsPillars,
+  getEffectiveExpenseCategoryPreferences,
   isSavingsVaultAccount,
   buildDefaultDeductionsForIncome,
   resolveIntuitiveSubcategoryColor,
@@ -34,6 +35,7 @@ import {
   computeRecurringPeriodBounds,
   reconcileRecurringBudgets,
 } from './lib/budgetCalculations.ts';
+import { learnSavingsVaultDebitAccount } from './lib/deductionIntelligence.ts';
 import {
   applyColorThemeToDocument,
   getPersistedColorTheme,
@@ -78,6 +80,7 @@ import { AnalyticsView } from './components/AnalyticsView.tsx';
 import { CleanSheetModal } from './components/CleanSheetModal.tsx';
 import { FloatingQuickActions } from './components/FloatingQuickActions.tsx';
 import { DeductionAgentModal } from './components/DeductionAgentModal.tsx';
+import { EditExpenseModal } from './components/EditExpenseModal.tsx';
 import { TimeRangePreset, isDateInPreset } from './lib/dateFilters.ts';
 
 export default function App() {
@@ -89,6 +92,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeductionAgentOpen, setIsDeductionAgentOpen] = useState(false);
+  const [editingExpense, setEditingExpense] = useState<FlexibleExpense | null>(null);
   const [expandIncomeTrigger, setExpandIncomeTrigger] = useState(0);
   const [expandExpenseTrigger, setExpandExpenseTrigger] = useState(0);
   const [openTransferTrigger, setOpenTransferTrigger] = useState(0);
@@ -576,12 +580,57 @@ export default function App() {
   ) => {
     if (items.length === 0) return;
     const nowMs = Date.now();
-    const newRecords: FlexibleExpense[] = items.map((item, index) => ({
-      ...item,
-      id: `exp_${nowMs}_${index}`,
-      userId: effectiveUserId,
-      createdAt: new Date().toISOString(),
-    }));
+    const newRecords: FlexibleExpense[] = items.map((item, index) => {
+      const selectedAcc = item.accountId
+        ? accounts.find((a) => a.id === item.accountId)
+        : undefined;
+      const alreadyVault = Boolean(
+        selectedAcc && isSavingsVaultAccount(selectedAcc, settings)
+      );
+
+      // Automate debit from Savings Vault as expenses come in by learning from past vault-debit expenses
+      let resolvedAccountId = item.accountId;
+      let resolvedVaultAction = item.vaultAction;
+
+      if (!alreadyVault && item.vaultAction !== 'credit') {
+        const learnedVault = learnSavingsVaultDebitAccount({
+          recipient: item.recipient,
+          description: item.description || item.notes,
+          category: item.category,
+          subcategory: item.subcategory,
+          expenses,
+          accounts,
+          settings,
+        });
+        if (learnedVault) {
+          resolvedAccountId = learnedVault.vaultAccountId;
+          resolvedVaultAction = 'debit';
+        }
+      } else if (alreadyVault && !resolvedVaultAction) {
+        resolvedVaultAction = 'debit';
+      }
+
+      const subColor =
+        item.subcategoryColor ||
+        (item.subcategory
+          ? resolveIntuitiveSubcategoryColor(
+              item.subcategory,
+              item.category,
+              settings,
+              expenses
+            )
+          : undefined);
+
+      return {
+        ...item,
+        id: `exp_${nowMs}_${index}`,
+        userId: effectiveUserId,
+        accountId: resolvedAccountId,
+        vaultAction: resolvedVaultAction,
+        subcategoryColor: subColor,
+        createdAt: new Date(nowMs + index).toISOString(),
+      };
+    });
 
     const nextExpenses = [...newRecords, ...expenses];
     setExpenses(nextExpenses);
@@ -596,6 +645,284 @@ export default function App() {
         }
       } catch (err) {
         console.error('Expense save error:', err);
+      }
+    })();
+  };
+
+  const handleUpdateExpense = async (updatedExpense: FlexibleExpense) => {
+    // Support editing deduction-derived expenses (exp_ded_<incId>_<dedId>) as well as standalone expenses
+    if (updatedExpense.id.startsWith('exp_ded_') && updatedExpense.incomeReceiptId) {
+      const parentIncome = incomes.find(
+        (inc) => inc.id === updatedExpense.incomeReceiptId
+      );
+      if (parentIncome && Array.isArray(parentIncome.allocatedDeductions)) {
+        const prefix = `exp_ded_${parentIncome.id}_`;
+        const dedId = updatedExpense.id.startsWith(prefix)
+          ? updatedExpense.id.slice(prefix.length)
+          : '';
+        const nextDeductions = parentIncome.allocatedDeductions.map((ded) => {
+          if (
+            ded.id === dedId ||
+            ded.name.trim().toLowerCase() ===
+              (updatedExpense.recipient || '').trim().toLowerCase()
+          ) {
+            const newAmt = Number(
+              updatedExpense.originalAmount ?? updatedExpense.amount ?? ded.amount
+            );
+            return {
+              ...ded,
+              name: updatedExpense.recipient || ded.name,
+              type: 'fixed' as const,
+              value: newAmt,
+              amount: newAmt,
+              expenseCategory: updatedExpense.category,
+              expenseSubcategory: updatedExpense.subcategory,
+            };
+          }
+          return ded;
+        });
+        await handleUpdateIncome({
+          ...parentIncome,
+          date: updatedExpense.date || parentIncome.date,
+          accountId: updatedExpense.accountId || parentIncome.accountId,
+          allocatedDeductions: nextDeductions,
+          updatedAt: new Date().toISOString(),
+        });
+        return;
+      }
+    }
+
+    const selectedAcc = updatedExpense.accountId
+      ? accounts.find((a) => a.id === updatedExpense.accountId)
+      : undefined;
+    const isVaultAcc = Boolean(
+      selectedAcc && isSavingsVaultAccount(selectedAcc, settings)
+    );
+
+    const normalized: FlexibleExpense = {
+      ...updatedExpense,
+      userId: effectiveUserId,
+      vaultAction: isVaultAcc
+        ? updatedExpense.vaultAction === 'credit'
+          ? 'credit'
+          : 'debit'
+        : undefined,
+      subcategoryColor: updatedExpense.subcategory
+        ? resolveIntuitiveSubcategoryColor(
+            updatedExpense.subcategory,
+            updatedExpense.category,
+            settings,
+            expenses
+          )
+        : updatedExpense.subcategoryColor,
+    };
+
+    const exists = expenses.some((e) => e.id === normalized.id);
+    const nextExpenses = exists
+      ? expenses.map((e) => (e.id === normalized.id ? normalized : e))
+      : [normalized, ...expenses];
+
+    setExpenses(nextExpenses);
+    setLocalData('expenses', nextExpenses, effectiveUserId);
+
+    // Sync with backend endpoint and Firestore
+    fetch('/api/expenses/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        expense: normalized,
+        baseCurrency: settings.currency,
+        isVaultAccount: isVaultAcc,
+      }),
+    }).catch(() => {});
+
+    (async () => {
+      try {
+        if (currentUser) {
+          await saveFlexibleExpense(currentUser.uid, normalized);
+        }
+      } catch (err) {
+        console.error('Expense update error:', err);
+      }
+    })();
+  };
+
+  const handleMoveSubcategory = async (
+    subcategory: string,
+    fromCategory: string,
+    toCategory: string
+  ) => {
+    const cleanSub = subcategory.trim();
+    const cleanFrom = fromCategory.trim();
+    const cleanTo = toCategory.trim();
+    if (!cleanSub || !cleanTo) return;
+    if (cleanFrom.toLowerCase() === cleanTo.toLowerCase()) return;
+
+    const subKey = cleanSub.toLowerCase();
+    const fromKey = cleanFrom.toLowerCase();
+    const toKey = cleanTo.toLowerCase();
+
+    const currentPrefs = getEffectiveExpenseCategoryPreferences(settings, expenses);
+    const preservedColor = resolveIntuitiveSubcategoryColor(
+      cleanSub,
+      cleanFrom || cleanTo,
+      settings,
+      expenses
+    );
+
+    let targetFound = false;
+    const nextPrefs = currentPrefs.map((pref) => {
+      const pKey = pref.name.trim().toLowerCase();
+      const subs = pref.subcategories || [];
+      const colors = { ...(pref.subcategoryColors || {}) };
+
+      if (pKey === toKey) {
+        targetFound = true;
+        const hasSub = subs.some((s) => s.trim().toLowerCase() === subKey);
+        const nextSubs = hasSub ? subs : [...subs, cleanSub];
+        if (preservedColor && !colors[cleanSub]) {
+          colors[cleanSub] = preservedColor;
+        }
+        return {
+          ...pref,
+          subcategories: nextSubs,
+          subcategoryColors: colors,
+        };
+      }
+
+      if (!fromKey || pKey === fromKey) {
+        return {
+          ...pref,
+          subcategories: subs.filter((s) => s.trim().toLowerCase() !== subKey),
+        };
+      }
+
+      return pref;
+    });
+
+    if (!targetFound) {
+      nextPrefs.push({
+        id: `cat_pref_${Date.now()}`,
+        name: cleanTo,
+        subcategories: [cleanSub],
+        subcategoryColors: preservedColor ? { [cleanSub]: preservedColor } : {},
+      });
+    }
+
+    const nextCuts = (settings.customCuts || []).map((cut) => {
+      if ((cut.expenseSubcategory || '').trim().toLowerCase() === subKey) {
+        return {
+          ...cut,
+          expenseCategory: cleanTo,
+        };
+      }
+      return cut;
+    });
+
+    const updatedSettings: UserSettings = {
+      ...settings,
+      expenseCategories: nextPrefs.map((p) => p.name),
+      expenseCategoryPreferences: nextPrefs,
+      customCuts: nextCuts,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const changedExpenses: FlexibleExpense[] = [];
+    const nextExpenses = expenses.map((exp) => {
+      if ((exp.subcategory || '').trim().toLowerCase() === subKey) {
+        const updatedExp: FlexibleExpense = {
+          ...exp,
+          category: cleanTo,
+          subcategoryColor: preservedColor || exp.subcategoryColor,
+        };
+        changedExpenses.push(updatedExp);
+        return updatedExp;
+      }
+      return exp;
+    });
+
+    const changedIncomes: IncomeReceipt[] = [];
+    const nextIncomes = incomes.map((inc) => {
+      if (!Array.isArray(inc.allocatedDeductions)) return inc;
+      let changed = false;
+      const nextDeds = inc.allocatedDeductions.map((d) => {
+        if ((d.expenseSubcategory || '').trim().toLowerCase() === subKey) {
+          changed = true;
+          return {
+            ...d,
+            expenseCategory: cleanTo,
+          };
+        }
+        return d;
+      });
+      if (changed) {
+        const updatedInc: IncomeReceipt = {
+          ...inc,
+          allocatedDeductions: nextDeds,
+          updatedAt: new Date().toISOString(),
+        };
+        changedIncomes.push(updatedInc);
+        return updatedInc;
+      }
+      return inc;
+    });
+
+    const changedBudgets: FinancialBudget[] = [];
+    const nextBudgets = budgets.map((b) => {
+      const tracksSub = (b.subcategories || []).some(
+        (s) => s.trim().toLowerCase() === subKey
+      );
+      if (!tracksSub) return b;
+      const existingCats = b.categories || [];
+      const hasTo = existingCats.some((c) => c.trim().toLowerCase() === toKey);
+      const updatedBudget: FinancialBudget = {
+        ...b,
+        categories: hasTo ? existingCats : [...existingCats, cleanTo],
+        updatedAt: new Date().toISOString(),
+      };
+      changedBudgets.push(updatedBudget);
+      return updatedBudget;
+    });
+
+    setSettings(updatedSettings);
+    setExpenses(nextExpenses);
+    setIncomes(nextIncomes);
+    setBudgets(nextBudgets);
+
+    setLocalData('settings', updatedSettings, effectiveUserId);
+    setLocalData('expenses', nextExpenses, effectiveUserId);
+    setLocalData('incomes', nextIncomes, effectiveUserId);
+    setLocalData('budgets', nextBudgets, effectiveUserId);
+
+    // Notify backend route
+    fetch('/api/categories/move-subcategory', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        subcategory: cleanSub,
+        fromCategory: cleanFrom,
+        toCategory: cleanTo,
+        settings: updatedSettings,
+      }),
+    }).catch(() => {});
+
+    (async () => {
+      try {
+        if (currentUser) {
+          const uid = currentUser.uid;
+          await saveUserSettings(uid, updatedSettings);
+          for (const exp of changedExpenses) {
+            await saveFlexibleExpense(uid, exp);
+          }
+          for (const inc of changedIncomes) {
+            await saveIncomeReceipt(uid, inc);
+          }
+          for (const bgt of changedBudgets) {
+            await saveFinancialBudget(uid, bgt);
+          }
+        }
+      } catch (err) {
+        console.error('Move subcategory persistence error:', err);
       }
     })();
   };
@@ -1101,6 +1428,7 @@ export default function App() {
                 timeRange={timeRange}
                 onSelectTimeRange={setTimeRange}
                 onNavigateToTab={setActiveTab}
+                onEditExpense={(exp) => setEditingExpense(exp)}
               />
             )}
 
@@ -1133,7 +1461,10 @@ export default function App() {
                 budgets={budgets}
                 currency={settings.currency}
                 onAddExpenses={handleAddExpenses}
+                onUpdateExpense={handleUpdateExpense}
                 onDeleteExpense={handleDeleteExpense}
+                onEditExpense={(exp) => setEditingExpense(exp)}
+                onMoveSubcategory={handleMoveSubcategory}
                 onNavigateToTab={setActiveTab}
                 expandFormTrigger={expandExpenseTrigger}
               />
@@ -1150,6 +1481,7 @@ export default function App() {
                 currency={settings.currency}
                 onSaveBudget={handleSaveBudget}
                 onDeleteBudget={handleDeleteBudget}
+                onEditExpense={(exp) => setEditingExpense(exp)}
                 onNavigateToTab={setActiveTab}
               />
             )}
@@ -1169,7 +1501,9 @@ export default function App() {
                 onDeleteTransfer={handleDeleteTransfer}
                 onUpdateIncome={handleUpdateIncome}
                 onAddExpenses={handleAddExpenses}
+                onUpdateExpense={handleUpdateExpense}
                 onDeleteExpense={handleDeleteExpense}
+                onEditExpense={(exp) => setEditingExpense(exp)}
                 onSaveSettings={handleSaveSettings}
                 onNavigateToTab={setActiveTab}
                 openTransferTrigger={openTransferTrigger}
@@ -1186,6 +1520,7 @@ export default function App() {
                 currency={settings.currency}
                 timeRange={timeRange}
                 onNavigateToTab={setActiveTab}
+                onEditExpense={(exp) => setEditingExpense(exp)}
               />
             )}
 
@@ -1196,6 +1531,7 @@ export default function App() {
                 expenses={expenses}
                 currentUser={currentUser}
                 onSaveSettings={handleSaveSettings}
+                onMoveSubcategory={handleMoveSubcategory}
                 isSaving={isSaving}
                 onAddSavingsStructure={handleAddSavingsStructure}
                 onImportRecords={handleImportRecords}
@@ -1229,6 +1565,19 @@ export default function App() {
             setOpenTransferTrigger((prev) => prev + 1);
           }
         }}
+      />
+
+      {/* Global Edit Expense Modal across All Boards */}
+      <EditExpenseModal
+        isOpen={Boolean(editingExpense)}
+        expense={editingExpense}
+        expenses={expenses}
+        accounts={activeAccounts}
+        settings={settings}
+        currency={settings.currency}
+        onClose={() => setEditingExpense(null)}
+        onSaveExpense={handleUpdateExpense}
+        onMoveSubcategory={handleMoveSubcategory}
       />
 
       {/* Deduction & Record Intelligence Assistant Modal */}

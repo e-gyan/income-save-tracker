@@ -29,7 +29,9 @@ import {
 import {
   learnDeductionSuggestions,
   suggestionToIncomeDeductionItem,
+  learnSavingsVaultDebitAccount,
 } from '../lib/deductionIntelligence.ts';
+import { formatDateDDMMYYYY } from '../lib/dateFilters.ts';
 import {
   SUPPORTED_CURRENCIES,
   fetchMarketExchangeRates,
@@ -558,6 +560,26 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
     return matched?.subcategories || [];
   }, [expenseCategories, expCategory]);
 
+  const learnedExpVaultDebit = useMemo(
+    () =>
+      learnSavingsVaultDebitAccount({
+        expenses,
+        accounts,
+        settings,
+        recipient: expRecipient,
+        category: expCategory,
+        subcategory: expSubcategory,
+      }),
+    [expenses, accounts, settings, expRecipient, expCategory, expSubcategory]
+  );
+
+  // Auto-select learned Savings Vault debit account when matching past vault-debit expenses
+  useEffect(() => {
+    if (activeModal !== 'expense' || !learnedExpVaultDebit) return;
+    setExpAccountId(learnedExpVaultDebit.vaultAccountId);
+    setExpCurrency(learnedExpVaultDebit.vaultCurrency);
+  }, [learnedExpVaultDebit, activeModal]);
+
   const handleOpenExpenseModal = () => {
     setIsMenuOpen(false);
     setExpDate(todayStr);
@@ -812,11 +834,11 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
       {/* 1. Transfer Fund Modal */}
       {activeModal === 'transfer' && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto"
           onClick={() => setActiveModal(null)}
         >
           <div
-            className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl space-y-4"
+            className="w-full max-w-md max-h-[88dvh] sm:max-h-[90vh] overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white p-4 sm:p-5 shadow-2xl space-y-4 my-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
@@ -974,11 +996,11 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
       {/* 2. Quick Record Income Modal */}
       {activeModal === 'income' && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto"
           onClick={() => setActiveModal(null)}
         >
           <div
-            className="w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl space-y-4"
+            className="w-full max-w-xl max-h-[88dvh] sm:max-h-[90vh] overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white p-4 sm:p-5 shadow-2xl space-y-4 my-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
@@ -1494,11 +1516,11 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
       {/* 3. Quick Record Expense Modal */}
       {activeModal === 'expense' && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto"
           onClick={() => setActiveModal(null)}
         >
           <div
-            className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl space-y-4"
+            className="w-full max-w-md max-h-[88dvh] sm:max-h-[90vh] overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white p-4 sm:p-5 shadow-2xl space-y-4 my-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
@@ -1531,11 +1553,26 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
               </div>
             </div>
 
+            {learnedExpVaultDebit && (
+              <div className="flex items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50/80 px-3 py-2 text-xs">
+                <span className="font-semibold text-emerald-900">
+                  Auto Vault Debit: {learnedExpVaultDebit.vaultAccountName} (
+                  {learnedExpVaultDebit.reason})
+                </span>
+                <span className="rounded bg-emerald-600 px-1.5 py-0.5 font-mono text-[10px] font-bold text-white shrink-0">
+                  DEBIT
+                </span>
+              </div>
+            )}
+
             <form onSubmit={handleSubmitExpense} className="space-y-3.5">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Date
+                  <label className="flex items-center justify-between text-xs font-medium text-slate-700 mb-1">
+                    <span>Date</span>
+                    <span className="font-mono text-[10px] text-slate-500">
+                      {formatDateDDMMYYYY(expDate)}
+                    </span>
                   </label>
                   <input
                     type="date"

@@ -41,6 +41,7 @@ import {
   getPersistedThemeMode,
   setPersistedThemeMode,
 } from './colorThemes.ts';
+import { sortRecordsByArrivalTime } from './dateFilters.ts';
 
 function stripLegacyPredefinedList(
   rawList: unknown,
@@ -334,7 +335,7 @@ export function subscribeToIncomes(
           updatedAt: item.updatedAt || new Date().toISOString(),
         });
       });
-      onData(items);
+      onData(sortRecordsByArrivalTime(items));
     },
     (error) => {
       if (isFirestoreOffline(error)) {
@@ -454,7 +455,7 @@ export function subscribeToFlexibleExpenses(
           createdAt: item.createdAt || new Date().toISOString(),
         });
       });
-      onData(items);
+      onData(sortRecordsByArrivalTime(items));
     },
     (error) => {
       if (isFirestoreOffline(error)) {
@@ -697,7 +698,7 @@ export function subscribeToTransfers(
           createdAt: item.createdAt || new Date().toISOString(),
         });
       });
-      onData(items);
+      onData(sortRecordsByArrivalTime(items));
     },
     (error) => {
       if (isFirestoreOffline(error)) {

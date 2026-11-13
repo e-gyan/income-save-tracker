@@ -22,7 +22,11 @@ import {
   roundTo2Decimals,
   MarketFxSnapshot,
 } from './currencyService.ts';
-import { parseLocalCalendarDate } from './dateFilters.ts';
+import {
+  parseLocalCalendarDate,
+  formatDateDDMMYYYY,
+  sortRecordsByArrivalTime,
+} from './dateFilters.ts';
 
 export type BudgetHealthStatus = 'healthy' | 'warning' | 'at_limit' | 'exceeded';
 
@@ -113,11 +117,7 @@ function toYmd(d: Date): string {
 }
 
 function formatShortDate(d: Date): string {
-  return d.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
+  return formatDateDDMMYYYY(toYmd(d));
 }
 
 /**
@@ -666,9 +666,7 @@ export function evaluateBudgetProgress(
     };
   });
 
-  matchedExpenses.sort(
-    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-  );
+  const sortedMatchedExpenses = sortRecordsByArrivalTime(matchedExpenses);
 
   const linkedAccount = budget.accountId
     ? accounts.find((a) => a.id === budget.accountId)
@@ -691,7 +689,7 @@ export function evaluateBudgetProgress(
     alertThresholdPercent,
     status,
     subcategoryBreakdowns,
-    matchedExpenses,
+    matchedExpenses: sortedMatchedExpenses,
     linkedAccount,
   };
 }

@@ -17,11 +17,11 @@ export const CleanSheetModal: React.FC<CleanSheetModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs"
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/40 backdrop-blur-xs overflow-y-auto"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl border border-slate-200 space-y-4"
+        className="w-full max-w-sm max-h-[88dvh] sm:max-h-[90vh] overflow-y-auto overscroll-contain rounded-xl bg-white p-5 shadow-xl border border-slate-200 space-y-4 my-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <h3 className="font-display text-base font-bold text-slate-900">

@@ -39,6 +39,12 @@ import {
 } from '../lib/currencyService.ts';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { ActiveTab } from './Navigation.tsx';
+import {
+  formatDateDDMMYYYY,
+  formatDateTimeDDMMYYYY,
+  groupRecordsByPeriod,
+  RecordGroupPeriod,
+} from '../lib/dateFilters.ts';
 
 interface BudgetsViewProps {
   budgets: FinancialBudget[];
@@ -55,6 +61,7 @@ interface BudgetsViewProps {
     }
   ) => Promise<void>;
   onDeleteBudget: (id: string) => Promise<void>;
+  onEditExpense?: (expense: FlexibleExpense) => void;
   onNavigateToTab?: (tab: ActiveTab) => void;
 }
 
@@ -68,6 +75,7 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
   currency,
   onSaveBudget,
   onDeleteBudget,
+  onEditExpense,
   onNavigateToTab,
 }) => {
   const todayStr = new Date().toISOString().substring(0, 10);
@@ -157,6 +165,7 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
   const [selectedBudgetModalId, setSelectedBudgetModalId] = useState<
     string | null
   >(null);
+  const [txGroupBy, setTxGroupBy] = useState<RecordGroupPeriod>('none');
   const [pendingDeleteBudget, setPendingDeleteBudget] =
     useState<FinancialBudget | null>(null);
 
@@ -1238,7 +1247,7 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
                   {/* Top of the Bar: Top-Left = Start Period, Middle = Percentage, Top-Right = End Period */}
                   <div className="grid grid-cols-3 items-center text-[11px] font-mono tabular-nums">
                     <span className="text-left text-slate-500 truncate">
-                      {periodWindow.startYmd}
+                      {formatDateDDMMYYYY(periodWindow.startYmd)}
                     </span>
                     <span
                       className={`text-center font-bold ${
@@ -1252,7 +1261,7 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
                       {eb.usagePercentage}%
                     </span>
                     <span className="text-right text-slate-500 truncate">
-                      {periodWindow.endYmd}
+                      {formatDateDDMMYYYY(periodWindow.endYmd)}
                     </span>
                   </div>
 
@@ -1348,15 +1357,15 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
 
         return (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-3 sm:p-4 backdrop-blur-[2px]"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-2.5 sm:p-4 backdrop-blur-[2px] overflow-y-auto"
             onClick={() => setSelectedBudgetModalId(null)}
           >
             <div
-              className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 sm:p-5 shadow-2xl space-y-4"
+              className="w-full max-w-lg max-h-[88dvh] sm:max-h-[90vh] flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl my-auto"
               onClick={(e) => e.stopPropagation()}
             >
               {/* Modal Header */}
-              <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3">
+              <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-3.5 sm:px-5 shrink-0 bg-white">
                 <div className="min-w-0">
                   <h3 className="font-display text-base sm:text-lg font-bold text-slate-900 break-words">
                     {budget.name}
@@ -1374,209 +1383,261 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
                 </button>
               </div>
 
-              {/* Progress Bar Summary inside Modal */}
-              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2">
-                <div className="grid grid-cols-3 items-center text-[11px] font-mono tabular-nums">
-                  <span className="text-left text-slate-500">
-                    {periodWindow.startYmd}
-                  </span>
-                  <span
-                    className={`text-center font-bold ${
-                      isOver
-                        ? 'text-rose-600'
-                        : isWarn
-                        ? 'text-amber-600'
-                        : 'text-slate-900'
-                    }`}
-                  >
-                    {selectedEb.usagePercentage}%
-                  </span>
-                  <span className="text-right text-slate-500">
-                    {periodWindow.endYmd}
-                  </span>
-                </div>
-
-                <div className="relative h-3.5 w-full overflow-hidden rounded-full bg-slate-200/80 border border-slate-300/70">
-                  <div
-                    className={`h-full transition-all duration-300 ${
-                      isOver
-                        ? 'bg-rose-600'
-                        : isWarn
-                        ? 'bg-amber-500'
-                        : 'bg-emerald-600'
-                    }`}
-                    style={{ width: `${fillPct}%` }}
-                  />
-                  <div
-                    className="pointer-events-none absolute inset-y-0 z-10 w-0.5 bg-slate-900/85 shadow-[0_0_0_1px_rgba(255,255,255,0.85)]"
-                    style={{ left: `${alertMarkPct}%` }}
-                  />
-                </div>
-
-                <div className="grid grid-cols-3 items-center text-[11px] font-mono tabular-nums">
-                  <span className="text-left text-slate-500">
-                    {formatAmount(0, budget.currency)}
-                  </span>
-                  <span className="text-center font-bold text-slate-900">
-                    {formatAmount(selectedEb.spentAmount, budget.currency)}
-                  </span>
-                  <span className="text-right font-semibold text-slate-900">
-                    {formatAmount(selectedEb.budgetLimit, budget.currency)}
-                  </span>
-                </div>
-
-                <div className="pt-0.5 text-left">
-                  <span
-                    className={`font-mono text-xs font-bold tabular-nums ${
-                      selectedEb.residualAmount < 0
-                        ? 'text-rose-600'
-                        : 'text-emerald-700'
-                    }`}
-                  >
-                    Residual:{' '}
-                    {selectedEb.residualAmount < 0
-                      ? `-${formatAmount(
-                          Math.abs(selectedEb.residualAmount),
-                          budget.currency
-                        )}`
-                      : formatAmount(selectedEb.residualAmount, budget.currency)}
-                  </span>
-                </div>
-              </div>
-
-              {/* Account Chosen */}
-              <div className="rounded-xl border border-slate-200 bg-white p-3 flex items-center justify-between gap-2">
-                <span className="text-xs font-semibold text-slate-500">
-                  Accounts Chosen
-                </span>
-                <span className="text-xs font-bold text-slate-900">
-                  {selectedEb.linkedAccount
-                    ? `${selectedEb.linkedAccount.name} (${getAccountCurrency(
-                        selectedEb.linkedAccount,
-                        currency
-                      )})`
-                    : 'All Accounts'}
-                </span>
-              </div>
-
-              {/* Selected Subcategories */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-800">
-                    Selected Subcategory ({selectedEb.subcategoryBreakdowns.length})
-                  </span>
-                  <span className="text-[11px] text-slate-500">
-                    Spent / Share of Budget
-                  </span>
-                </div>
-                <div className="space-y-1.5">
-                  {selectedEb.subcategoryBreakdowns.map((subItem) => {
-                    const badgeStyle = getSubcategoryBadgeStyle(subItem.color);
-                    const subWidth = Math.min(
-                      100,
-                      Math.max(0, subItem.shareOfBudgetPercent)
-                    );
-                    return (
-                      <div
-                        key={subItem.subcategory}
-                        className="rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2 space-y-1.5"
-                      >
-                        <div className="flex items-center justify-between gap-2 text-xs">
-                          <span
-                            className="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-semibold"
-                            style={badgeStyle}
-                          >
-                            <span
-                              className="h-2 w-2 rounded-full shrink-0"
-                              style={{ backgroundColor: subItem.color }}
-                            />
-                            {subItem.subcategory}
-                          </span>
-                          <span className="font-mono text-xs font-bold text-slate-900 tabular-nums">
-                            {formatAmount(subItem.spentAmount, budget.currency)}{' '}
-                            <span className="text-slate-500 font-normal">
-                              ({subItem.shareOfBudgetPercent}%)
-                            </span>
-                          </span>
-                        </div>
-                        <div className="h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
-                          <div
-                            className="h-full rounded-full transition-all"
-                            style={{
-                              width: `${subWidth}%`,
-                              backgroundColor: subItem.color,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* History of Transactions */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-800">
-                    History of Transactions ({selectedEb.matchedExpenses.length})
-                  </span>
-                  <span className="text-[11px] text-slate-500">
-                    {periodWindow.startYmd} to {periodWindow.endYmd}
-                  </span>
-                </div>
-                {selectedEb.matchedExpenses.length === 0 ? (
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 text-center">
-                    No transactions recorded for this budget period.
+              {/* Scrollable Modal Body */}
+              <div className="flex-1 overflow-y-auto overscroll-contain p-4 sm:p-5 space-y-4">
+                {/* Progress Bar Summary inside Modal */}
+                <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2">
+                  <div className="grid grid-cols-3 items-center text-[11px] font-mono tabular-nums">
+                    <span className="text-left text-slate-500">
+                      {formatDateDDMMYYYY(periodWindow.startYmd)}
+                    </span>
+                    <span
+                      className={`text-center font-bold ${
+                        isOver
+                          ? 'text-rose-600'
+                          : isWarn
+                          ? 'text-amber-600'
+                          : 'text-slate-900'
+                      }`}
+                    >
+                      {selectedEb.usagePercentage}%
+                    </span>
+                    <span className="text-right text-slate-500">
+                      {formatDateDDMMYYYY(periodWindow.endYmd)}
+                    </span>
                   </div>
-                ) : (
-                  <div className="max-h-52 overflow-y-auto divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white">
-                    {selectedEb.matchedExpenses.map((exp) => {
-                      const subColor = resolveIntuitiveSubcategoryColor(
-                        exp.subcategory || exp.category,
-                        exp.category,
-                        settings,
-                        expenses
+
+                  <div className="relative h-3.5 w-full overflow-hidden rounded-full bg-slate-200/80 border border-slate-300/70">
+                    <div
+                      className={`h-full transition-all duration-300 ${
+                        isOver
+                          ? 'bg-rose-600'
+                          : isWarn
+                          ? 'bg-amber-500'
+                          : 'bg-emerald-600'
+                      }`}
+                      style={{ width: `${fillPct}%` }}
+                    />
+                    <div
+                      className="pointer-events-none absolute inset-y-0 z-10 w-0.5 bg-slate-900/85 shadow-[0_0_0_1px_rgba(255,255,255,0.85)]"
+                      style={{ left: `${alertMarkPct}%` }}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-3 items-center text-[11px] font-mono tabular-nums">
+                    <span className="text-left text-slate-500">
+                      {formatAmount(0, budget.currency)}
+                    </span>
+                    <span className="text-center font-bold text-slate-900">
+                      {formatAmount(selectedEb.spentAmount, budget.currency)}
+                    </span>
+                    <span className="text-right font-semibold text-slate-900">
+                      {formatAmount(selectedEb.budgetLimit, budget.currency)}
+                    </span>
+                  </div>
+
+                  <div className="pt-0.5 text-left">
+                    <span
+                      className={`font-mono text-xs font-bold tabular-nums ${
+                        selectedEb.residualAmount < 0
+                          ? 'text-rose-600'
+                          : 'text-emerald-700'
+                      }`}
+                    >
+                      Residual:{' '}
+                      {selectedEb.residualAmount < 0
+                        ? `-${formatAmount(
+                            Math.abs(selectedEb.residualAmount),
+                            budget.currency
+                          )}`
+                        : formatAmount(selectedEb.residualAmount, budget.currency)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Account Chosen */}
+                <div className="rounded-xl border border-slate-200 bg-white p-3 flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-slate-500">
+                    Accounts Chosen
+                  </span>
+                  <span className="text-xs font-bold text-slate-900">
+                    {selectedEb.linkedAccount
+                      ? `${selectedEb.linkedAccount.name} (${getAccountCurrency(
+                          selectedEb.linkedAccount,
+                          currency
+                        )})`
+                      : 'All Accounts'}
+                  </span>
+                </div>
+
+                {/* Selected Subcategories */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-800">
+                      Selected Subcategory ({selectedEb.subcategoryBreakdowns.length})
+                    </span>
+                    <span className="text-[11px] text-slate-500">
+                      Spent / Share of Budget
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {selectedEb.subcategoryBreakdowns.map((subItem) => {
+                      const badgeStyle = getSubcategoryBadgeStyle(subItem.color);
+                      const subWidth = Math.min(
+                        100,
+                        Math.max(0, subItem.shareOfBudgetPercent)
                       );
-                      const subBadge = getSubcategoryBadgeStyle(subColor);
                       return (
                         <div
-                          key={exp.id}
-                          className="flex items-center justify-between gap-2 px-3 py-2 text-xs"
+                          key={subItem.subcategory}
+                          className="rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2 space-y-1.5"
                         >
-                          <div className="min-w-0">
-                            <div className="font-semibold text-slate-800 truncate">
-                              {exp.recipient || exp.subcategory || exp.category}
-                            </div>
-                            <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
-                              <span className="font-mono">{exp.date}</span>
+                          <div className="flex items-center justify-between gap-2 text-xs">
+                            <span
+                              className="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-semibold"
+                              style={badgeStyle}
+                            >
                               <span
-                                className="inline-flex items-center gap-1 rounded border px-1.5 py-0.2 text-[10px] font-semibold"
-                                style={subBadge}
-                              >
-                                <span
-                                  className="h-1.5 w-1.5 rounded-full"
-                                  style={{ backgroundColor: subColor }}
-                                />
-                                {exp.subcategory || exp.category}
+                                className="h-2 w-2 rounded-full shrink-0"
+                                style={{ backgroundColor: subItem.color }}
+                              />
+                              {subItem.subcategory}
+                            </span>
+                            <span className="font-mono text-xs font-bold text-slate-900 tabular-nums">
+                              {formatAmount(subItem.spentAmount, budget.currency)}{' '}
+                              <span className="text-slate-500 font-normal">
+                                ({subItem.shareOfBudgetPercent}%)
                               </span>
-                            </div>
+                            </span>
                           </div>
-                          <div className="font-mono font-bold text-rose-600 tabular-nums shrink-0">
-                            -
-                            {formatAmount(
-                              exp.originalAmount ?? exp.amount,
-                              exp.currency || currency
-                            )}
+                          <div className="h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
+                            <div
+                              className="h-full rounded-full transition-all"
+                              style={{
+                                width: `${subWidth}%`,
+                                backgroundColor: subItem.color,
+                              }}
+                            />
                           </div>
                         </div>
                       );
                     })}
                   </div>
-                )}
+                </div>
+
+                {/* History of Transactions */}
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-slate-800">
+                      History of Transactions ({selectedEb.matchedExpenses.length})
+                    </span>
+                    <div className="inline-flex items-center rounded-lg bg-slate-100 p-0.5">
+                      {(
+                        [
+                          { id: 'none', label: 'All' },
+                          { id: 'week', label: 'Week' },
+                          { id: 'month', label: 'Month' },
+                          { id: 'year', label: 'Year' },
+                        ] as { id: RecordGroupPeriod; label: string }[]
+                      ).map((g) => (
+                        <button
+                          key={g.id}
+                          type="button"
+                          onClick={() => setTxGroupBy(g.id)}
+                          className={`rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                            txGroupBy === g.id
+                              ? 'bg-slate-900 text-white'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          {g.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {selectedEb.matchedExpenses.length === 0 ? (
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 text-center">
+                      No transactions recorded for this budget period.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {groupRecordsByPeriod(selectedEb.matchedExpenses, txGroupBy).map(
+                        (group) => (
+                          <div key={group.key} className="space-y-1">
+                            {txGroupBy !== 'none' && (
+                              <div className="rounded bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-700">
+                                {group.label} ({group.items.length})
+                              </div>
+                            )}
+                            <div className="divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white">
+                              {group.items.map((exp) => {
+                                const subColor = resolveIntuitiveSubcategoryColor(
+                                  exp.subcategory || exp.category,
+                                  exp.category,
+                                  settings,
+                                  expenses
+                                );
+                                const subBadge = getSubcategoryBadgeStyle(subColor);
+                                return (
+                                  <div
+                                    key={exp.id}
+                                    className="flex items-center justify-between gap-2 px-3 py-2 text-xs"
+                                  >
+                                    <div className="min-w-0 flex-1">
+                                      <div className="font-semibold text-slate-800 truncate">
+                                        {exp.recipient || exp.subcategory || exp.category}
+                                      </div>
+                                      <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
+                                        <span className="font-mono">
+                                          {formatDateTimeDDMMYYYY(
+                                            exp.date,
+                                            exp.createdAt
+                                          )}
+                                        </span>
+                                        <span
+                                          className="inline-flex items-center gap-1 rounded border px-1.5 py-0.2 text-[10px] font-semibold"
+                                          style={subBadge}
+                                        >
+                                          <span
+                                            className="h-1.5 w-1.5 rounded-full"
+                                            style={{ backgroundColor: subColor }}
+                                          />
+                                          {exp.subcategory || exp.category}
+                                        </span>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      <div className="font-mono font-bold text-rose-600 tabular-nums">
+                                        -
+                                        {formatAmount(
+                                          exp.originalAmount ?? exp.amount,
+                                          exp.currency || currency
+                                        )}
+                                      </div>
+                                      {onEditExpense && (
+                                        <button
+                                          type="button"
+                                          onClick={() => onEditExpense(exp)}
+                                          className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-50"
+                                        >
+                                          Edit
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
 
-              {/* Action Footer: Edit Budget & Delete Budget */}
-              <div className="grid grid-cols-2 gap-2.5 pt-2 border-t border-slate-100">
+              {/* Sticky Action Footer: Edit Budget & Delete Budget */}
+              <div className="grid grid-cols-2 gap-2.5 px-4 py-3 sm:px-5 border-t border-slate-100 bg-slate-50/80 shrink-0">
                 <button
                   type="button"
                   onClick={() => {

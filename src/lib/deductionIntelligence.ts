@@ -14,12 +14,22 @@ import {
   resolveDeductionExpenseMapping,
   computeDeductionAmount,
   formatAmount,
+  isSavingsVaultAccount,
   LEGACY_SEEDED_CUT_IDS,
 } from './calculations.ts';
 import {
   convertCurrency2dp,
   MarketFxSnapshot,
 } from './currencyService.ts';
+
+export interface LearnedVaultDebitSuggestion {
+  vaultAccountId: string;
+  vaultAccountName: string;
+  vaultCurrency: string;
+  reason: string;
+  matchCount: number;
+  matchedBy: 'recipient' | 'subcategory' | 'category';
+}
 
 export interface LearnedDeductionSuggestion {
   id: string;
@@ -689,3 +699,159 @@ export function suggestionToIncomeDeductionItem(
     expenseSubcategory: !isSav ? suggestion.expenseSubcategory : undefined,
   };
 }
+
+/**
+ * Learns from past expenses that were debited ONLY from a Savings Vault
+ * (`isSavingsVaultAccount(acc, settings)` and `vaultAction !== 'credit'`)
+ * so incoming expenses matching a past vault-debit recipient, subcategory, or category
+ * can automatically debit the appropriate Savings Vault.
+ */
+export function learnSavingsVaultDebitAccount(params: {
+  recipient?: string;
+  description?: string;
+  category?: string;
+  subcategory?: string;
+  expenses: FlexibleExpense[];
+  accounts: FinancialAccount[];
+  settings: UserSettings;
+}): LearnedVaultDebitSuggestion | null {
+  const {
+    recipient = '',
+    description = '',
+    category = '',
+    subcategory = '',
+    expenses,
+    accounts,
+    settings,
+  } = params;
+
+  const vaultAccountMap = new Map<string, FinancialAccount>();
+  for (const acc of accounts) {
+    if (isSavingsVaultAccount(acc, settings)) {
+      vaultAccountMap.set(acc.id, acc);
+    }
+  }
+  if (vaultAccountMap.size === 0) return null;
+
+  // Consider only past expenses that were debited from a Savings Vault
+  const pastVaultDebits = expenses.filter(
+    (e) =>
+      Boolean(e.accountId && vaultAccountMap.has(e.accountId)) &&
+      e.vaultAction !== 'credit' &&
+      !e.id.startsWith('exp_ded_') &&
+      !e.id.startsWith('exp_cut_')
+  );
+  if (pastVaultDebits.length === 0) return null;
+
+  const normRec = (recipient || description).trim().toLowerCase();
+  const normSub = subcategory.trim().toLowerCase();
+  const normCat = category.trim().toLowerCase();
+
+  // 1. Match by Recipient / Cause Description (highest confidence)
+  if (normRec.length >= 2) {
+    const recCounts = new Map<string, number>();
+    for (const exp of pastVaultDebits) {
+      const expRec = (exp.recipient || exp.description || '').trim().toLowerCase();
+      if (!expRec) continue;
+      if (
+        expRec === normRec ||
+        (normRec.length >= 4 && (expRec.includes(normRec) || normRec.includes(expRec)))
+      ) {
+        const vId = exp.accountId!;
+        recCounts.set(vId, (recCounts.get(vId) || 0) + 1);
+      }
+    }
+    if (recCounts.size > 0) {
+      const [bestVaultId, count] = Array.from(recCounts.entries()).sort(
+        (a, b) => b[1] - a[1]
+      )[0];
+      const vaultAcc = vaultAccountMap.get(bestVaultId);
+      if (vaultAcc) {
+        return {
+          vaultAccountId: vaultAcc.id,
+          vaultAccountName: vaultAcc.name,
+          vaultCurrency: vaultAcc.currency || settings.currency || 'USD',
+          reason: `Auto-debit from ${vaultAcc.name} (learned from ${count} past vault debit${count === 1 ? '' : 's'} for "${recipient || description}")`,
+          matchCount: count,
+          matchedBy: 'recipient',
+        };
+      }
+    }
+  }
+
+  // 2. Match by Subcategory (when subcategory has been debited from a Savings Vault)
+  if (normSub.length >= 2) {
+    const subVaultCounts = new Map<string, number>();
+    let subNonVaultCount = 0;
+    for (const exp of expenses) {
+      if (exp.vaultAction === 'credit') continue;
+      const expSub = (exp.subcategory || '').trim().toLowerCase();
+      if (expSub !== normSub) continue;
+      if (exp.accountId && vaultAccountMap.has(exp.accountId)) {
+        subVaultCounts.set(
+          exp.accountId,
+          (subVaultCounts.get(exp.accountId) || 0) + 1
+        );
+      } else {
+        subNonVaultCount += 1;
+      }
+    }
+    if (subVaultCounts.size > 0) {
+      const [bestVaultId, count] = Array.from(subVaultCounts.entries()).sort(
+        (a, b) => b[1] - a[1]
+      )[0];
+      // Trigger if this subcategory is predominantly or exclusively debited from a Savings Vault
+      if (count >= subNonVaultCount) {
+        const vaultAcc = vaultAccountMap.get(bestVaultId);
+        if (vaultAcc) {
+          return {
+            vaultAccountId: vaultAcc.id,
+            vaultAccountName: vaultAcc.name,
+            vaultCurrency: vaultAcc.currency || settings.currency || 'USD',
+            reason: `Auto-debit from ${vaultAcc.name} (learned from ${count} past vault debit${count === 1 ? '' : 's'} in "${subcategory}")`,
+            matchCount: count,
+            matchedBy: 'subcategory',
+          };
+        }
+      }
+    }
+  }
+
+  // 3. Match by Category (only when category is exclusively debited from a Savings Vault)
+  if (normCat.length >= 2 && !normSub) {
+    const catVaultCounts = new Map<string, number>();
+    let catNonVaultCount = 0;
+    for (const exp of expenses) {
+      if (exp.vaultAction === 'credit') continue;
+      const expCat = (exp.category || '').trim().toLowerCase();
+      if (expCat !== normCat) continue;
+      if (exp.accountId && vaultAccountMap.has(exp.accountId)) {
+        catVaultCounts.set(
+          exp.accountId,
+          (catVaultCounts.get(exp.accountId) || 0) + 1
+        );
+      } else {
+        catNonVaultCount += 1;
+      }
+    }
+    if (catVaultCounts.size > 0 && catNonVaultCount === 0) {
+      const [bestVaultId, count] = Array.from(catVaultCounts.entries()).sort(
+        (a, b) => b[1] - a[1]
+      )[0];
+      const vaultAcc = vaultAccountMap.get(bestVaultId);
+      if (vaultAcc) {
+        return {
+          vaultAccountId: vaultAcc.id,
+          vaultAccountName: vaultAcc.name,
+          vaultCurrency: vaultAcc.currency || settings.currency || 'USD',
+          reason: `Auto-debit from ${vaultAcc.name} (learned from ${count} past vault debit${count === 1 ? '' : 's'} in "${category}")`,
+          matchCount: count,
+          matchedBy: 'category',
+        };
+      }
+    }
+  }
+
+  return null;
+}
+

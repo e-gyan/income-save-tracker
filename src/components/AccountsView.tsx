@@ -45,6 +45,13 @@ import {
 import { getColorThemeConfig } from '../lib/colorThemes.ts';
 import { ActiveTab } from './Navigation.tsx';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
+import {
+  formatDateDDMMYYYY,
+  formatDateTimeDDMMYYYY,
+  sortRecordsByArrivalTime,
+  groupRecordsByPeriod,
+  RecordGroupPeriod,
+} from '../lib/dateFilters.ts';
 
 interface AccountsViewProps {
   accounts: FinancialAccount[];
@@ -67,6 +74,8 @@ interface AccountsViewProps {
     items: Omit<FlexibleExpense, 'id' | 'createdAt' | 'userId'>[]
   ) => Promise<void>;
   onDeleteExpense?: (id: string) => Promise<void>;
+  onUpdateExpense?: (expense: FlexibleExpense) => Promise<void>;
+  onEditExpense?: (expense: FlexibleExpense) => void;
   onSaveSettings?: (settings: UserSettings) => Promise<void>;
   onNavigateToTab?: (tab: ActiveTab) => void;
   openTransferTrigger?: number;
@@ -91,6 +100,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
   onUpdateIncome,
   onAddExpenses,
   onDeleteExpense,
+  onEditExpense,
   onSaveSettings,
   onNavigateToTab,
   openTransferTrigger,
@@ -182,6 +192,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
   const [historyModalAccountId, setHistoryModalAccountId] = useState<string | null>(
     null
   );
+  const [historyGroupBy, setHistoryGroupBy] = useState<RecordGroupPeriod>('none');
 
   // Editing Account Pop-up Modal State
   const [editingAccount, setEditingAccount] = useState<FinancialAccount | null>(null);
@@ -547,10 +558,11 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
   // Incomes that fell into the tapped history modal account
   const selectedAccountIncomes = useMemo(() => {
     if (!historyModalAccountId) return [];
-    return incomes.filter((inc) => {
+    const matched = incomes.filter((inc) => {
       const targetId = resolveValidAccountId(inc.accountId, accounts, settings);
       return targetId === historyModalAccountId;
     });
+    return sortRecordsByArrivalTime(matched);
   }, [incomes, historyModalAccountId, accounts, settings]);
 
   // Incoming Savings Split transfers routed to the tapped history modal account
@@ -612,11 +624,12 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
           settings
         ),
       }));
-    return [...manual, ...savingsTransfers].filter(
+    const matched = [...manual, ...savingsTransfers].filter(
       (t) =>
         t.sourceAccountId === historyModalAccountId ||
         t.destinationAccountId === historyModalAccountId
     );
+    return sortRecordsByArrivalTime(matched);
   }, [transfers, incomes, settings, accounts, historyModalAccountId]);
 
   // Expenses, Vault Debits & Vault Credits for the tapped history modal account
@@ -631,10 +644,11 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
     const standalone = expenses.filter(
       (e) => !e.id.startsWith('exp_cut_') && !e.id.startsWith('exp_ded_')
     );
-    return [...standalone, ...deductionExps].filter((e) => {
+    const matched = [...standalone, ...deductionExps].filter((e) => {
       const targetId = resolveValidAccountId(e.accountId, accounts, settings);
       return targetId === historyModalAccountId;
     });
+    return sortRecordsByArrivalTime(matched);
   }, [expenses, incomes, settings, accounts, historyModalAccountId]);
 
   const handleSaveNewCreateType = async () => {
@@ -1649,11 +1663,11 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
       {/* Pop-Up Modal: Debit or Credit Savings Vault for a Cause */}
       {creditVaultAccount && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto"
           onClick={() => setCreditVaultAccount(null)}
         >
           <div
-            className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-xl space-y-4"
+            className="w-full max-w-md max-h-[88dvh] sm:max-h-[90vh] overflow-y-auto overscroll-contain rounded-xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xl space-y-4 my-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
@@ -1726,7 +1740,8 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                       {activeVaultDebitInstances.map((inst) => (
                         <option key={inst.id} value={inst.id}>
                           {inst.recipient || inst.description || inst.category} —{' '}
-                          {formatAmount(inst.amount, currency)} ({inst.date})
+                          {formatAmount(inst.amount, currency)} (
+                          {formatDateDDMMYYYY(inst.date)})
                         </option>
                       ))}
                     </select>
@@ -1948,11 +1963,11 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
       {/* Pop-Up Account History Modal (Contains all details & actions for the selected Account or Savings Vault) */}
       {selectedHistorySummary && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-2.5 sm:p-4 overflow-y-auto"
           onClick={() => setHistoryModalAccountId(null)}
         >
           <div
-            className="w-full max-w-2xl max-h-[85vh] flex flex-col rounded-xl border border-slate-200 bg-white shadow-xl overflow-hidden"
+            className="w-full max-w-2xl max-h-[88dvh] sm:max-h-[90vh] flex flex-col rounded-xl border border-slate-200 bg-white shadow-xl overflow-hidden my-auto"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Modal Header */}
@@ -2404,107 +2419,174 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                 </div>
               ) : (
                 <>
+                  {/* Group Records By Week / Month / Year Bar inside Account History */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                    <span className="text-xs font-semibold text-slate-700">
+                      Group Account History By
+                    </span>
+                    <div className="inline-flex items-center rounded-lg bg-white border border-slate-200 p-0.5">
+                      {(
+                        [
+                          { id: 'none', label: 'All' },
+                          { id: 'week', label: 'Week' },
+                          { id: 'month', label: 'Month' },
+                          { id: 'year', label: 'Year' },
+                        ] as { id: RecordGroupPeriod; label: string }[]
+                      ).map((g) => (
+                        <button
+                          key={g.id}
+                          type="button"
+                          onClick={() => setHistoryGroupBy(g.id)}
+                          className={`rounded-md px-2 py-0.5 text-[11px] font-semibold transition-colors ${
+                            historyGroupBy === g.id
+                              ? 'bg-slate-900 text-white'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          {g.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   {/* 1. Direct Income Deposits */}
                   {selectedAccountIncomes.length > 0 && (
                     <div className="space-y-2.5">
                       <div className="text-xs font-semibold text-slate-800">
                         Income Records Deposited ({selectedAccountIncomes.length})
                       </div>
-                      <div className="space-y-2.5">
-                        {selectedAccountIncomes.map((inc) => {
-                          const { nativeGross: incNativeGross, currency: incRecordCurr } =
-                            getIncomeNativeGross(inc, settings, accounts);
-                          const deds = getEffectiveIncomeDeductions(inc, settings);
-                          const savSum = deds
-                            .filter((d) => isSavingsDeduction(d))
-                            .reduce((s, d) => s + d.amount, 0);
-                          const expSum = deds
-                            .filter((d) => !isSavingsDeduction(d))
-                            .reduce((s, d) => s + d.amount, 0);
-                          const netAfterDeductions = Math.max(
-                            0,
-                            Math.round((incNativeGross - savSum - expSum) * 100) / 100
-                          );
-                          const netDestAccId = getEffectiveNetTransferAccountId(
-                            inc,
-                            settings,
-                            accounts
-                          );
-                          const netDestAcc = netDestAccId
-                            ? accounts.find((a) => a.id === netDestAccId)
-                            : undefined;
-                          return (
-                            <div
-                              key={inc.id}
-                              className="rounded-lg border border-slate-200/80 bg-slate-50/50 p-4"
-                            >
-                              <div className="flex flex-wrap items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="font-display text-sm font-semibold text-slate-900 break-words">
-                                    {inc.clientOrSource}
-                                  </div>
-                                  {inc.notes && (
-                                    <div className="text-xs text-slate-600 mt-0.5 break-words">
-                                      {inc.notes}
-                                    </div>
-                                  )}
-                                  <div className="text-[11px] font-mono text-slate-400 mt-1 tabular-nums">
-                                    {inc.date}
-                                    {inc.receiptId ? ` · ${inc.receiptId}` : ''}
-                                  </div>
+                      <div className="space-y-3">
+                        {groupRecordsByPeriod(selectedAccountIncomes, historyGroupBy).map(
+                          (group) => (
+                            <div key={group.key} className="space-y-2">
+                              {historyGroupBy !== 'none' && (
+                                <div className="rounded bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-700">
+                                  {group.label} ({group.items.length})
                                 </div>
+                              )}
+                              {group.items.map((inc) => {
+                                const {
+                                  nativeGross: incNativeGross,
+                                  currency: incRecordCurr,
+                                } = getIncomeNativeGross(inc, settings, accounts);
+                                const deds = getEffectiveIncomeDeductions(
+                                  inc,
+                                  settings
+                                );
+                                const savSum = deds
+                                  .filter((d) => isSavingsDeduction(d))
+                                  .reduce((s, d) => s + d.amount, 0);
+                                const expSum = deds
+                                  .filter((d) => !isSavingsDeduction(d))
+                                  .reduce((s, d) => s + d.amount, 0);
+                                const netAfterDeductions = Math.max(
+                                  0,
+                                  Math.round(
+                                    (incNativeGross - savSum - expSum) * 100
+                                  ) / 100
+                                );
+                                const netDestAccId =
+                                  getEffectiveNetTransferAccountId(
+                                    inc,
+                                    settings,
+                                    accounts
+                                  );
+                                const netDestAcc = netDestAccId
+                                  ? accounts.find((a) => a.id === netDestAccId)
+                                  : undefined;
+                                return (
+                                  <div
+                                    key={inc.id}
+                                    className="rounded-lg border border-slate-200/80 bg-slate-50/50 p-4"
+                                  >
+                                    <div className="flex flex-wrap items-start justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <div className="font-display text-sm font-semibold text-slate-900 break-words">
+                                          {inc.clientOrSource}
+                                        </div>
+                                        {inc.notes && (
+                                          <div className="text-xs text-slate-600 mt-0.5 break-words">
+                                            {inc.notes}
+                                          </div>
+                                        )}
+                                        <div className="text-[11px] font-mono text-slate-400 mt-1 tabular-nums">
+                                          {formatDateTimeDDMMYYYY(
+                                            inc.date,
+                                            inc.createdAt
+                                          )}
+                                          {inc.receiptId
+                                            ? ` · ${inc.receiptId}`
+                                            : ''}
+                                        </div>
+                                      </div>
 
-                                <div className="text-right font-mono text-xs space-y-0.5 tabular-nums shrink-0">
-                                  <div className="text-emerald-700 font-medium">
-                                    Total Income: +{formatAmount(incNativeGross, incRecordCurr)}
+                                      <div className="text-right font-mono text-xs space-y-0.5 tabular-nums shrink-0">
+                                        <div className="text-emerald-700 font-medium">
+                                          Total Income: +
+                                          {formatAmount(
+                                            incNativeGross,
+                                            incRecordCurr
+                                          )}
+                                        </div>
+                                        {incRecordCurr !== currency && (
+                                          <div className="text-[10px] text-slate-400">
+                                            Totals ({currency}):{' '}
+                                            {formatAmount(
+                                              convertCurrency2dp(
+                                                incNativeGross,
+                                                incRecordCurr,
+                                                currency,
+                                                fxSnapshot
+                                              ).convertedAmount,
+                                              currency
+                                            )}{' '}
+                                            @{' '}
+                                            {format2PointFloat(
+                                              getExchangeRate(
+                                                incRecordCurr,
+                                                currency,
+                                                fxSnapshot
+                                              ).rate2dp
+                                            )}
+                                          </div>
+                                        )}
+                                        {expSum > 0 && (
+                                          <div className="text-rose-600">
+                                            Expenses (Deductions): -
+                                            {formatAmount(expSum, incRecordCurr)}
+                                          </div>
+                                        )}
+                                        {savSum > 0 && (
+                                          <div className="text-rose-600">
+                                            Savings Accumulated: -
+                                            {formatAmount(savSum, incRecordCurr)}
+                                          </div>
+                                        )}
+                                        {netDestAcc ? (
+                                          <div className="font-semibold text-emerald-700 pt-0.5">
+                                            Net Transferred to {netDestAcc.name}:{' '}
+                                            {formatAmount(
+                                              netAfterDeductions,
+                                              incRecordCurr
+                                            )}
+                                          </div>
+                                        ) : (
+                                          <div className="font-semibold text-emerald-700 pt-0.5">
+                                            Net Retained:{' '}
+                                            {formatAmount(
+                                              netAfterDeductions,
+                                              incRecordCurr
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
                                   </div>
-                                  {incRecordCurr !== currency && (
-                                    <div className="text-[10px] text-slate-400">
-                                      Totals ({currency}):{' '}
-                                      {formatAmount(
-                                        convertCurrency2dp(
-                                          incNativeGross,
-                                          incRecordCurr,
-                                          currency,
-                                          fxSnapshot
-                                        ).convertedAmount,
-                                        currency
-                                      )}{' '}
-                                      @{' '}
-                                      {format2PointFloat(
-                                        getExchangeRate(
-                                          incRecordCurr,
-                                          currency,
-                                          fxSnapshot
-                                        ).rate2dp
-                                      )}
-                                    </div>
-                                  )}
-                                  {expSum > 0 && (
-                                    <div className="text-rose-600">
-                                      Expenses (Deductions): -{formatAmount(expSum, incRecordCurr)}
-                                    </div>
-                                  )}
-                                  {savSum > 0 && (
-                                    <div className="text-rose-600">
-                                      Savings Accumulated: -{formatAmount(savSum, incRecordCurr)}
-                                    </div>
-                                  )}
-                                  {netDestAcc ? (
-                                    <div className="font-semibold text-emerald-700 pt-0.5">
-                                      Net Transferred to {netDestAcc.name}:{' '}
-                                      {formatAmount(netAfterDeductions, incRecordCurr)}
-                                    </div>
-                                  ) : (
-                                    <div className="font-semibold text-emerald-700 pt-0.5">
-                                      Net Retained: {formatAmount(netAfterDeductions, incRecordCurr)}
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
+                                );
+                              })}
                             </div>
-                          );
-                        })}
+                          )
+                        )}
                       </div>
                     </div>
                   )}
@@ -2517,110 +2599,154 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                           ? `Vault Cause Debits & Credits (${selectedAccountExpenses.length})`
                           : `Expenses Deducted (${selectedAccountExpenses.length})`}
                       </div>
-                      <div className="divide-y divide-slate-100 rounded-lg border border-slate-200/80 bg-white">
-                        {selectedAccountExpenses.map((exp) => {
-                          const isDedExp = exp.id.startsWith('exp_ded_');
-                          const isCredit = exp.vaultAction === 'credit';
-                          const isVault = isSavingsVaultAccount(
-                            selectedHistorySummary.account,
-                            settings
-                          );
-                          const isAlreadyCredited =
-                            !isCredit &&
-                            expenses.some(
-                              (e) =>
-                                e.vaultAction === 'credit' &&
-                                e.linkedExpenseId === exp.id
-                            );
+                      <div className="space-y-2.5">
+                        {groupRecordsByPeriod(selectedAccountExpenses, historyGroupBy).map(
+                          (group) => (
+                            <div key={group.key} className="space-y-1.5">
+                              {historyGroupBy !== 'none' && (
+                                <div className="rounded bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-700">
+                                  {group.label} ({group.items.length})
+                                </div>
+                              )}
+                              <div className="divide-y divide-slate-100 rounded-lg border border-slate-200/80 bg-white">
+                                {group.items.map((exp) => {
+                                  const isDedExp = exp.id.startsWith('exp_ded_');
+                                  const isCredit = exp.vaultAction === 'credit';
+                                  const isVault = isSavingsVaultAccount(
+                                    selectedHistorySummary.account,
+                                    settings
+                                  );
+                                  const isAlreadyCredited =
+                                    !isCredit &&
+                                    expenses.some(
+                                      (e) =>
+                                        e.vaultAction === 'credit' &&
+                                        e.linkedExpenseId === exp.id
+                                    );
 
-                          return (
-                            <div
-                              key={exp.id}
-                              className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2.5 text-xs"
-                            >
-                              <div className="min-w-0">
-                                <div className="flex flex-wrap items-center gap-1.5">
-                                  <span className="font-medium text-slate-900 break-words">
-                                    {exp.recipient || exp.description || exp.category}
-                                  </span>
-                                  {isVault && (
-                                    <span
-                                      className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                                        isCredit
-                                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                          : 'bg-rose-50 text-rose-700 border border-rose-200'
-                                      }`}
+                                  return (
+                                    <div
+                                      key={exp.id}
+                                      className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2.5 text-xs"
                                     >
-                                      {isCredit ? 'Credit' : 'Debit'}
-                                    </span>
-                                  )}
-                                  {isAlreadyCredited && (
-                                    <span className="rounded bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
-                                      Credited Back
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="text-[11px] text-slate-500 mt-0.5 break-words">
-                                  {exp.category}
-                                  {exp.subcategory ? ` / ${exp.subcategory}` : ''}
-                                  {exp.notes ? ` · ${exp.notes}` : ''} ·{' '}
-                                  <span className="font-mono tabular-nums">{exp.date}</span>
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-2.5 shrink-0">
-                                <span
-                                  className={`font-mono font-semibold tabular-nums ${
-                                    isCredit ? 'text-emerald-700' : 'text-rose-600'
-                                  }`}
-                                >
-                                  {isCredit ? '+' : '-'}
-                                  {formatAmount(exp.amount, currency)}
-                                </span>
-                                {isVault &&
-                                  !isCredit &&
-                                  !isDedExp &&
-                                  !isAlreadyCredited &&
-                                  onAddExpenses && (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        const acc = selectedHistorySummary.account;
-                                        setHistoryModalAccountId(null);
-                                        openVaultCauseModal(acc, 'credit', exp);
-                                      }}
-                                      className="rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100"
-                                    >
-                                      Credit Instance
-                                    </button>
-                                  )}
-                                {isDedExp ? (
-                                  <span className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-600">
-                                    Income Deduction
-                                  </span>
-                                ) : (
-                                  onDeleteExpense && (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setPendingConfirm({
-                                          title: 'Delete Entry?',
-                                          message: `Delete ${
-                                            exp.recipient || exp.description || exp.category
-                                          } (${formatAmount(exp.amount, currency)})?`,
-                                          confirmLabel: 'Yes, Delete',
-                                          onConfirmAction: () => onDeleteExpense(exp.id),
-                                        });
-                                      }}
-                                      className="text-[11px] text-slate-400 hover:text-slate-900"
-                                    >
-                                      Delete
-                                    </button>
-                                  )
-                                )}
+                                      <div className="min-w-0">
+                                        <div className="flex flex-wrap items-center gap-1.5">
+                                          <span className="font-medium text-slate-900 break-words">
+                                            {exp.recipient ||
+                                              exp.description ||
+                                              exp.category}
+                                          </span>
+                                          {isVault && (
+                                            <span
+                                              className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                                                isCredit
+                                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                                  : 'bg-rose-50 text-rose-700 border border-rose-200'
+                                              }`}
+                                            >
+                                              {isCredit ? 'Credit' : 'Debit'}
+                                            </span>
+                                          )}
+                                          {isAlreadyCredited && (
+                                            <span className="rounded bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
+                                              Credited Back
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div className="text-[11px] text-slate-500 mt-0.5 break-words">
+                                          {exp.category}
+                                          {exp.subcategory
+                                            ? ` / ${exp.subcategory}`
+                                            : ''}
+                                          {exp.notes ? ` · ${exp.notes}` : ''} ·{' '}
+                                          <span className="font-mono tabular-nums">
+                                            {formatDateTimeDDMMYYYY(
+                                              exp.date,
+                                              exp.createdAt
+                                            )}
+                                          </span>
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-2 shrink-0">
+                                        <span
+                                          className={`font-mono font-semibold tabular-nums ${
+                                            isCredit
+                                              ? 'text-emerald-700'
+                                              : 'text-rose-600'
+                                          }`}
+                                        >
+                                          {isCredit ? '+' : '-'}
+                                          {formatAmount(exp.amount, currency)}
+                                        </span>
+                                        {onEditExpense && (
+                                          <button
+                                            type="button"
+                                            onClick={() => onEditExpense(exp)}
+                                            className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                                          >
+                                            Edit
+                                          </button>
+                                        )}
+                                        {isVault &&
+                                          !isCredit &&
+                                          !isDedExp &&
+                                          !isAlreadyCredited &&
+                                          onAddExpenses && (
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                const acc =
+                                                  selectedHistorySummary.account;
+                                                setHistoryModalAccountId(null);
+                                                openVaultCauseModal(
+                                                  acc,
+                                                  'credit',
+                                                  exp
+                                                );
+                                              }}
+                                              className="rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100"
+                                            >
+                                              Credit Instance
+                                            </button>
+                                          )}
+                                        {isDedExp ? (
+                                          <span className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-600">
+                                            Income Deduction
+                                          </span>
+                                        ) : (
+                                          onDeleteExpense && (
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                setPendingConfirm({
+                                                  title: 'Delete Entry?',
+                                                  message: `Delete ${
+                                                    exp.recipient ||
+                                                    exp.description ||
+                                                    exp.category
+                                                  } (${formatAmount(
+                                                    exp.amount,
+                                                    currency
+                                                  )})?`,
+                                                  confirmLabel: 'Yes, Delete',
+                                                  onConfirmAction: () =>
+                                                    onDeleteExpense(exp.id),
+                                                });
+                                              }}
+                                              className="text-[11px] text-slate-400 hover:text-slate-900"
+                                            >
+                                              Delete
+                                            </button>
+                                          )
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
                               </div>
                             </div>
-                          );
-                        })}
+                          )
+                        )}
                       </div>
                     </div>
                   )}
@@ -2631,103 +2757,145 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                       <div className="text-xs font-semibold text-slate-800">
                         Savings Split, Net Income & Account Transfers ({selectedAccountTransfers.length})
                       </div>
-                      <div className="divide-y divide-slate-100 rounded-lg border border-slate-200/80 bg-white">
-                        {selectedAccountTransfers.map((t) => {
-                          const isOut = t.sourceAccountId === historyModalAccountId;
-                          const isSavingsSplitTransfer = t.id.startsWith('trans_sav_');
-                          const isNetIncomeTransfer = t.id.startsWith('trans_net_');
-                          const otherAccId = isOut
-                            ? t.destinationAccountId
-                            : t.sourceAccountId;
-                          const otherAcc = accounts.find((a) => a.id === otherAccId);
-                          return (
-                            <div
-                              key={t.id}
-                              className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2.5 text-xs"
-                            >
-                              <div className="min-w-0">
-                                <div className="font-medium text-slate-800 break-words">
-                                  {t.description || 'Account transfer'}
+                      <div className="space-y-2.5">
+                        {groupRecordsByPeriod(selectedAccountTransfers, historyGroupBy).map(
+                          (group) => (
+                            <div key={group.key} className="space-y-1.5">
+                              {historyGroupBy !== 'none' && (
+                                <div className="rounded bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-700">
+                                  {group.label} ({group.items.length})
                                 </div>
-                                <div className="text-[11px] text-slate-500 mt-0.5 break-words">
-                                  {isOut
-                                    ? `Transferred to ${otherAcc?.name || 'Account'}`
-                                    : `Transferred from ${otherAcc?.name || 'Account'}`}{' '}
-                                  · <span className="font-mono tabular-nums">{t.date}</span>
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-3 shrink-0">
-                                <span
-                                  className={`font-mono font-semibold tabular-nums ${
-                                    isOut ? 'text-rose-600' : 'text-emerald-700'
-                                  }`}
-                                >
-                                  {isOut ? '-' : '+'}
-                                  {formatAmount(t.amount, currency)}
-                                </span>
-                                {isSavingsSplitTransfer ? (
-                                  <span className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-600">
-                                    Savings Split
-                                  </span>
-                                ) : isNetIncomeTransfer ? (
-                                  <div className="flex items-center gap-2">
-                                    <span className="rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
-                                      Net Income Transfer
-                                    </span>
-                                    {onUpdateIncome && t.linkedIncomeId && (
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          const linkedInc = incomes.find(
-                                            (i) => i.id === t.linkedIncomeId
-                                          );
-                                          if (!linkedInc) return;
-                                          setPendingConfirm({
-                                            title: 'Revert Net Income Transfer?',
-                                            message: `Keep Net Income (${formatAmount(
-                                              t.amount,
-                                              currency
-                                            )}) in the receiving account instead of transferring to ${
-                                              otherAcc?.name || 'Account'
-                                            }?`,
-                                            confirmLabel: 'Yes, Keep in Receiving Account',
-                                            onConfirmAction: () =>
-                                              onUpdateIncome({
-                                                ...linkedInc,
-                                                netTransferredToAccountId: '__KEEP__',
-                                                updatedAt: new Date().toISOString(),
-                                              }),
-                                          });
-                                        }}
-                                        className="text-[11px] text-slate-400 hover:text-slate-900"
-                                      >
-                                        Revert
-                                      </button>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setPendingConfirm({
-                                        title: 'Revert Account Transfer?',
-                                        message: `Revert transfer of ${formatAmount(
-                                          t.amount,
-                                          currency
-                                        )}?`,
-                                        confirmLabel: 'Yes, Revert Transfer',
-                                        onConfirmAction: () => onDeleteTransfer(t.id),
-                                      });
-                                    }}
-                                    className="text-[11px] text-slate-400 hover:text-slate-900"
-                                  >
-                                    Revert
-                                  </button>
-                                )}
+                              )}
+                              <div className="divide-y divide-slate-100 rounded-lg border border-slate-200/80 bg-white">
+                                {group.items.map((t) => {
+                                  const isOut =
+                                    t.sourceAccountId === historyModalAccountId;
+                                  const isSavingsSplitTransfer =
+                                    t.id.startsWith('trans_sav_');
+                                  const isNetIncomeTransfer =
+                                    t.id.startsWith('trans_net_');
+                                  const otherAccId = isOut
+                                    ? t.destinationAccountId
+                                    : t.sourceAccountId;
+                                  const otherAcc = accounts.find(
+                                    (a) => a.id === otherAccId
+                                  );
+                                  return (
+                                    <div
+                                      key={t.id}
+                                      className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2.5 text-xs"
+                                    >
+                                      <div className="min-w-0">
+                                        <div className="font-medium text-slate-800 break-words">
+                                          {t.description || 'Account transfer'}
+                                        </div>
+                                        <div className="text-[11px] text-slate-500 mt-0.5 break-words">
+                                          {isOut
+                                            ? `Transferred to ${
+                                                otherAcc?.name || 'Account'
+                                              }`
+                                            : `Transferred from ${
+                                                otherAcc?.name || 'Account'
+                                              }`}{' '}
+                                          ·{' '}
+                                          <span className="font-mono tabular-nums">
+                                            {formatDateTimeDDMMYYYY(
+                                              t.date,
+                                              t.createdAt
+                                            )}
+                                          </span>
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-3 shrink-0">
+                                        <span
+                                          className={`font-mono font-semibold tabular-nums ${
+                                            isOut
+                                              ? 'text-rose-600'
+                                              : 'text-emerald-700'
+                                          }`}
+                                        >
+                                          {isOut ? '-' : '+'}
+                                          {formatAmount(t.amount, currency)}
+                                        </span>
+                                        {isSavingsSplitTransfer ? (
+                                          <span className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-600">
+                                            Savings Split
+                                          </span>
+                                        ) : isNetIncomeTransfer ? (
+                                          <div className="flex items-center gap-2">
+                                            <span className="rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
+                                              Net Income Transfer
+                                            </span>
+                                            {onUpdateIncome &&
+                                              t.linkedIncomeId && (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => {
+                                                    const linkedInc =
+                                                      incomes.find(
+                                                        (i) =>
+                                                          i.id ===
+                                                          t.linkedIncomeId
+                                                      );
+                                                    if (!linkedInc) return;
+                                                    setPendingConfirm({
+                                                      title:
+                                                        'Revert Net Income Transfer?',
+                                                      message: `Keep Net Income (${formatAmount(
+                                                        t.amount,
+                                                        currency
+                                                      )}) in the receiving account instead of transferring to ${
+                                                        otherAcc?.name ||
+                                                        'Account'
+                                                      }?`,
+                                                      confirmLabel:
+                                                        'Yes, Keep in Receiving Account',
+                                                      onConfirmAction: () =>
+                                                        onUpdateIncome({
+                                                          ...linkedInc,
+                                                          netTransferredToAccountId:
+                                                            '__KEEP__',
+                                                          updatedAt:
+                                                            new Date().toISOString(),
+                                                        }),
+                                                    });
+                                                  }}
+                                                  className="text-[11px] text-slate-400 hover:text-slate-900"
+                                                >
+                                                  Revert
+                                                </button>
+                                              )}
+                                          </div>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setPendingConfirm({
+                                                title:
+                                                  'Revert Account Transfer?',
+                                                message: `Revert transfer of ${formatAmount(
+                                                  t.amount,
+                                                  currency
+                                                )}?`,
+                                                confirmLabel:
+                                                  'Yes, Revert Transfer',
+                                                onConfirmAction: () =>
+                                                  onDeleteTransfer(t.id),
+                                              });
+                                            }}
+                                            className="text-[11px] text-slate-400 hover:text-slate-900"
+                                          >
+                                            Revert
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
                               </div>
                             </div>
-                          );
-                        })}
+                          )
+                        )}
                       </div>
                     </div>
                   )}
@@ -2741,11 +2909,11 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
       {/* Pop-Up Edit Account Modal */}
       {editingAccount && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto"
           onClick={() => setEditingAccount(null)}
         >
           <div
-            className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-xl"
+            className="w-full max-w-md max-h-[88dvh] sm:max-h-[90vh] overflow-y-auto overscroll-contain rounded-xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xl my-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-slate-100 pb-3.5 mb-4">

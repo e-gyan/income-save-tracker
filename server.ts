@@ -1272,6 +1272,374 @@ app.post('/api/budgets/evaluate', (req: Request, res: Response) => {
   }
 });
 
+/**
+ * Backend Automated Savings Vault Debit Learning Endpoint
+ * Learns from past expenses debited ONLY from Savings Vaults (`vaultAction !== 'credit'`)
+ * and resolves the target Savings Vault for incoming expense drafts.
+ */
+app.post('/api/expenses/vault-debit-learn', (req: Request, res: Response) => {
+  try {
+    const {
+      draft = {},
+      expenses = [],
+      accounts = [],
+      savingsBuckets = [],
+    } = req.body || {};
+
+    const bucketIds = new Set(
+      (Array.isArray(savingsBuckets) ? savingsBuckets : []).map((b: any) =>
+        String(b.id || '')
+      )
+    );
+    const bucketAccountIds = new Set(
+      (Array.isArray(savingsBuckets) ? savingsBuckets : []).map((b: any) =>
+        String(b.accountId || '')
+      )
+    );
+
+    const vaultMap = new Map<string, any>();
+    for (const acc of Array.isArray(accounts) ? accounts : []) {
+      if (!acc || !acc.id) continue;
+      const isVault =
+        Boolean(acc.linkedSavingsBucketId && bucketIds.has(acc.linkedSavingsBucketId)) ||
+        bucketAccountIds.has(acc.id) ||
+        String(acc.institution || '').toLowerCase() === 'savings vault';
+      if (isVault) {
+        vaultMap.set(String(acc.id), acc);
+      }
+    }
+
+    const pastVaultDebits = (Array.isArray(expenses) ? expenses : []).filter(
+      (e: any) =>
+        e &&
+        e.accountId &&
+        vaultMap.has(String(e.accountId)) &&
+        e.vaultAction !== 'credit'
+    );
+
+    const normRec = String(draft.recipient || draft.description || '')
+      .trim()
+      .toLowerCase();
+    const normSub = String(draft.subcategory || '').trim().toLowerCase();
+    const normCat = String(draft.category || '').trim().toLowerCase();
+
+    let matchedVault: any = null;
+    let matchCount = 0;
+    let matchedBy: 'recipient' | 'subcategory' | 'category' = 'recipient';
+
+    if (normRec.length >= 2) {
+      const counts = new Map<string, number>();
+      for (const exp of pastVaultDebits) {
+        const expRec = String(exp.recipient || exp.description || '')
+          .trim()
+          .toLowerCase();
+        if (
+          expRec &&
+          (expRec === normRec ||
+            (normRec.length >= 4 &&
+              (expRec.includes(normRec) || normRec.includes(expRec))))
+        ) {
+          const vId = String(exp.accountId);
+          counts.set(vId, (counts.get(vId) || 0) + 1);
+        }
+      }
+      if (counts.size > 0) {
+        const [topId, cnt] = Array.from(counts.entries()).sort(
+          (a, b) => b[1] - a[1]
+        )[0];
+        matchedVault = vaultMap.get(topId);
+        matchCount = cnt;
+        matchedBy = 'recipient';
+      }
+    }
+
+    if (!matchedVault && normSub.length >= 2) {
+      const counts = new Map<string, number>();
+      for (const exp of pastVaultDebits) {
+        const expSub = String(exp.subcategory || '').trim().toLowerCase();
+        if (expSub === normSub) {
+          const vId = String(exp.accountId);
+          counts.set(vId, (counts.get(vId) || 0) + 1);
+        }
+      }
+      if (counts.size > 0) {
+        const [topId, cnt] = Array.from(counts.entries()).sort(
+          (a, b) => b[1] - a[1]
+        )[0];
+        matchedVault = vaultMap.get(topId);
+        matchCount = cnt;
+        matchedBy = 'subcategory';
+      }
+    }
+
+    if (!matchedVault && normCat.length >= 2 && !normSub) {
+      const counts = new Map<string, number>();
+      for (const exp of pastVaultDebits) {
+        const expCat = String(exp.category || '').trim().toLowerCase();
+        if (expCat === normCat) {
+          const vId = String(exp.accountId);
+          counts.set(vId, (counts.get(vId) || 0) + 1);
+        }
+      }
+      if (counts.size > 0) {
+        const [topId, cnt] = Array.from(counts.entries()).sort(
+          (a, b) => b[1] - a[1]
+        )[0];
+        matchedVault = vaultMap.get(topId);
+        matchCount = cnt;
+        matchedBy = 'category';
+      }
+    }
+
+    return res.json({
+      success: true,
+      suggestion: matchedVault
+        ? {
+            vaultAccountId: matchedVault.id,
+            vaultAccountName: matchedVault.name,
+            matchCount,
+            matchedBy,
+            reason: `Auto-debit from ${matchedVault.name} (learned from ${matchCount} past savings vault debit${matchCount === 1 ? '' : 's'})`,
+          }
+        : null,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Vault debit learning failed.',
+    });
+  }
+});
+
+/**
+ * Backend Expense Transaction Update Endpoint (`POST /api/expenses/update`)
+ * Normalizes an edited expense transaction across all boards with currency conversion and vault debit handling.
+ */
+app.post('/api/expenses/update', (req: Request, res: Response) => {
+  try {
+    const {
+      expense = {},
+      baseCurrency = 'GHS',
+      isVaultAccount = false,
+    } = req.body || {};
+
+    if (!expense || !expense.id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Expense ID is required to update a transaction.',
+      });
+    }
+
+    const upperBase = String(baseCurrency || 'GHS').trim().toUpperCase();
+    const cachedFx = fxCache.get(upperBase);
+    const activeRates = cachedFx?.rates || buildFallbackRatesForBase(upperBase);
+
+    const expCurr = String(expense.currency || upperBase).trim().toUpperCase();
+    const rawNativeAmt = round2dp(
+      Math.max(0, Number(expense.originalAmount ?? expense.amount ?? 0))
+    );
+    const { convertedAmount, exchangeRate2dp } = convertServer2dp(
+      rawNativeAmt,
+      expCurr,
+      upperBase,
+      activeRates,
+      upperBase
+    );
+
+    const normalizedExpense = {
+      ...expense,
+      date: normalizeDateString(expense.date),
+      category: String(expense.category || 'Uncategorized').trim(),
+      subcategory: expense.subcategory
+        ? String(expense.subcategory).trim()
+        : undefined,
+      recipient: String(expense.recipient || '').trim(),
+      notes: String(expense.notes || expense.description || '').trim(),
+      description: String(
+        expense.notes || expense.description || expense.recipient || expense.category || 'Expense'
+      ).trim(),
+      currency: expCurr,
+      originalAmount: rawNativeAmt,
+      exchangeRate: exchangeRate2dp,
+      amount: convertedAmount,
+      vaultAction: isVaultAccount
+        ? expense.vaultAction === 'credit'
+          ? 'credit'
+          : 'debit'
+        : undefined,
+    };
+
+    return res.json({
+      success: true,
+      expense: normalizedExpense,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Expense update failed.',
+    });
+  }
+});
+
+/**
+ * Backend Move Subcategory to Another Category Endpoint (`POST /api/categories/move-subcategory`)
+ * Moves an existing subcategory from `fromCategory` to `toCategory` across settings, expenses, incomes, and budgets.
+ */
+app.post('/api/categories/move-subcategory', (req: Request, res: Response) => {
+  try {
+    const {
+      subcategory = '',
+      fromCategory = '',
+      toCategory = '',
+      settings = {},
+      expenses = [],
+      incomes = [],
+      budgets = [],
+    } = req.body || {};
+
+    const cleanSub = String(subcategory || '').trim();
+    const cleanFrom = String(fromCategory || '').trim();
+    const cleanTo = String(toCategory || '').trim();
+
+    if (!cleanSub || !cleanTo) {
+      return res.status(400).json({
+        success: false,
+        error: 'Both subcategory and target category are required.',
+      });
+    }
+
+    const subKey = cleanSub.toLowerCase();
+    const fromKey = cleanFrom.toLowerCase();
+    const toKey = cleanTo.toLowerCase();
+
+    const rawPrefs: any[] = Array.isArray(settings.expenseCategoryPreferences)
+      ? settings.expenseCategoryPreferences
+      : [];
+
+    let preservedColor: string | undefined;
+    for (const pref of rawPrefs) {
+      if (pref?.subcategoryColors && pref.subcategoryColors[cleanSub]) {
+        preservedColor = pref.subcategoryColors[cleanSub];
+        break;
+      }
+    }
+
+    let targetFound = false;
+    const nextPrefs = rawPrefs.map((pref: any) => {
+      const pName = String(pref.name || '').trim();
+      const pKey = pName.toLowerCase();
+      const subs: string[] = Array.isArray(pref.subcategories)
+        ? pref.subcategories
+        : [];
+      const colors: Record<string, string> = { ...(pref.subcategoryColors || {}) };
+
+      if (pKey === toKey) {
+        targetFound = true;
+        const hasSub = subs.some((s) => String(s).trim().toLowerCase() === subKey);
+        const nextSubs = hasSub ? subs : [...subs, cleanSub];
+        if (preservedColor && !colors[cleanSub]) {
+          colors[cleanSub] = preservedColor;
+        }
+        return {
+          ...pref,
+          subcategories: nextSubs,
+          subcategoryColors: colors,
+        };
+      }
+
+      if (!fromKey || pKey === fromKey) {
+        const filteredSubs = subs.filter(
+          (s) => String(s).trim().toLowerCase() !== subKey
+        );
+        return {
+          ...pref,
+          subcategories: filteredSubs,
+        };
+      }
+
+      return pref;
+    });
+
+    if (!targetFound) {
+      nextPrefs.push({
+        id: `cat_pref_${Date.now()}`,
+        name: cleanTo,
+        subcategories: [cleanSub],
+        subcategoryColors: preservedColor ? { [cleanSub]: preservedColor } : {},
+      });
+    }
+
+    const updatedExpenses = (Array.isArray(expenses) ? expenses : []).map(
+      (exp: any) => {
+        if (
+          exp &&
+          String(exp.subcategory || '').trim().toLowerCase() === subKey
+        ) {
+          return {
+            ...exp,
+            category: cleanTo,
+          };
+        }
+        return exp;
+      }
+    );
+
+    const updatedIncomes = (Array.isArray(incomes) ? incomes : []).map(
+      (inc: any) => {
+        if (!inc || !Array.isArray(inc.allocatedDeductions)) return inc;
+        let changed = false;
+        const nextDeds = inc.allocatedDeductions.map((d: any) => {
+          if (
+            d &&
+            String(d.expenseSubcategory || '').trim().toLowerCase() === subKey
+          ) {
+            changed = true;
+            return {
+              ...d,
+              expenseCategory: cleanTo,
+            };
+          }
+          return d;
+        });
+        return changed ? { ...inc, allocatedDeductions: nextDeds } : inc;
+      }
+    );
+
+    const updatedBudgets = (Array.isArray(budgets) ? budgets : []).map(
+      (b: any) => {
+        if (!b || !Array.isArray(b.subcategories)) return b;
+        const tracksSub = b.subcategories.some(
+          (s: any) => String(s || '').trim().toLowerCase() === subKey
+        );
+        if (!tracksSub) return b;
+        const existingCats: string[] = Array.isArray(b.categories)
+          ? b.categories
+          : [];
+        const hasTargetCat = existingCats.some(
+          (c) => String(c || '').trim().toLowerCase() === toKey
+        );
+        return {
+          ...b,
+          categories: hasTargetCat ? existingCats : [...existingCats, cleanTo],
+        };
+      }
+    );
+
+    return res.json({
+      success: true,
+      expenseCategoryPreferences: nextPrefs,
+      expenses: updatedExpenses,
+      incomes: updatedIncomes,
+      budgets: updatedBudgets,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Moving subcategory failed.',
+    });
+  }
+});
+
 // Bind port 3000 immediately so container healthchecks succeed without waiting on Vite cold boot
 async function startServer() {
   if (process.env.NODE_ENV === 'production') {

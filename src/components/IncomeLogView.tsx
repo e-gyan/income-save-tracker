@@ -50,6 +50,12 @@ import {
   learnDeductionSuggestions,
   suggestionToIncomeDeductionItem,
 } from '../lib/deductionIntelligence.ts';
+import {
+  formatDateTimeDDMMYYYY,
+  sortRecordsByArrivalTime,
+  groupRecordsByPeriod,
+  RecordGroupPeriod,
+} from '../lib/dateFilters.ts';
 
 interface IncomeLogViewProps {
   incomes: IncomeReceipt[];
@@ -1169,8 +1175,10 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
     });
   };
 
+  const [groupByPeriod, setGroupByPeriod] = useState<RecordGroupPeriod>('none');
+
   const filteredIncomes = useMemo(() => {
-    return incomes.filter((inc) => {
+    const matched = incomes.filter((inc) => {
       if (accountFilter !== 'all') {
         const incAccId = inc.accountId || defaultAccount?.id || '';
         if (incAccId !== accountFilter) return false;
@@ -1184,6 +1192,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
       }
       return true;
     });
+    return sortRecordsByArrivalTime(matched);
   }, [incomes, accountFilter, searchQuery, defaultAccount]);
 
   const anyFilteredExpanded =
@@ -2492,6 +2501,30 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
               className="flex-1 min-w-0 rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:bg-white focus:outline-none"
             />
             <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex items-center rounded-lg bg-slate-100 p-0.5">
+                {(
+                  [
+                    { id: 'none', label: 'All' },
+                    { id: 'week', label: 'Week' },
+                    { id: 'month', label: 'Month' },
+                    { id: 'year', label: 'Year' },
+                  ] as { id: RecordGroupPeriod; label: string }[]
+                ).map((g) => (
+                  <button
+                    key={g.id}
+                    type="button"
+                    onClick={() => setGroupByPeriod(g.id)}
+                    className={`rounded-md px-2 py-1 text-[11px] font-semibold transition-colors ${
+                      groupByPeriod === g.id
+                        ? 'bg-slate-900 text-white'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {g.label}
+                  </button>
+                ))}
+              </div>
+
               <select
                 value={accountFilter}
                 onChange={(e) => setAccountFilter(e.target.value)}
@@ -2525,8 +2558,21 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
               </p>
             </div>
           ) : (
-            <div className="space-y-3">
-              {filteredIncomes.map((inc) => {
+            <div className="space-y-4">
+              {groupRecordsByPeriod(filteredIncomes, groupByPeriod).map((periodGroup) => (
+                <div key={periodGroup.key} className="space-y-3">
+                  {groupByPeriod !== 'none' && (
+                    <div className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-100/80 px-3.5 py-2">
+                      <span className="font-display text-xs font-bold text-slate-900">
+                        {periodGroup.label}
+                      </span>
+                      <span className="rounded bg-white px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-600">
+                        {periodGroup.items.length}{' '}
+                        {periodGroup.items.length === 1 ? 'record' : 'records'}
+                      </span>
+                    </div>
+                  )}
+                  {periodGroup.items.map((inc) => {
                 const resolvedSourceAccId = resolveValidAccountId(
                   inc.accountId,
                   accounts,
@@ -2915,7 +2961,9 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                           </div>
 
                           <div className="flex flex-wrap items-center gap-1.5 pl-6 text-xs text-slate-500">
-                            <span className="font-mono tabular-nums">{inc.date}</span>
+                            <span className="font-mono tabular-nums">
+                              {formatDateTimeDDMMYYYY(inc.date, inc.createdAt)}
+                            </span>
                             {inc.notes && (
                               <>
                                 <span aria-hidden="true">·</span>
@@ -3370,6 +3418,8 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                   </div>
                 );
               })}
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -3378,11 +3428,11 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
       {/* Where Should Net Income After Deductions Be Transferred? Modal */}
       {isNetTransferPromptOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto"
           onClick={() => setIsNetTransferPromptOpen(false)}
         >
           <div
-            className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl space-y-4"
+            className="w-full max-w-md max-h-[88dvh] sm:max-h-[90vh] overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white p-4 sm:p-5 shadow-2xl space-y-4 my-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="space-y-1 border-b border-slate-100 pb-3">

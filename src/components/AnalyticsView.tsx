@@ -36,7 +36,12 @@ import {
   MarketFxSnapshot,
 } from '../lib/currencyService.ts';
 import { getColorThemeConfig } from '../lib/colorThemes.ts';
-import { TimeRangePreset, getPresetLabel } from '../lib/dateFilters.ts';
+import {
+  TimeRangePreset,
+  getPresetLabel,
+  formatDateTimeDDMMYYYY,
+  sortRecordsByArrivalTime,
+} from '../lib/dateFilters.ts';
 import { ActiveTab } from './Navigation.tsx';
 
 interface AnalyticsViewProps {
@@ -48,6 +53,7 @@ interface AnalyticsViewProps {
   currency: string;
   timeRange?: TimeRangePreset;
   onNavigateToTab: (tab: ActiveTab) => void;
+  onEditExpense?: (expense: FlexibleExpense) => void;
 }
 
 interface PieSliceDatum {
@@ -131,6 +137,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   currency,
   timeRange = 'all',
   onNavigateToTab,
+  onEditExpense,
 }) => {
   const [isVisualsCollapsed, setIsVisualsCollapsed] = useState(false);
   const [isPieSectionCollapsed, setIsPieSectionCollapsed] = useState(false);
@@ -152,6 +159,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   const [isVaultsCollapsed, setIsVaultsCollapsed] = useState(false);
   const [isSourcesCollapsed, setIsSourcesCollapsed] = useState(false);
   const [isTimelineCollapsed, setIsTimelineCollapsed] = useState(true);
+  const [isRecentExpensesCollapsed, setIsRecentExpensesCollapsed] = useState(true);
 
   const [fxSnapshot, setFxSnapshot] = useState<MarketFxSnapshot>(() =>
     getInitialFxSnapshot(currency)
@@ -229,9 +237,13 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   );
 
   const filteredExpensesForAnalysis = useMemo(() => {
-    if (expenseFilterMode === 'recorded') return recordedExpensesOnly;
-    if (expenseFilterMode === 'deductions') return deductionExpenses;
-    return allCombinedExpenses;
+    const base =
+      expenseFilterMode === 'recorded'
+        ? recordedExpensesOnly
+        : expenseFilterMode === 'deductions'
+        ? deductionExpenses
+        : allCombinedExpenses;
+    return sortRecordsByArrivalTime(base);
   }, [expenseFilterMode, recordedExpensesOnly, deductionExpenses, allCombinedExpenses]);
 
   const analytics = useMemo(() => {
@@ -3297,6 +3309,97 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                 );
               })}
             </div>
+          </div>
+        )}
+      </div>
+
+      {/* Section 7: Recent Expense Transactions with Direct Edit */}
+      <div className="rounded-xl border border-slate-200/90 bg-white p-4 sm:p-5">
+        <div
+          onClick={() => setIsRecentExpensesCollapsed((prev) => !prev)}
+          className={`flex items-center justify-between gap-3 cursor-pointer select-none ${
+            isRecentExpensesCollapsed ? '' : 'border-b border-slate-100 pb-3.5 mb-4'
+          }`}
+        >
+          <div className="min-w-0">
+            <h2 className="font-display text-base font-semibold text-slate-900 break-words">
+              Expense Transactions ({filteredExpensesForAnalysis.length})
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5 break-words">
+              Sorted by arrival time (dd/mm/yyyy) · Edit any expense transaction directly
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsRecentExpensesCollapsed((prev) => !prev);
+            }}
+            className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 shrink-0"
+          >
+            <span>{isRecentExpensesCollapsed ? 'Expand' : 'Collapse'}</span>
+            <svg
+              className={`h-3.5 w-3.5 text-slate-500 transition-transform ${
+                isRecentExpensesCollapsed ? '' : 'rotate-180'
+              }`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+        </div>
+
+        {!isRecentExpensesCollapsed && (
+          <div className="divide-y divide-slate-100">
+            {filteredExpensesForAnalysis.slice(0, 20).map((exp) => {
+              const acc = accounts.find((a) => a.id === exp.accountId);
+              const { baseAmount } = getExpenseNativeAndBaseAmount(
+                exp,
+                settings,
+                accounts,
+                fxSnapshot
+              );
+              return (
+                <div
+                  key={exp.id}
+                  className="py-2.5 first:pt-0 last:pb-0 flex flex-wrap items-center justify-between gap-2 text-xs"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-semibold text-slate-900 break-words">
+                        {exp.recipient || exp.description || exp.category}
+                      </span>
+                      <span className="text-slate-400">·</span>
+                      <span className="text-slate-600">{exp.category}</span>
+                      {exp.subcategory && (
+                        <span className="text-slate-500">/ {exp.subcategory}</span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-slate-500 font-mono mt-0.5">
+                      {formatDateTimeDDMMYYYY(exp.date, exp.createdAt)}
+                      {acc ? ` · ${acc.name}` : ''}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="font-mono font-semibold text-rose-600 tabular-nums">
+                      -{formatAmount(baseAmount, currency)}
+                    </span>
+                    {onEditExpense && (
+                      <button
+                        type="button"
+                        onClick={() => onEditExpense(exp)}
+                        className="rounded border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+                      >
+                        Edit
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

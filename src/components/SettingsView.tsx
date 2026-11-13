@@ -52,6 +52,11 @@ interface SettingsViewProps {
     accountDetails?: { institution?: string; color?: string; initialBalance?: number }
   ) => Promise<void>;
   onImportRecords?: (payload: ParsedImportPayload) => Promise<void>;
+  onMoveSubcategory?: (
+    subcategory: string,
+    fromCategory: string,
+    toCategory: string
+  ) => Promise<void>;
 }
 
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'GHS', 'NGN', 'KES', 'ZAR', 'CAD', 'AUD'];
@@ -64,6 +69,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onSaveSettings,
   isSaving,
   onImportRecords,
+  onMoveSubcategory,
 }) => {
   const [currency, setCurrency] = useState(settings.currency || 'USD');
   const [totalsCurrencyMode, setTotalsCurrencyMode] =
@@ -75,8 +81,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [customCuts, setCustomCuts] = useState<CustomDeduction[]>(
     (settings.customCuts || []).filter((c) => !LEGACY_SEEDED_CUT_IDS.has(c.id))
   );
-  const [expensePrefs, setExpensePrefs] = useState<ExpenseCategoryPreference[]>(
-    settings.expenseCategoryPreferences || []
+  const [expensePrefs, setExpensePrefs] = useState<ExpenseCategoryPreference[]>(() =>
+    getEffectiveExpenseCategoryPreferences(settings, expenses)
+  );
+  const [incomeSources, setIncomeSources] = useState<string[]>(
+    settings.incomeSources || []
+  );
+  const [incomeOrigins, setIncomeOrigins] = useState<string[]>(
+    settings.incomeOrigins || []
+  );
+  const [accountTypes, setAccountTypes] = useState<string[]>(
+    settings.accountTypes || []
   );
   const [vaultCustodians, setVaultCustodians] = useState<Record<string, string>>(
     settings.vaultCustodianAccounts || {}
@@ -96,6 +111,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   // All expandable forms and sections start collapsed by default
   const [isColorsCollapsed, setIsColorsCollapsed] = useState(true);
   const [isExpensePrefsCollapsed, setIsExpensePrefsCollapsed] = useState(true);
+  const [isSourcesAndTypesCollapsed, setIsSourcesAndTypesCollapsed] = useState(true);
   const [isVaultCustodianCollapsed, setIsVaultCustodianCollapsed] = useState(true);
   const [isNetRoutingCollapsed, setIsNetRoutingCollapsed] = useState(true);
   const [isNewRuleCollapsed, setIsNewRuleCollapsed] = useState(true);
@@ -129,6 +145,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [editingCatId, setEditingCatId] = useState<string | null>(null);
   const [editingCatName, setEditingCatName] = useState('');
   const [confirmDeleteCatId, setConfirmDeleteCatId] = useState<string | null>(null);
+
+  // Move Subcategory State
+  const [moveSubSourceKey, setMoveSubSourceKey] = useState('');
+  const [moveSubTargetCategory, setMoveSubTargetCategory] = useState('');
+  const [isMovingSubcategory, setIsMovingSubcategory] = useState(false);
+
+  // New Income Source / Origin / Account Type inputs
+  const [newIncomeSourceInput, setNewIncomeSourceInput] = useState('');
+  const [newIncomeOriginInput, setNewIncomeOriginInput] = useState('');
+  const [newAccountTypeInput, setNewAccountTypeInput] = useState('');
 
   // New Deduction Rule Form State
   const [newCutName, setNewCutName] = useState('');
@@ -175,7 +201,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     [settings, expensePrefs, expenses]
   );
 
-  // Sync local state when settings change
+  // Sync local state when settings or expenses change so every component in Settings is up to date
   useEffect(() => {
     setCurrency(settings.currency || 'USD');
     setTotalsCurrencyMode(settings.totalsCurrencyMode || 'base');
@@ -184,7 +210,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setCustomCuts(
       (settings.customCuts || []).filter((c) => !LEGACY_SEEDED_CUT_IDS.has(c.id))
     );
-    setExpensePrefs(settings.expenseCategoryPreferences || []);
+    setExpensePrefs(getEffectiveExpenseCategoryPreferences(settings, expenses));
+    setIncomeSources(settings.incomeSources || []);
+    setIncomeOrigins(settings.incomeOrigins || []);
+    setAccountTypes(settings.accountTypes || []);
     setVaultCustodians(settings.vaultCustodianAccounts || {});
     setSavingsBuckets(
       settings.savingsBuckets && Array.isArray(settings.savingsBuckets)
@@ -193,7 +222,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     );
     setAskNetIncomeTransfer(settings.askNetIncomeTransfer !== false);
     setDefaultNetIncomeAccountId(settings.defaultNetIncomeAccountId || '');
-  }, [settings]);
+  }, [settings, expenses]);
 
   const effectiveSavingsPillars = useMemo(
     () =>
@@ -248,6 +277,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       customCuts,
       savingsBuckets,
       expenseCategoryPreferences: expensePrefs,
+      incomeSources,
+      incomeOrigins,
+      accountTypes,
       vaultCustodianAccounts: vaultCustodians,
       askNetIncomeTransfer,
       defaultNetIncomeAccountId,
@@ -615,6 +647,93 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
     await persistUpdates({ expenseCategoryPreferences: nextPrefs });
   };
+
+  const handleExecuteMoveSubcategory = async (
+    subName: string,
+    fromCatName: string,
+    toCatName: string
+  ) => {
+    const subTrimmed = subName.trim();
+    const fromTrimmed = fromCatName.trim();
+    const toTrimmed = toCatName.trim();
+    if (
+      !subTrimmed ||
+      !fromTrimmed ||
+      !toTrimmed ||
+      fromTrimmed.toLowerCase() === toTrimmed.toLowerCase()
+    ) {
+      return;
+    }
+
+    setIsMovingSubcategory(true);
+    try {
+      if (onMoveSubcategory) {
+        await onMoveSubcategory(subTrimmed, fromTrimmed, toTrimmed);
+      } else {
+        let movedColor: string | undefined;
+        const nextPrefs = expensePrefs.map((c) => {
+          if (c.name.trim().toLowerCase() === fromTrimmed.toLowerCase()) {
+            const nextColors = { ...(c.subcategoryColors || {}) };
+            if (nextColors[subTrimmed]) {
+              movedColor = nextColors[subTrimmed];
+              delete nextColors[subTrimmed];
+            }
+            return {
+              ...c,
+              subcategories: c.subcategories.filter(
+                (s) => s.trim().toLowerCase() !== subTrimmed.toLowerCase()
+              ),
+              subcategoryColors: nextColors,
+            };
+          }
+          return c;
+        });
+
+        const finalPrefs = nextPrefs.map((c) => {
+          if (c.name.trim().toLowerCase() === toTrimmed.toLowerCase()) {
+            const hasSub = c.subcategories.some(
+              (s) => s.trim().toLowerCase() === subTrimmed.toLowerCase()
+            );
+            const nextColors = { ...(c.subcategoryColors || {}) };
+            if (movedColor && !nextColors[subTrimmed]) {
+              nextColors[subTrimmed] = movedColor;
+            }
+            return {
+              ...c,
+              subcategories: hasSub
+                ? c.subcategories
+                : [...c.subcategories, subTrimmed],
+              subcategoryColors: nextColors,
+            };
+          }
+          return c;
+        });
+        setExpensePrefs(finalPrefs);
+        await persistUpdates({ expenseCategoryPreferences: finalPrefs });
+      }
+      setActiveSubColorPicker(null);
+      setMoveSubSourceKey('');
+      setMoveSubTargetCategory('');
+      setSavedNotice(true);
+      setTimeout(() => setSavedNotice(false), 1800);
+    } finally {
+      setIsMovingSubcategory(false);
+    }
+  };
+
+  const allSubcategoryMoveOptions = useMemo(() => {
+    const items: { key: string; subName: string; catName: string }[] = [];
+    for (const cat of expensePrefs) {
+      for (const sub of cat.subcategories || []) {
+        items.push({
+          key: `${cat.name}:::${sub}`,
+          subName: sub,
+          catName: cat.name,
+        });
+      }
+    }
+    return items;
+  }, [expensePrefs]);
 
   // Vault Custodian Account & Savings Vault CRUD Handlers (Add, Rename, Rate, Virtual, Delete)
   const handleVaultCustodianChange = async (
@@ -1361,10 +1480,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           </div>
 
                           {activeSubColorPicker?.catId === cat.id && (
-                            <div className="rounded-lg border border-slate-200 bg-white p-2.5 space-y-2">
+                            <div className="rounded-lg border border-slate-200 bg-white p-2.5 space-y-2.5">
                               <div className="flex items-center justify-between gap-2 text-[11px]">
                                 <span className="font-semibold text-slate-700">
-                                  Color for "{activeSubColorPicker.subName}"
+                                  Customize "{activeSubColorPicker.subName}"
                                 </span>
                                 <button
                                   type="button"
@@ -1411,6 +1530,41 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                                   );
                                 })}
                               </div>
+
+                              {/* Inline Move Subcategory to Another Category */}
+                              {expensePrefs.filter((c) => c.id !== cat.id).length > 0 && (
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-t border-slate-100 pt-2">
+                                  <span className="text-[11px] font-medium text-slate-600">
+                                    Move "{activeSubColorPicker.subName}" to another category:
+                                  </span>
+                                  <div className="flex items-center gap-1.5">
+                                    <WrapSelect
+                                      value=""
+                                      onChange={(targetCat) => {
+                                        if (targetCat) {
+                                          handleExecuteMoveSubcategory(
+                                            activeSubColorPicker.subName,
+                                            cat.name,
+                                            targetCat
+                                          );
+                                        }
+                                      }}
+                                      placeholder="Select target category..."
+                                      className="w-44"
+                                      triggerClassName="py-1 px-2 text-[11px]"
+                                      options={[
+                                        { value: '', label: 'Select category...' },
+                                        ...expensePrefs
+                                          .filter((c) => c.id !== cat.id)
+                                          .map((c) => ({
+                                            value: c.name,
+                                            label: `Move to ${c.name}`,
+                                          })),
+                                      ]}
+                                    />
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
@@ -1488,6 +1642,307 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 })}
               </div>
             )}
+
+            {/* Move Existing Subcategory to Another Category Bar */}
+            {allSubcategoryMoveOptions.length > 0 && expensePrefs.length > 1 && (
+              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2.5">
+                <div>
+                  <div className="text-xs font-semibold text-slate-900">
+                    Move Subcategory to Another Category
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Moves the subcategory and updates matching expenses, deductions, and budgets.
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+                  <div className="sm:col-span-5">
+                    <WrapSelect
+                      value={moveSubSourceKey}
+                      onChange={(val) => {
+                        setMoveSubSourceKey(val);
+                        const [fromCat] = val.split(':::');
+                        const firstOther = expensePrefs.find(
+                          (c) => c.name !== fromCat
+                        );
+                        setMoveSubTargetCategory(firstOther?.name || '');
+                      }}
+                      placeholder="Select subcategory to move..."
+                      options={[
+                        { value: '', label: 'Select subcategory...' },
+                        ...allSubcategoryMoveOptions.map((opt) => ({
+                          value: opt.key,
+                          label: `${opt.subName} (in ${opt.catName})`,
+                        })),
+                      ]}
+                    />
+                  </div>
+                  <div className="sm:col-span-5">
+                    <WrapSelect
+                      value={moveSubTargetCategory}
+                      onChange={(val) => setMoveSubTargetCategory(val)}
+                      placeholder="Target category..."
+                      options={[
+                        { value: '', label: 'Select target category...' },
+                        ...expensePrefs
+                          .filter((c) => {
+                            const [fromCat] = (moveSubSourceKey || '').split(':::');
+                            return !fromCat || c.name !== fromCat;
+                          })
+                          .map((c) => ({
+                            value: c.name,
+                            label: c.name,
+                          })),
+                      ]}
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <button
+                      type="button"
+                      disabled={
+                        isMovingSubcategory ||
+                        !moveSubSourceKey ||
+                        !moveSubTargetCategory
+                      }
+                      onClick={() => {
+                        const [fromCat, subName] = moveSubSourceKey.split(':::');
+                        if (fromCat && subName && moveSubTargetCategory) {
+                          handleExecuteMoveSubcategory(
+                            subName,
+                            fromCat,
+                            moveSubTargetCategory
+                          );
+                        }
+                      }}
+                      className="w-full rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+                    >
+                      {isMovingSubcategory ? 'Moving...' : 'Move'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Income Sources, Sources (Origins) & Account Types (Collapsible) */}
+      <div className="rounded-xl border border-slate-200/90 bg-white p-4 sm:p-5">
+        <div
+          onClick={() => setIsSourcesAndTypesCollapsed((prev) => !prev)}
+          className={`flex items-center justify-between gap-3 cursor-pointer select-none ${
+            isSourcesAndTypesCollapsed ? '' : 'border-b border-slate-100 pb-3.5 mb-4'
+          }`}
+        >
+          <div className="min-w-0">
+            <h2 className="font-display text-base font-semibold text-slate-900 break-words">
+              Income Sources, Origins & Account Types (
+              {incomeSources.length + incomeOrigins.length + accountTypes.length})
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5 break-words">
+              Manage custom Income Sources, Sources (Origins), and Account Types shared with Quick Record
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsSourcesAndTypesCollapsed((prev) => !prev);
+            }}
+            className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 shrink-0"
+          >
+            <span>{isSourcesAndTypesCollapsed ? 'Expand' : 'Collapse'}</span>
+            <svg
+              className={`h-3.5 w-3.5 text-slate-500 transition-transform ${
+                isSourcesAndTypesCollapsed ? '' : 'rotate-180'
+              }`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+        </div>
+
+        {!isSourcesAndTypesCollapsed && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Income Sources */}
+            <div className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-3.5 space-y-2.5">
+              <div className="text-xs font-semibold text-slate-900">
+                Income Sources ({incomeSources.length})
+              </div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="text"
+                  value={newIncomeSourceInput}
+                  onChange={(e) => setNewIncomeSourceInput(e.target.value)}
+                  placeholder="Add income source..."
+                  className="flex-1 min-w-0 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900"
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const trimmed = newIncomeSourceInput.trim();
+                    if (!trimmed) return;
+                    if (
+                      incomeSources.some(
+                        (s) => s.toLowerCase() === trimmed.toLowerCase()
+                      )
+                    ) {
+                      setNewIncomeSourceInput('');
+                      return;
+                    }
+                    const next = [...incomeSources, trimmed];
+                    setIncomeSources(next);
+                    setNewIncomeSourceInput('');
+                    await persistUpdates({ incomeSources: next });
+                  }}
+                  className="rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white shrink-0"
+                >
+                  + Add
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {incomeSources.map((src) => (
+                  <span
+                    key={src}
+                    className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700"
+                  >
+                    <span>{src}</span>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const next = incomeSources.filter((s) => s !== src);
+                        setIncomeSources(next);
+                        await persistUpdates({ incomeSources: next });
+                      }}
+                      className="text-slate-400 hover:text-rose-600"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            {/* Sources (Origins) */}
+            <div className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-3.5 space-y-2.5">
+              <div className="text-xs font-semibold text-slate-900">
+                Sources / Origins ({incomeOrigins.length})
+              </div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="text"
+                  value={newIncomeOriginInput}
+                  onChange={(e) => setNewIncomeOriginInput(e.target.value)}
+                  placeholder="Add source..."
+                  className="flex-1 min-w-0 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900"
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const trimmed = newIncomeOriginInput.trim();
+                    if (!trimmed) return;
+                    if (
+                      incomeOrigins.some(
+                        (s) => s.toLowerCase() === trimmed.toLowerCase()
+                      )
+                    ) {
+                      setNewIncomeOriginInput('');
+                      return;
+                    }
+                    const next = [...incomeOrigins, trimmed];
+                    setIncomeOrigins(next);
+                    setNewIncomeOriginInput('');
+                    await persistUpdates({ incomeOrigins: next });
+                  }}
+                  className="rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white shrink-0"
+                >
+                  + Add
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {incomeOrigins.map((orig) => (
+                  <span
+                    key={orig}
+                    className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700"
+                  >
+                    <span>{orig}</span>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const next = incomeOrigins.filter((s) => s !== orig);
+                        setIncomeOrigins(next);
+                        await persistUpdates({ incomeOrigins: next });
+                      }}
+                      className="text-slate-400 hover:text-rose-600"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            {/* Account Types */}
+            <div className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-3.5 space-y-2.5">
+              <div className="text-xs font-semibold text-slate-900">
+                Account Types ({accountTypes.length})
+              </div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="text"
+                  value={newAccountTypeInput}
+                  onChange={(e) => setNewAccountTypeInput(e.target.value)}
+                  placeholder="Add account type..."
+                  className="flex-1 min-w-0 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900"
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const trimmed = newAccountTypeInput.trim();
+                    if (!trimmed) return;
+                    if (
+                      accountTypes.some(
+                        (s) => s.toLowerCase() === trimmed.toLowerCase()
+                      )
+                    ) {
+                      setNewAccountTypeInput('');
+                      return;
+                    }
+                    const next = [...accountTypes, trimmed];
+                    setAccountTypes(next);
+                    setNewAccountTypeInput('');
+                    await persistUpdates({ accountTypes: next });
+                  }}
+                  className="rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white shrink-0"
+                >
+                  + Add
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {accountTypes.map((t) => (
+                  <span
+                    key={t}
+                    className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700"
+                  >
+                    <span>{t}</span>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const next = accountTypes.filter((s) => s !== t);
+                        setAccountTypes(next);
+                        await persistUpdates({ accountTypes: next });
+                      }}
+                      className="text-slate-400 hover:text-rose-600"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
           </div>
         )}
       </div>

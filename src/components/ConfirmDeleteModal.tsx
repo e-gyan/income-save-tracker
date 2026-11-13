@@ -21,11 +21,11 @@ export const ConfirmDeleteModal: React.FC<ConfirmDeleteModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto"
       onClick={onCancel}
     >
       <div
-        className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-5 shadow-xl space-y-4"
+        className="w-full max-w-sm max-h-[88dvh] sm:max-h-[90vh] overflow-y-auto overscroll-contain rounded-xl border border-slate-200 bg-white p-5 shadow-xl space-y-4 my-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="space-y-1.5">
