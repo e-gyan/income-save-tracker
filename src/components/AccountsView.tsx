@@ -1389,7 +1389,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                   onChange={(e) => setIsDefaultDeposit(e.target.checked)}
                   className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900"
                 />
-                <span>Set as default account for new income records</span>
+                <span>Set as default account for new income transactions</span>
               </label>
 
               <button
@@ -2432,10 +2432,10 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                 </div>
               ) : (
                 <>
-                  {/* Group Records By Week / Month / Year Bar inside Account History */}
+                  {/* Recent Transactions By Week / Month / Year Bar inside Account History */}
                   <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
                     <span className="text-xs font-semibold text-slate-700">
-                      Group Account History By
+                      Recent Transactions By
                     </span>
                     <div className="inline-flex items-center rounded-lg bg-white border border-slate-200 p-0.5">
                       {(
@@ -2466,7 +2466,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                   {selectedAccountIncomes.length > 0 && (
                     <div className="space-y-2.5">
                       <div className="text-xs font-semibold text-slate-800">
-                        Income Records Deposited ({selectedAccountIncomes.length})
+                        Income Transactions Deposited ({selectedAccountIncomes.length})
                       </div>
                       <div className="space-y-3">
                         {groupRecordsByPeriod(selectedAccountIncomes, historyGroupBy).map(
@@ -2978,7 +2978,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                   }
                   className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900"
                 />
-                <span>Set as default account for new income records</span>
+                <span>Set as default account for new income transactions</span>
               </label>
 
               <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">

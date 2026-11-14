@@ -1167,10 +1167,257 @@ Each transfer: { "date": "YYYY-MM-DD", "fromAccount": "string", "toAccount": "st
 });
 
 /**
+ * Backend Intelligent Multi-Currency Conversion Endpoint (`POST /api/fx/convert-intelligence`)
+ * Converts expenses, transfers, savings splits, and budget/goal amounts across any currency pair
+ * with 2-point floating precision using live/cached FX rates.
+ */
+app.post('/api/fx/convert-intelligence', (req: Request, res: Response) => {
+  try {
+    const {
+      amount = 0,
+      fromCurrency = 'GHS',
+      toCurrency = 'GHS',
+      baseCurrency = 'GHS',
+      expenses = [],
+      transfers = [],
+      savingsAllocations = [],
+    } = req.body || {};
+
+    const upperBase = String(baseCurrency || 'GHS').trim().toUpperCase();
+    const cachedFx = fxCache.get(upperBase);
+    const activeRates = cachedFx?.rates || buildFallbackRatesForBase(upperBase);
+
+    const directConversion = convertServer2dp(
+      Number(amount || 0),
+      String(fromCurrency || upperBase),
+      String(toCurrency || upperBase),
+      activeRates,
+      upperBase
+    );
+    const inverseConversion = convertServer2dp(
+      1,
+      String(toCurrency || upperBase),
+      String(fromCurrency || upperBase),
+      activeRates,
+      upperBase
+    );
+
+    const convertedExpenses = (Array.isArray(expenses) ? expenses : []).map(
+      (exp: any) => {
+        const expCurr = String(exp?.currency || upperBase).toUpperCase();
+        const rawAmt = Number(exp?.originalAmount ?? exp?.amount ?? 0);
+        const toBase = convertServer2dp(
+          rawAmt,
+          expCurr,
+          upperBase,
+          activeRates,
+          upperBase
+        );
+        const toTarget = convertServer2dp(
+          rawAmt,
+          expCurr,
+          String(toCurrency || upperBase),
+          activeRates,
+          upperBase
+        );
+        return {
+          ...exp,
+          currency: expCurr,
+          originalAmount: round2dp(rawAmt),
+          exchangeRate: toBase.exchangeRate2dp,
+          amount: toBase.convertedAmount,
+          targetCurrencyAmount: toTarget.convertedAmount,
+          targetExchangeRate: toTarget.exchangeRate2dp,
+        };
+      }
+    );
+
+    const convertedTransfers = (Array.isArray(transfers) ? transfers : []).map(
+      (tr: any) => {
+        const srcCurr = String(
+          tr?.sourceCurrency || tr?.currency || upperBase
+        ).toUpperCase();
+        const dstCurr = String(
+          tr?.destinationCurrency || toCurrency || upperBase
+        ).toUpperCase();
+        const rawSrcAmt = Number(tr?.sourceAmount ?? tr?.amount ?? 0);
+        const toDst = convertServer2dp(
+          rawSrcAmt,
+          srcCurr,
+          dstCurr,
+          activeRates,
+          upperBase
+        );
+        const toBase = convertServer2dp(
+          rawSrcAmt,
+          srcCurr,
+          upperBase,
+          activeRates,
+          upperBase
+        );
+        return {
+          ...tr,
+          sourceCurrency: srcCurr,
+          sourceAmount: round2dp(rawSrcAmt),
+          destinationCurrency: dstCurr,
+          destinationAmount: toDst.convertedAmount,
+          exchangeRate: toDst.exchangeRate2dp,
+          amount: toBase.convertedAmount,
+        };
+      }
+    );
+
+    const convertedSavings = (
+      Array.isArray(savingsAllocations) ? savingsAllocations : []
+    ).map((sav: any) => {
+      const savCurr = String(sav?.currency || fromCurrency || upperBase).toUpperCase();
+      const rawSavAmt = Number(sav?.amount ?? 0);
+      const toBase = convertServer2dp(
+        rawSavAmt,
+        savCurr,
+        upperBase,
+        activeRates,
+        upperBase
+      );
+      const toTarget = convertServer2dp(
+        rawSavAmt,
+        savCurr,
+        String(toCurrency || upperBase),
+        activeRates,
+        upperBase
+      );
+      return {
+        ...sav,
+        currency: savCurr,
+        originalAmount: round2dp(rawSavAmt),
+        baseCurrencyAmount: toBase.convertedAmount,
+        baseExchangeRate: toBase.exchangeRate2dp,
+        targetCurrencyAmount: toTarget.convertedAmount,
+        targetExchangeRate: toTarget.exchangeRate2dp,
+      };
+    });
+
+    return res.json({
+      success: true,
+      baseCurrency: upperBase,
+      fromCurrency: String(fromCurrency || upperBase).toUpperCase(),
+      toCurrency: String(toCurrency || upperBase).toUpperCase(),
+      convertedAmount: directConversion.convertedAmount,
+      exchangeRate2dp: directConversion.exchangeRate2dp,
+      inverseExchangeRate2dp: inverseConversion.exchangeRate2dp,
+      expenses: convertedExpenses,
+      transfers: convertedTransfers,
+      savingsAllocations: convertedSavings,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Currency conversion intelligence failed.',
+    });
+  }
+});
+
+/**
+ * Backend Settings Textbox & Preference Modification Endpoint (`POST /api/settings/modify`)
+ * Normalizes and validates user edits to Savings Vaults, Expense Categories/Subcategories,
+ * Income Sources, Origins, Account Types, and Defined Deductions.
+ */
+app.post('/api/settings/modify', (req: Request, res: Response) => {
+  try {
+    const { settings = {}, patch = {}, renameSubcategory = null } = req.body || {};
+    const merged = { ...settings, ...patch };
+
+    // Normalize Savings Buckets (preserve clean names & valid 0..100 percentages)
+    if (Array.isArray(merged.savingsBuckets)) {
+      merged.savingsBuckets = merged.savingsBuckets.map((b: any, idx: number) => {
+        const rawName = String(b?.name || '').replace(/\s*\(\d+(?:\.\d+)?%\)\s*$/, '').trim();
+        const baseName = rawName || `Savings Vault ${idx + 1}`;
+        const rawPct = Number(b?.percentage ?? 0);
+        const pct = Number.isFinite(rawPct)
+          ? Math.max(0, Math.min(100, round2dp(rawPct)))
+          : 0;
+        return {
+          ...b,
+          id: String(b?.id || `bucket_${Date.now()}_${idx}`),
+          accountId: String(b?.accountId || `acc_sav_${Date.now()}_${idx}`),
+          name: `${baseName} (${pct}%)`,
+          percentage: pct,
+          description: `${pct}% savings share`,
+        };
+      });
+    }
+
+    // Handle optional inline subcategory rename with color preservation
+    if (
+      renameSubcategory &&
+      renameSubcategory.catId &&
+      renameSubcategory.oldName &&
+      renameSubcategory.newName &&
+      Array.isArray(merged.expenseCategoryPreferences)
+    ) {
+      const targetCatId = String(renameSubcategory.catId);
+      const oldSub = String(renameSubcategory.oldName).trim();
+      const newSub = String(renameSubcategory.newName).trim();
+      if (oldSub && newSub) {
+        merged.expenseCategoryPreferences = merged.expenseCategoryPreferences.map(
+          (cat: any) => {
+            if (String(cat?.id) !== targetCatId) return cat;
+            const subs: string[] = Array.isArray(cat.subcategories)
+              ? cat.subcategories
+              : [];
+            const nextSubs = subs.map((s) =>
+              String(s).trim().toLowerCase() === oldSub.toLowerCase() ? newSub : s
+            );
+            const nextColors = { ...(cat.subcategoryColors || {}) };
+            if (nextColors[oldSub] && !nextColors[newSub]) {
+              nextColors[newSub] = nextColors[oldSub];
+              delete nextColors[oldSub];
+            }
+            return {
+              ...cat,
+              subcategories: Array.from(new Set(nextSubs)),
+              subcategoryColors: nextColors,
+            };
+          }
+        );
+      }
+    }
+
+    // Normalize string list preferences (incomeSources, incomeOrigins, accountTypes)
+    for (const key of ['incomeSources', 'incomeOrigins', 'accountTypes'] as const) {
+      if (Array.isArray(merged[key])) {
+        const seen = new Set<string>();
+        const cleaned: string[] = [];
+        for (const item of merged[key]) {
+          const trimmed = String(item || '').trim();
+          if (trimmed && !seen.has(trimmed.toLowerCase())) {
+            seen.add(trimmed.toLowerCase());
+            cleaned.push(trimmed);
+          }
+        }
+        merged[key] = cleaned;
+      }
+    }
+
+    merged.updatedAt = new Date().toISOString();
+
+    return res.json({
+      success: true,
+      settings: merged,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Failed to modify settings.',
+    });
+  }
+});
+
+/**
  * Backend Multi-Purpose Budget & Goal Evaluation Endpoint (`POST /api/budgets/evaluate`)
  * Evaluates both Expense-linked Budgets (`purposeType: 'budget'`) and Transfer/Savings-linked
- * Goals (`purposeType: 'goal'`), checking active date windows, auto-recreation settings
- * (`autoRecreate`, `recreateDays`), and disabling expired budgets without auto-recreate.
+ * Goals (`purposeType: 'goal'`), checking active date windows, automatic recreation for
+ * weekly/monthly/yearly periods, custom period recreation definitions, and multi-currency FX conversion.
  */
 app.post('/api/budgets/evaluate', (req: Request, res: Response) => {
   try {
@@ -1183,21 +1430,19 @@ app.post('/api/budgets/evaluate', (req: Request, res: Response) => {
     } = req.body || {};
 
     const upperBase = String(baseCurrency || 'GHS').toUpperCase();
-    const fallbackRates = buildFallbackRatesForBase(upperBase);
+    const cachedFx = fxCache.get(upperBase);
+    const activeRates = cachedFx?.rates || buildFallbackRatesForBase(upperBase);
     const todayYmd = new Date().toISOString().split('T')[0];
 
     const convertAmt = (amt: number, fromCurr: string, toCurr: string): number => {
-      const f = String(fromCurr || upperBase).toUpperCase();
-      const t = String(toCurr || upperBase).toUpperCase();
-      if (f === t) return round2dp(amt);
-      const fromRate = fallbackRates[f] || 1;
-      const toRate = fallbackRates[t] || 1;
-      return round2dp((Number(amt || 0) / fromRate) * toRate);
+      return convertServer2dp(amt, fromCurr, toCurr, activeRates, upperBase)
+        .convertedAmount;
     };
 
     const evaluated = (Array.isArray(budgets) ? budgets : []).map((b: any) => {
       const purposeType: 'budget' | 'goal' =
         b.purposeType === 'goal' ? 'goal' : 'budget';
+      const periodType = String(b.periodType || 'monthly');
       const budgetCurr = String(b.currency || upperBase).toUpperCase();
       const subs: string[] = Array.isArray(b.subcategories)
         ? b.subcategories.map((s: any) => String(s || '').trim().toLowerCase())
@@ -1206,9 +1451,26 @@ app.post('/api/budgets/evaluate', (req: Request, res: Response) => {
       const endYmd = String(b.activePeriodEnd || b.customEndDate || '');
       const isExpired =
         Boolean(b.isExpiredDisabled) || Boolean(endYmd && todayYmd > endYmd);
-      const autoRecreate = Boolean(b.autoRecreate);
+      // Weekly, Monthly, and Yearly periods recreate automatically; Custom period requires explicit autoRecreate
+      const autoRecreate =
+        periodType !== 'custom' ? true : Boolean(b.autoRecreate);
       const recreateDays = Math.max(0, Math.round(Number(b.recreateDays || 0)));
       const isDisabledFromReach = isExpired && !autoRecreate;
+
+      const rateToBase = convertServer2dp(
+        1,
+        budgetCurr,
+        upperBase,
+        activeRates,
+        upperBase
+      ).exchangeRate2dp;
+      const inverseRateToBase = convertServer2dp(
+        1,
+        upperBase,
+        budgetCurr,
+        activeRates,
+        upperBase
+      ).exchangeRate2dp;
 
       let spent = 0;
 
@@ -1223,7 +1485,9 @@ app.post('/api/budgets/evaluate', (req: Request, res: Response) => {
               .includes(goalCauseLower);
             if (!descMatch && tr.transferType !== 'savings_deduction') continue;
           }
-          const rawAmt = Number(tr.destinationAmount ?? tr.amount ?? 0);
+          const rawAmt = Number(
+            tr.destinationAmount ?? tr.sourceAmount ?? tr.amount ?? 0
+          );
           const trCurr = String(
             tr.destinationCurrency || tr.sourceCurrency || upperBase
           ).toUpperCase();
@@ -1268,12 +1532,17 @@ app.post('/api/budgets/evaluate', (req: Request, res: Response) => {
         purposeType,
         goalCause: b.goalCause || undefined,
         goalSourceType: b.goalSourceType || 'savings_and_transfers',
-        periodType: b.periodType || 'monthly',
+        periodType,
         scopeType: b.scopeType || (subs.length > 1 ? 'multiple' : 'single'),
         currency: budgetCurr,
         budgetLimit: limit,
+        budgetLimitBase: convertAmt(limit, budgetCurr, upperBase),
         spentAmount: spent,
+        spentAmountBase: convertAmt(spent, budgetCurr, upperBase),
         residualAmount: residual,
+        residualAmountBase: convertAmt(residual, budgetCurr, upperBase),
+        conversionRateToBase: rateToBase,
+        inverseConversionRateToBase: inverseRateToBase,
         usagePercentage: percentage,
         status,
         autoRecreate,
@@ -1322,8 +1591,9 @@ app.post('/api/budgets/evaluate', (req: Request, res: Response) => {
 
 /**
  * Backend Budget Auto-Recreation & Expiration Reconciliation Endpoint (`POST /api/budgets/reconcile`)
- * Recreates expired budgets that have `autoRecreate: true` for `recreateDays` days,
- * and marks expired budgets without `autoRecreate` as `isExpiredDisabled: true`.
+ * Weekly, Monthly, and Yearly budgets recreate automatically when their cycle ends;
+ * Custom period budgets recreate for `recreateDays` days when `autoRecreate: true`,
+ * or are marked `isExpiredDisabled: true` when `autoRecreate` is false.
  */
 app.post('/api/budgets/reconcile', (req: Request, res: Response) => {
   try {
@@ -1343,10 +1613,22 @@ app.post('/api/budgets/reconcile', (req: Request, res: Response) => {
         continue;
       }
 
+      const periodType = String(b.periodType || 'monthly');
+      const shouldAutoRecreate =
+        periodType !== 'custom' ? true : Boolean(b.autoRecreate);
       const endYmd = String(b.activePeriodEnd || b.customEndDate || '');
       if (endYmd && todayYmd > endYmd) {
-        if (b.autoRecreate) {
-          const days = Math.max(1, Math.round(Number(b.recreateDays || 30)));
+        if (shouldAutoRecreate) {
+          const defaultDays =
+            periodType === 'weekly'
+              ? 7
+              : periodType === 'yearly'
+              ? 365
+              : 30;
+          const days = Math.max(
+            1,
+            Math.round(Number(b.recreateDays || defaultDays))
+          );
           const startD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
           const endD = new Date(startD);
           endD.setDate(startD.getDate() + days - 1);
@@ -1367,8 +1649,8 @@ app.post('/api/budgets/reconcile', (req: Request, res: Response) => {
             id: `bgt_rec_${Date.now()}_${i}`,
             activePeriodStart: newStartYmd,
             activePeriodEnd: newEndYmd,
-            customStartDate: b.periodType === 'custom' ? newStartYmd : b.customStartDate,
-            customEndDate: b.periodType === 'custom' ? newEndYmd : b.customEndDate,
+            customStartDate: periodType === 'custom' ? newStartYmd : b.customStartDate,
+            customEndDate: periodType === 'custom' ? newEndYmd : b.customEndDate,
             autoRecreate: true,
             recreateDays: days,
             parentRecurringBudgetId: b.parentRecurringBudgetId || b.id,

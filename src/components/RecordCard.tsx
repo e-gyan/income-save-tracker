@@ -77,7 +77,7 @@ export const RecordCard: React.FC<RecordCardProps> = ({
   onClick,
   className = '',
 }) => {
-  const effectiveSubcategory = subcategory || topLeftSubcategory || 'Record';
+  const effectiveSubcategory = subcategory || topLeftSubcategory || 'Transaction';
   const effectiveAccountName = accountName || bottomLeftAccount || 'Account';
   const effectiveAmountText = amountText || topRightAmount || '0.00';
   const effectiveDate = date || bottomRightDate || '';
@@ -184,6 +184,7 @@ export const ExpenseDetailPopupModal: React.FC<ExpenseDetailPopupModalProps> = (
     onDelete ||
     (onDeleteExpense ? (exp: FlexibleExpense) => onDeleteExpense(exp.id) : undefined);
   const [moveTargetCategory, setMoveTargetCategory] = useState('');
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   if (!expense) return null;
 
@@ -432,31 +433,56 @@ export const ExpenseDetailPopupModal: React.FC<ExpenseDetailPopupModalProps> = (
           </div>
 
           <div className="flex items-center gap-2 ml-auto">
-            {effectiveOnEdit && (
-              <button
-                type="button"
-                onClick={() => {
-                  const target = expense;
-                  onClose();
-                  effectiveOnEdit(target);
-                }}
-                className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
-              >
-                Edit
-              </button>
-            )}
-            {effectiveOnDelete && !isDeductionDerived && (
-              <button
-                type="button"
-                onClick={() => {
-                  const target = expense;
-                  onClose();
-                  effectiveOnDelete(target);
-                }}
-                className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100"
-              >
-                Delete
-              </button>
+            {confirmingDelete ? (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs">
+                <span className="font-semibold text-rose-800">
+                  Delete this expense transaction? Account balances will update.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = expense;
+                    setConfirmingDelete(false);
+                    onClose();
+                    effectiveOnDelete?.(target);
+                  }}
+                  className="rounded-md bg-rose-600 px-2.5 py-1 font-bold text-white hover:bg-rose-700"
+                >
+                  Confirm Delete
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDelete(false)}
+                  className="rounded-md border border-slate-200 bg-white px-2.5 py-1 font-semibold text-slate-600 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <>
+                {effectiveOnEdit && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = expense;
+                      onClose();
+                      effectiveOnEdit(target);
+                    }}
+                    className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+                  >
+                    Edit
+                  </button>
+                )}
+                {effectiveOnDelete && !isDeductionDerived && (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingDelete(true)}
+                    className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+                  >
+                    Delete
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -489,6 +515,7 @@ export const TransferDetailPopupModal: React.FC<
   const effectiveOnRevertOrDelete =
     onRevertOrDelete ||
     (onDeleteTransfer ? (tr: AccountTransfer) => onDeleteTransfer(tr.id) : undefined);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   if (!transfer) return null;
 
   const sourceAcc = accounts.find((a) => a.id === transfer.sourceAccountId);
@@ -596,27 +623,52 @@ export const TransferDetailPopupModal: React.FC<
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-          {effectiveOnRevertOrDelete && !isSavingsSplit && (
-            <button
-              type="button"
-              onClick={() => {
-                const target = transfer;
-                onClose();
-                effectiveOnRevertOrDelete(target);
-              }}
-              className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100"
-            >
-              {revertLabel}
-            </button>
+        <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-slate-100">
+          {confirmingDelete ? (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs">
+              <span className="font-semibold text-rose-800">
+                {revertLabel} this transfer transaction? Account balances will update.
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  const target = transfer;
+                  setConfirmingDelete(false);
+                  onClose();
+                  effectiveOnRevertOrDelete?.(target);
+                }}
+                className="rounded-md bg-rose-600 px-2.5 py-1 font-bold text-white hover:bg-rose-700"
+              >
+                Confirm
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmingDelete(false)}
+                className="rounded-md border border-slate-200 bg-white px-2.5 py-1 font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <>
+              {effectiveOnRevertOrDelete && !isSavingsSplit && (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDelete(true)}
+                  className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+                >
+                  {revertLabel}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+              >
+                Done
+              </button>
+            </>
           )}
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
-          >
-            Done
-          </button>
         </div>
       </div>
     </div>
@@ -649,6 +701,7 @@ export const IncomeDetailPopupModal: React.FC<IncomeDetailPopupModalProps> = ({
   onDelete,
   children,
 }) => {
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   if (!income) return null;
 
   const defaultAccount =
@@ -876,32 +929,57 @@ export const IncomeDetailPopupModal: React.FC<IncomeDetailPopupModalProps> = ({
 
         {/* Action Footer: Edit & Delete */}
         {(onEdit || onDelete) && (
-          <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-            {onEdit && (
-              <button
-                type="button"
-                onClick={() => {
-                  const target = income;
-                  onClose();
-                  onEdit(target);
-                }}
-                className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
-              >
-                Edit
-              </button>
-            )}
-            {onDelete && (
-              <button
-                type="button"
-                onClick={() => {
-                  const target = income;
-                  onClose();
-                  onDelete(target);
-                }}
-                className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100"
-              >
-                Delete
-              </button>
+          <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-slate-100">
+            {confirmingDelete ? (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs">
+                <span className="font-semibold text-rose-800">
+                  Delete this income transaction? Linked deductions and balances will update.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = income;
+                    setConfirmingDelete(false);
+                    onClose();
+                    onDelete?.(target);
+                  }}
+                  className="rounded-md bg-rose-600 px-2.5 py-1 font-bold text-white hover:bg-rose-700"
+                >
+                  Confirm Delete
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDelete(false)}
+                  className="rounded-md border border-slate-200 bg-white px-2.5 py-1 font-semibold text-slate-600 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <>
+                {onEdit && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = income;
+                      onClose();
+                      onEdit(target);
+                    }}
+                    className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+                  >
+                    Edit
+                  </button>
+                )}
+                {onDelete && (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingDelete(true)}
+                    className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+                  >
+                    Delete
+                  </button>
+                )}
+              </>
             )}
           </div>
         )}

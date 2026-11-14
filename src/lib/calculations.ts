@@ -643,13 +643,19 @@ export function computeDeductionAmount(
   return Math.round(((gross * cleanVal) / 100) * 100) / 100;
 }
 
-export const APP_VERSION = '3.3.0';
+export const APP_VERSION = '4.2.0';
 
 export const VERSION_RELEASE_LOG: {
   version: string;
   date: string;
   summary: string;
 }[] = [
+  {
+    version: '4.2.0',
+    date: '2026-11-14',
+    summary:
+      'Updated terminology from Records to Transactions (including Recent Transactions By), added live foreign currency conversion rate display and backend multi-currency intelligence on Budgets & Goals, enabled automatic recreation for Weekly/Monthly/Yearly periods while requiring recreation definition only on Custom periods, added action confirmation notifications on all delete buttons, and enabled seamless textbox modification in Settings.',
+  },
   {
     version: '3.3.0',
     date: '2026-11-11',

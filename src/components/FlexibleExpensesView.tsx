@@ -1248,7 +1248,10 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {/* Group Records By Period Selector */}
+          {/* Recent Transactions By Period Selector */}
+          <span className="text-[11px] font-semibold text-slate-600">
+            Recent Transactions By
+          </span>
           <div className="inline-flex items-center rounded-lg bg-slate-100 p-0.5">
             {(
               [
@@ -1552,7 +1555,7 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
         categoryPreferences={categoryPreferences}
         onClose={() => setSelectedPopupExpense(null)}
         onEdit={onEditExpense}
-        onDelete={(exp) => setPendingDeleteExpense(exp)}
+        onDelete={(exp) => onDeleteExpense(exp.id)}
         onMoveSubcategory={onMoveSubcategory}
       />
 

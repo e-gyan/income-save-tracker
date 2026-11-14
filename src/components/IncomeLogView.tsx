@@ -2498,10 +2498,13 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search records..."
+              placeholder="Search transactions..."
               className="flex-1 min-w-0 rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:bg-white focus:outline-none"
             />
             <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-semibold text-slate-600">
+                Recent Transactions By
+              </span>
               <div className="inline-flex items-center rounded-lg bg-slate-100 p-0.5">
                 {(
                   [
@@ -2551,11 +2554,11 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
             </div>
           </div>
 
-          {/* Income Records List */}
+          {/* Income Transactions List */}
           {filteredIncomes.length === 0 ? (
             <div className="rounded-xl border border-slate-200/90 bg-white p-10 text-center">
               <p className="font-display text-sm font-semibold text-slate-900">
-                No Income Records
+                No Income Transactions
               </p>
             </div>
           ) : (
@@ -2569,7 +2572,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                       </span>
                       <span className="rounded bg-white px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-600">
                         {periodGroup.items.length}{' '}
-                        {periodGroup.items.length === 1 ? 'record' : 'records'}
+                        {periodGroup.items.length === 1 ? 'transaction' : 'transactions'}
                       </span>
                     </div>
                   )}
@@ -2688,8 +2691,8 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                                     onClick={() => {
                                       toggleIncomeExpand(inc.id);
                                       setConfirmDeleteConfig({
-                                        title: 'Delete Income Record?',
-                                        message: `Delete "${inc.clientOrSource}" (${formatAmount(incNativeGross, incRecordCurr)})?`,
+                                        title: 'Delete Income Transaction?',
+                                        message: `Delete "${inc.clientOrSource}" (${formatAmount(incNativeGross, incRecordCurr)})? Linked deductions and account balances will update.`,
                                         confirmLabel: 'Delete',
                                         onConfirm: () => onDeleteIncome(inc.id),
                                       });
@@ -2717,7 +2720,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                             <div className="space-y-3 border-b border-slate-100 pb-4">
                               <div className="flex items-center justify-between gap-2">
                                 <div className="text-xs font-semibold text-slate-900">
-                                  Edit Income Record
+                                  Edit Income Transaction
                                 </div>
                                 <span className="rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-700">
                                   {getQuarterFromDate(editDate)}

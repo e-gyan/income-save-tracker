@@ -148,6 +148,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [newVaultIsVirtual, setNewVaultIsVirtual] = useState(true);
   const [newVaultCustodianId, setNewVaultCustodianId] = useState('');
   const [confirmDeleteVaultId, setConfirmDeleteVaultId] = useState<string | null>(null);
+  const [vaultDraftNames, setVaultDraftNames] = useState<Record<string, string>>({});
+  const [vaultDraftRates, setVaultDraftRates] = useState<Record<string, string>>({});
 
   // Expense Category & Subcategory state
   const [newCategoryName, setNewCategoryName] = useState('');
@@ -160,16 +162,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [editingCatId, setEditingCatId] = useState<string | null>(null);
   const [editingCatName, setEditingCatName] = useState('');
   const [confirmDeleteCatId, setConfirmDeleteCatId] = useState<string | null>(null);
+  const [editingSubKey, setEditingSubKey] = useState<string | null>(null);
+  const [editingSubName, setEditingSubName] = useState('');
+  const [confirmDeleteSubKey, setConfirmDeleteSubKey] = useState<string | null>(null);
 
   // Move Subcategory State
   const [moveSubSourceKey, setMoveSubSourceKey] = useState('');
   const [moveSubTargetCategory, setMoveSubTargetCategory] = useState('');
   const [isMovingSubcategory, setIsMovingSubcategory] = useState(false);
 
-  // New Income Source / Origin / Account Type inputs
+  // New Income Source / Origin / Account Type inputs & inline edit/delete states
   const [newIncomeSourceInput, setNewIncomeSourceInput] = useState('');
   const [newIncomeOriginInput, setNewIncomeOriginInput] = useState('');
   const [newAccountTypeInput, setNewAccountTypeInput] = useState('');
+  const [editingTagKey, setEditingTagKey] = useState<string | null>(null);
+  const [editingTagValue, setEditingTagValue] = useState('');
+  const [confirmDeleteTagKey, setConfirmDeleteTagKey] = useState<string | null>(null);
 
   // New Deduction Rule Form State
   const [newCutName, setNewCutName] = useState('');
@@ -216,7 +224,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     [settings, expensePrefs, expenses]
   );
 
-  // Sync local state when settings or expenses change so every component in Settings is up to date
+  // Sync local state when settings change without overwriting active textbox drafts
   useEffect(() => {
     setCurrency(settings.currency || 'USD');
     setTotalsCurrencyMode(settings.totalsCurrencyMode || 'base');
@@ -225,22 +233,33 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setAccountingFiguresEnabled(settings.accountingFigureColorsEnabled !== false);
     setPositiveFigureColor(settings.positiveFigureColor || '#059669');
     setNegativeFigureColor(settings.negativeFigureColor || '#e11d48');
-    setCustomCuts(
-      (settings.customCuts || []).filter((c) => !LEGACY_SEEDED_CUT_IDS.has(c.id))
-    );
-    setExpensePrefs(getEffectiveExpenseCategoryPreferences(settings, expenses));
-    setIncomeSources(settings.incomeSources || []);
-    setIncomeOrigins(settings.incomeOrigins || []);
-    setAccountTypes(settings.accountTypes || []);
+    if (!editingCutId) {
+      setCustomCuts(
+        (settings.customCuts || []).filter((c) => !LEGACY_SEEDED_CUT_IDS.has(c.id))
+      );
+    }
+    if (!editingCatId && !editingSubKey) {
+      setExpensePrefs(getEffectiveExpenseCategoryPreferences(settings, expenses));
+    }
+    if (!editingTagKey) {
+      setIncomeSources(settings.incomeSources || []);
+      setIncomeOrigins(settings.incomeOrigins || []);
+      setAccountTypes(settings.accountTypes || []);
+    }
     setVaultCustodians(settings.vaultCustodianAccounts || {});
-    setSavingsBuckets(
-      settings.savingsBuckets && Array.isArray(settings.savingsBuckets)
-        ? settings.savingsBuckets
-        : DEFAULT_SAVINGS_BUCKETS
-    );
+    if (
+      Object.keys(vaultDraftNames).length === 0 &&
+      Object.keys(vaultDraftRates).length === 0
+    ) {
+      setSavingsBuckets(
+        settings.savingsBuckets && Array.isArray(settings.savingsBuckets)
+          ? settings.savingsBuckets
+          : DEFAULT_SAVINGS_BUCKETS
+      );
+    }
     setAskNetIncomeTransfer(settings.askNetIncomeTransfer !== false);
     setDefaultNetIncomeAccountId(settings.defaultNetIncomeAccountId || '');
-  }, [settings, expenses]);
+  }, [settings]);
 
   const effectiveSavingsPillars = useMemo(
     () =>
@@ -285,8 +304,36 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     [accounts, settings, savingsBuckets]
   );
 
-  const persistUpdates = async (overrides: Partial<UserSettings>) => {
-    const nextSettings: UserSettings = {
+  const syncSettingsModifyWithBackend = async (
+    currentSettings: UserSettings,
+    modification?: Record<string, unknown>
+  ): Promise<UserSettings> => {
+    try {
+      const res = await fetch('/api/settings/modify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          settings: currentSettings,
+          modification,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.settings) {
+          return data.settings as UserSettings;
+        }
+      }
+    } catch {
+      // Fallback to local state when offline
+    }
+    return currentSettings;
+  };
+
+  const persistUpdates = async (
+    overrides: Partial<UserSettings>,
+    modification?: Record<string, unknown>
+  ) => {
+    const rawSettings: UserSettings = {
       ...settings,
       currency,
       totalsCurrencyMode,
@@ -307,6 +354,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       ...overrides,
       updatedAt: new Date().toISOString(),
     };
+    const nextSettings = await syncSettingsModifyWithBackend(
+      rawSettings,
+      modification
+    );
     await onSaveSettings(nextSettings);
     setSavedNotice(true);
     setTimeout(() => setSavedNotice(false), 1800);
@@ -533,7 +584,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
       if (totalFound === 0) {
         setImportError(
-          'No valid records found. Check the file format or download the sample template.'
+          'No valid transactions found. Check the file format or download the sample template.'
         );
         setParsedImport(null);
       } else {
@@ -567,13 +618,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         parsedImport.accounts.length +
         parsedImport.transfers.length;
       setImportSuccessMsg(
-        `Saved ${count} imported ${count === 1 ? 'record' : 'records'} to database.`
+        `Saved ${count} imported ${count === 1 ? 'transaction' : 'transactions'} to database.`
       );
       setParsedImport(null);
       setImportFileName('');
     } catch (err) {
       setImportError(
-        err instanceof Error ? err.message : 'Failed to save imported records'
+        err instanceof Error ? err.message : 'Failed to save imported transactions'
       );
     } finally {
       setIsSavingImport(false);
@@ -678,6 +729,41 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     await persistUpdates({ expenseCategoryPreferences: nextPrefs });
   };
 
+  const handleSaveRenameSubcategory = async (catId: string, oldSubName: string) => {
+    const trimmed = editingSubName.trim();
+    if (!trimmed) {
+      setEditingSubKey(null);
+      setEditingSubName('');
+      return;
+    }
+    const nextPrefs = expensePrefs.map((c) => {
+      if (c.id !== catId) return c;
+      const nextSubs = c.subcategories.map((s) => (s === oldSubName ? trimmed : s));
+      const nextColors = { ...(c.subcategoryColors || {}) };
+      if (nextColors[oldSubName] && oldSubName !== trimmed) {
+        nextColors[trimmed] = nextColors[oldSubName];
+        delete nextColors[oldSubName];
+      }
+      return {
+        ...c,
+        subcategories: Array.from(new Set(nextSubs)),
+        subcategoryColors: nextColors,
+      };
+    });
+    setExpensePrefs(nextPrefs);
+    setEditingSubKey(null);
+    setEditingSubName('');
+    await persistUpdates(
+      { expenseCategoryPreferences: nextPrefs },
+      {
+        type: 'rename_subcategory',
+        categoryId: catId,
+        oldName: oldSubName,
+        newName: trimmed,
+      }
+    );
+  };
+
   const handleRemoveSubcategory = async (catId: string, subName: string) => {
     const nextPrefs = expensePrefs.map((c) => {
       if (c.id !== catId) return c;
@@ -690,6 +776,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       };
     });
     setExpensePrefs(nextPrefs);
+    setConfirmDeleteSubKey(null);
     if (
       activeSubColorPicker?.catId === catId &&
       activeSubColorPicker?.subName === subName
@@ -844,19 +931,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   const handleVaultNameChange = (bucketId: string, rawName: string) => {
-    const cleanBase = getVaultCleanName(rawName);
+    setVaultDraftNames((prev) => ({ ...prev, [bucketId]: rawName }));
+    const cleaned = rawName.replace(/\(\s*\d+(?:\.\d+)?%\s*\)/g, '');
     const nextBuckets: SavingsBucket[] = savingsBuckets.map((b) => {
       if (b.id !== bucketId) return b;
       const pct = typeof b.percentage === 'number' ? b.percentage : 0;
+      const label = cleaned.trim() || getVaultCleanName(b.name) || 'Savings Vault';
       return {
         ...b,
-        name: cleanBase ? `${cleanBase} (${pct}%)` : ` (${pct}%)`,
+        name: `${label} (${pct}%)`,
       };
     });
     setSavingsBuckets(nextBuckets);
   };
 
   const handleVaultRateChange = (bucketId: string, rawVal: string) => {
+    setVaultDraftRates((prev) => ({ ...prev, [bucketId]: rawVal }));
     const parsed = parseFloat(rawVal);
     const cleanPct =
       rawVal.trim() === '' || isNaN(parsed)
@@ -865,7 +955,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
     const nextBuckets: SavingsBucket[] = savingsBuckets.map((b) => {
       if (b.id !== bucketId) return b;
-      const baseName = getVaultCleanName(b.name) || 'Savings Vault';
+      const draftBase = vaultDraftNames[bucketId]?.trim();
+      const baseName = draftBase || getVaultCleanName(b.name) || 'Savings Vault';
       return {
         ...b,
         name: `${baseName} (${cleanPct}%)`,
@@ -942,19 +1033,37 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const handleSaveVaultRates = async () => {
     const normalizedBuckets = savingsBuckets.map((b) => {
-      const baseName = getVaultCleanName(b.name) || 'Savings Vault';
-      const pct = typeof b.percentage === 'number' ? b.percentage : 0;
+      const draftName = vaultDraftNames[b.id];
+      const baseName =
+        (draftName !== undefined ? getVaultCleanName(draftName) : '') ||
+        getVaultCleanName(b.name) ||
+        'Savings Vault';
+      const draftRate = vaultDraftRates[b.id];
+      const parsedRate =
+        draftRate !== undefined ? parseFloat(draftRate) : b.percentage;
+      const pct =
+        typeof parsedRate === 'number' && !isNaN(parsedRate)
+          ? Math.max(0, Math.min(100, Math.round(parsedRate * 100) / 100))
+          : typeof b.percentage === 'number'
+          ? b.percentage
+          : 0;
       return {
         ...b,
         name: `${baseName} (${pct}%)`,
+        percentage: pct,
+        description: `${pct}% savings share`,
       };
     });
     setSavingsBuckets(normalizedBuckets);
+    setVaultDraftNames({});
+    setVaultDraftRates({});
     await persistUpdates({ savingsBuckets: normalizedBuckets });
   };
 
   const handleResetDefaultVaultRates = async () => {
     setSavingsBuckets(DEFAULT_SAVINGS_BUCKETS);
+    setVaultDraftNames({});
+    setVaultDraftRates({});
     await persistUpdates({ savingsBuckets: DEFAULT_SAVINGS_BUCKETS });
   };
 
@@ -1595,6 +1704,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         <div className="space-y-2">
                           <div className="flex flex-wrap gap-1.5">
                             {cat.subcategories.map((sub) => {
+                              const subKey = `${cat.id}:::${sub}`;
+                              const isEditingSub = editingSubKey === subKey;
+                              const isConfirmingSubDel = confirmDeleteSubKey === subKey;
                               const resolvedHex = resolveIntuitiveSubcategoryColor(
                                 sub,
                                 cat.name,
@@ -1605,6 +1717,76 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                               const isPickerOpen =
                                 activeSubColorPicker?.catId === cat.id &&
                                 activeSubColorPicker?.subName === sub;
+
+                              if (isEditingSub) {
+                                return (
+                                  <span
+                                    key={sub}
+                                    className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-0.5 text-[11px]"
+                                  >
+                                    <input
+                                      type="text"
+                                      value={editingSubName}
+                                      onChange={(e) => setEditingSubName(e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                          e.preventDefault();
+                                          handleSaveRenameSubcategory(cat.id, sub);
+                                        } else if (e.key === 'Escape') {
+                                          setEditingSubKey(null);
+                                          setEditingSubName('');
+                                        }
+                                      }}
+                                      className="w-28 rounded border border-slate-200 px-1.5 py-0.5 text-[11px] text-slate-900 focus:border-slate-900 focus:outline-none"
+                                      autoFocus
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSaveRenameSubcategory(cat.id, sub)}
+                                      className="rounded bg-slate-900 px-1.5 py-0.5 text-[10px] font-semibold text-white"
+                                    >
+                                      Save
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingSubKey(null);
+                                        setEditingSubName('');
+                                      }}
+                                      className="text-[10px] text-slate-500 hover:text-slate-800"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </span>
+                                );
+                              }
+
+                              if (isConfirmingSubDel) {
+                                return (
+                                  <span
+                                    key={sub}
+                                    className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px]"
+                                  >
+                                    <span className="font-semibold text-rose-800">
+                                      Delete "{sub}"?
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveSubcategory(cat.id, sub)}
+                                      className="rounded bg-rose-600 px-1.5 py-0.5 text-[10px] font-semibold text-white"
+                                    >
+                                      Yes
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteSubKey(null)}
+                                      className="rounded bg-white px-1.5 py-0.5 text-[10px] text-slate-600"
+                                    >
+                                      No
+                                    </button>
+                                  </span>
+                                );
+                              }
 
                               return (
                                 <span
@@ -1629,10 +1811,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                                     className="h-3 w-3 rounded-full shrink-0 ring-1 ring-black/15 hover:scale-110 transition-transform"
                                     style={{ backgroundColor: resolvedHex }}
                                   />
-                                  <span>{sub}</span>
                                   <button
                                     type="button"
-                                    onClick={() => handleRemoveSubcategory(cat.id, sub)}
+                                    onClick={() => {
+                                      setEditingSubKey(subKey);
+                                      setEditingSubName(sub);
+                                    }}
+                                    title="Click to edit subcategory name"
+                                    className="hover:underline text-left"
+                                  >
+                                    {sub}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeleteSubKey(subKey)}
                                     className="opacity-60 hover:opacity-100 hover:text-rose-600"
                                     title="Remove Subcategory"
                                   >
@@ -1941,8 +2133,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   type="text"
                   value={newIncomeSourceInput}
                   onChange={(e) => setNewIncomeSourceInput(e.target.value)}
+                  onKeyDown={async (e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      const trimmed = newIncomeSourceInput.trim();
+                      if (!trimmed) return;
+                      if (
+                        incomeSources.some(
+                          (s) => s.toLowerCase() === trimmed.toLowerCase()
+                        )
+                      ) {
+                        setNewIncomeSourceInput('');
+                        return;
+                      }
+                      const next = [...incomeSources, trimmed];
+                      setIncomeSources(next);
+                      setNewIncomeSourceInput('');
+                      await persistUpdates({ incomeSources: next });
+                    }
+                  }}
                   placeholder="Add income source..."
-                  className="flex-1 min-w-0 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900"
+                  className="flex-1 min-w-0 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
                 />
                 <button
                   type="button"
@@ -1968,25 +2179,130 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </button>
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {incomeSources.map((src) => (
-                  <span
-                    key={src}
-                    className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700"
-                  >
-                    <span>{src}</span>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const next = incomeSources.filter((s) => s !== src);
-                        setIncomeSources(next);
-                        await persistUpdates({ incomeSources: next });
-                      }}
-                      className="text-slate-400 hover:text-rose-600"
+                {incomeSources.map((src) => {
+                  const tagKey = `src:::${src}`;
+                  const isEditingTag = editingTagKey === tagKey;
+                  const isConfirmingTagDel = confirmDeleteTagKey === tagKey;
+
+                  if (isEditingTag) {
+                    return (
+                      <span
+                        key={src}
+                        className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-0.5 text-[11px]"
+                      >
+                        <input
+                          type="text"
+                          value={editingTagValue}
+                          onChange={(e) => setEditingTagValue(e.target.value)}
+                          onKeyDown={async (e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              const trimmed = editingTagValue.trim();
+                              if (trimmed) {
+                                const next = incomeSources.map((s) =>
+                                  s === src ? trimmed : s
+                                );
+                                setIncomeSources(next);
+                                setEditingTagKey(null);
+                                setEditingTagValue('');
+                                await persistUpdates({ incomeSources: next });
+                              }
+                            }
+                          }}
+                          className="w-28 rounded border border-slate-200 px-1.5 py-0.5 text-[11px] text-slate-900 focus:border-slate-900 focus:outline-none"
+                          autoFocus
+                        />
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const trimmed = editingTagValue.trim();
+                            if (trimmed) {
+                              const next = incomeSources.map((s) =>
+                                s === src ? trimmed : s
+                              );
+                              setIncomeSources(next);
+                              setEditingTagKey(null);
+                              setEditingTagValue('');
+                              await persistUpdates({ incomeSources: next });
+                            }
+                          }}
+                          className="rounded bg-slate-900 px-1.5 py-0.5 text-[10px] font-semibold text-white"
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingTagKey(null);
+                            setEditingTagValue('');
+                          }}
+                          className="text-[10px] text-slate-500"
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    );
+                  }
+
+                  if (isConfirmingTagDel) {
+                    return (
+                      <span
+                        key={src}
+                        className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px]"
+                      >
+                        <span className="font-semibold text-rose-800">
+                          Delete "{src}"?
+                        </span>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const next = incomeSources.filter((s) => s !== src);
+                            setIncomeSources(next);
+                            setConfirmDeleteTagKey(null);
+                            await persistUpdates({ incomeSources: next });
+                          }}
+                          className="rounded bg-rose-600 px-1.5 py-0.5 text-[10px] font-semibold text-white"
+                        >
+                          Yes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteTagKey(null)}
+                          className="rounded bg-white px-1.5 py-0.5 text-[10px] text-slate-600"
+                        >
+                          No
+                        </button>
+                      </span>
+                    );
+                  }
+
+                  return (
+                    <span
+                      key={src}
+                      className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700"
                     >
-                      ×
-                    </button>
-                  </span>
-                ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingTagKey(tagKey);
+                          setEditingTagValue(src);
+                        }}
+                        title="Click to edit income source"
+                        className="hover:underline text-left"
+                      >
+                        {src}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteTagKey(tagKey)}
+                        className="text-slate-400 hover:text-rose-600"
+                        title="Delete income source"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  );
+                })}
               </div>
             </div>
 
@@ -2000,8 +2316,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   type="text"
                   value={newIncomeOriginInput}
                   onChange={(e) => setNewIncomeOriginInput(e.target.value)}
+                  onKeyDown={async (e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      const trimmed = newIncomeOriginInput.trim();
+                      if (!trimmed) return;
+                      if (
+                        incomeOrigins.some(
+                          (s) => s.toLowerCase() === trimmed.toLowerCase()
+                        )
+                      ) {
+                        setNewIncomeOriginInput('');
+                        return;
+                      }
+                      const next = [...incomeOrigins, trimmed];
+                      setIncomeOrigins(next);
+                      setNewIncomeOriginInput('');
+                      await persistUpdates({ incomeOrigins: next });
+                    }
+                  }}
                   placeholder="Add source..."
-                  className="flex-1 min-w-0 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900"
+                  className="flex-1 min-w-0 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
                 />
                 <button
                   type="button"
@@ -2027,25 +2362,130 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </button>
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {incomeOrigins.map((orig) => (
-                  <span
-                    key={orig}
-                    className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700"
-                  >
-                    <span>{orig}</span>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const next = incomeOrigins.filter((s) => s !== orig);
-                        setIncomeOrigins(next);
-                        await persistUpdates({ incomeOrigins: next });
-                      }}
-                      className="text-slate-400 hover:text-rose-600"
+                {incomeOrigins.map((orig) => {
+                  const tagKey = `orig:::${orig}`;
+                  const isEditingTag = editingTagKey === tagKey;
+                  const isConfirmingTagDel = confirmDeleteTagKey === tagKey;
+
+                  if (isEditingTag) {
+                    return (
+                      <span
+                        key={orig}
+                        className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-0.5 text-[11px]"
+                      >
+                        <input
+                          type="text"
+                          value={editingTagValue}
+                          onChange={(e) => setEditingTagValue(e.target.value)}
+                          onKeyDown={async (e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              const trimmed = editingTagValue.trim();
+                              if (trimmed) {
+                                const next = incomeOrigins.map((s) =>
+                                  s === orig ? trimmed : s
+                                );
+                                setIncomeOrigins(next);
+                                setEditingTagKey(null);
+                                setEditingTagValue('');
+                                await persistUpdates({ incomeOrigins: next });
+                              }
+                            }
+                          }}
+                          className="w-28 rounded border border-slate-200 px-1.5 py-0.5 text-[11px] text-slate-900 focus:border-slate-900 focus:outline-none"
+                          autoFocus
+                        />
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const trimmed = editingTagValue.trim();
+                            if (trimmed) {
+                              const next = incomeOrigins.map((s) =>
+                                s === orig ? trimmed : s
+                              );
+                              setIncomeOrigins(next);
+                              setEditingTagKey(null);
+                              setEditingTagValue('');
+                              await persistUpdates({ incomeOrigins: next });
+                            }
+                          }}
+                          className="rounded bg-slate-900 px-1.5 py-0.5 text-[10px] font-semibold text-white"
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingTagKey(null);
+                            setEditingTagValue('');
+                          }}
+                          className="text-[10px] text-slate-500"
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    );
+                  }
+
+                  if (isConfirmingTagDel) {
+                    return (
+                      <span
+                        key={orig}
+                        className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px]"
+                      >
+                        <span className="font-semibold text-rose-800">
+                          Delete "{orig}"?
+                        </span>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const next = incomeOrigins.filter((s) => s !== orig);
+                            setIncomeOrigins(next);
+                            setConfirmDeleteTagKey(null);
+                            await persistUpdates({ incomeOrigins: next });
+                          }}
+                          className="rounded bg-rose-600 px-1.5 py-0.5 text-[10px] font-semibold text-white"
+                        >
+                          Yes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteTagKey(null)}
+                          className="rounded bg-white px-1.5 py-0.5 text-[10px] text-slate-600"
+                        >
+                          No
+                        </button>
+                      </span>
+                    );
+                  }
+
+                  return (
+                    <span
+                      key={orig}
+                      className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700"
                     >
-                      ×
-                    </button>
-                  </span>
-                ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingTagKey(tagKey);
+                          setEditingTagValue(orig);
+                        }}
+                        title="Click to edit source / origin"
+                        className="hover:underline text-left"
+                      >
+                        {orig}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteTagKey(tagKey)}
+                        className="text-slate-400 hover:text-rose-600"
+                        title="Delete source / origin"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  );
+                })}
               </div>
             </div>
 
@@ -2059,8 +2499,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   type="text"
                   value={newAccountTypeInput}
                   onChange={(e) => setNewAccountTypeInput(e.target.value)}
+                  onKeyDown={async (e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      const trimmed = newAccountTypeInput.trim();
+                      if (!trimmed) return;
+                      if (
+                        accountTypes.some(
+                          (s) => s.toLowerCase() === trimmed.toLowerCase()
+                        )
+                      ) {
+                        setNewAccountTypeInput('');
+                        return;
+                      }
+                      const next = [...accountTypes, trimmed];
+                      setAccountTypes(next);
+                      setNewAccountTypeInput('');
+                      await persistUpdates({ accountTypes: next });
+                    }
+                  }}
                   placeholder="Add account type..."
-                  className="flex-1 min-w-0 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900"
+                  className="flex-1 min-w-0 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
                 />
                 <button
                   type="button"
@@ -2086,25 +2545,130 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </button>
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {accountTypes.map((t) => (
-                  <span
-                    key={t}
-                    className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700"
-                  >
-                    <span>{t}</span>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const next = accountTypes.filter((s) => s !== t);
-                        setAccountTypes(next);
-                        await persistUpdates({ accountTypes: next });
-                      }}
-                      className="text-slate-400 hover:text-rose-600"
+                {accountTypes.map((t) => {
+                  const tagKey = `acct:::${t}`;
+                  const isEditingTag = editingTagKey === tagKey;
+                  const isConfirmingTagDel = confirmDeleteTagKey === tagKey;
+
+                  if (isEditingTag) {
+                    return (
+                      <span
+                        key={t}
+                        className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-0.5 text-[11px]"
+                      >
+                        <input
+                          type="text"
+                          value={editingTagValue}
+                          onChange={(e) => setEditingTagValue(e.target.value)}
+                          onKeyDown={async (e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              const trimmed = editingTagValue.trim();
+                              if (trimmed) {
+                                const next = accountTypes.map((s) =>
+                                  s === t ? trimmed : s
+                                );
+                                setAccountTypes(next);
+                                setEditingTagKey(null);
+                                setEditingTagValue('');
+                                await persistUpdates({ accountTypes: next });
+                              }
+                            }
+                          }}
+                          className="w-28 rounded border border-slate-200 px-1.5 py-0.5 text-[11px] text-slate-900 focus:border-slate-900 focus:outline-none"
+                          autoFocus
+                        />
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const trimmed = editingTagValue.trim();
+                            if (trimmed) {
+                              const next = accountTypes.map((s) =>
+                                s === t ? trimmed : s
+                              );
+                              setAccountTypes(next);
+                              setEditingTagKey(null);
+                              setEditingTagValue('');
+                              await persistUpdates({ accountTypes: next });
+                            }
+                          }}
+                          className="rounded bg-slate-900 px-1.5 py-0.5 text-[10px] font-semibold text-white"
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingTagKey(null);
+                            setEditingTagValue('');
+                          }}
+                          className="text-[10px] text-slate-500"
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    );
+                  }
+
+                  if (isConfirmingTagDel) {
+                    return (
+                      <span
+                        key={t}
+                        className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px]"
+                      >
+                        <span className="font-semibold text-rose-800">
+                          Delete "{t}"?
+                        </span>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const next = accountTypes.filter((s) => s !== t);
+                            setAccountTypes(next);
+                            setConfirmDeleteTagKey(null);
+                            await persistUpdates({ accountTypes: next });
+                          }}
+                          className="rounded bg-rose-600 px-1.5 py-0.5 text-[10px] font-semibold text-white"
+                        >
+                          Yes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteTagKey(null)}
+                          className="rounded bg-white px-1.5 py-0.5 text-[10px] text-slate-600"
+                        >
+                          No
+                        </button>
+                      </span>
+                    );
+                  }
+
+                  return (
+                    <span
+                      key={t}
+                      className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700"
                     >
-                      ×
-                    </button>
-                  </span>
-                ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingTagKey(tagKey);
+                          setEditingTagValue(t);
+                        }}
+                        title="Click to edit account type"
+                        className="hover:underline text-left"
+                      >
+                        {t}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteTagKey(tagKey)}
+                        className="text-slate-400 hover:text-rose-600"
+                        title="Delete account type"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -2344,11 +2908,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         </label>
                         <input
                           type="text"
-                          value={pillar.baseName}
+                          value={
+                            vaultDraftNames[pillar.bucketId] !== undefined
+                              ? vaultDraftNames[pillar.bucketId]
+                              : pillar.baseName
+                          }
                           onChange={(e) =>
                             handleVaultNameChange(pillar.bucketId, e.target.value)
                           }
                           onBlur={handleSaveVaultRates}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleSaveVaultRates();
+                            }
+                          }}
                           placeholder="Vault Name"
                           aria-label="Savings vault name"
                           className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-900 focus:border-slate-900 focus:outline-none"
@@ -2365,11 +2939,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                             step="0.1"
                             min="0"
                             max="100"
-                            value={pillar.percentage}
+                            value={
+                              vaultDraftRates[pillar.bucketId] !== undefined
+                                ? vaultDraftRates[pillar.bucketId]
+                                : String(pillar.percentage)
+                            }
                             onChange={(e) =>
                               handleVaultRateChange(pillar.bucketId, e.target.value)
                             }
                             onBlur={handleSaveVaultRates}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                handleSaveVaultRates();
+                              }
+                            }}
                             aria-label={`${pillar.baseName} rate percentage`}
                             className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-right font-mono text-xs font-semibold text-slate-900 tabular-nums focus:border-slate-900 focus:outline-none"
                           />
@@ -2451,7 +3035,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 New Deduction Rule
               </h2>
               <p className="text-xs text-slate-500 mt-0.5 break-words">
-                Define expenses or savings transfers for income records
+                Define expenses or savings transfers for income transactions
               </p>
             </div>
             <button
@@ -3106,7 +3690,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </div>
               )}
               <p className="mt-2.5 text-[11px] text-slate-500">
-                Changes to quarterly savings rates apply to subsequent income records and do not alter past records.
+                Changes to quarterly savings rates apply to subsequent income transactions and do not alter past transactions.
               </p>
             </>
           )}
@@ -3228,7 +3812,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <div className="space-y-0.5 min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="font-display text-base font-semibold text-slate-900 break-words">
-                Import Records & Files
+                Import Transactions & Files
               </h2>
               <span className="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-[11px] font-semibold text-slate-700 shrink-0">
                 CSV · JSON · TXT · PDF · BAK
@@ -3315,7 +3899,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       Parsed Preview {importFileName ? `(${importFileName})` : ''}
                     </div>
                     <div className="text-[11px] text-slate-500">
-                      Review extracted records before saving to your database
+                      Review extracted transactions before saving to your database
                     </div>
                   </div>
                   <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">

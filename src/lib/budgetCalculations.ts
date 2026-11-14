@@ -74,6 +74,8 @@ export interface EvaluatedBudget {
   isExpired: boolean;
   isDisabledFromReach: boolean;
   recreateDays: number;
+  conversionRateToBase: number;
+  inverseConversionRateToBase: number;
   subcategoryBreakdowns: BudgetSubcategoryBreakdown[];
   matchedExpenses: FlexibleExpense[];
   matchedTransfers: AccountTransfer[];
@@ -414,11 +416,13 @@ export function reconcileRecurringBudgets(
     }
 
     // Check if the budget's period has expired (todayYmd > assignedEnd)
+    // Weekly, Monthly, and Yearly periods recreate automatically; Custom periods require explicit autoRecreate
     if (todayYmd > assignedEnd) {
-      const shouldAutoRecreate = Boolean(b.autoRecreate);
+      const shouldAutoRecreate =
+        b.periodType !== 'custom' ? true : Boolean(b.autoRecreate);
 
       if (!shouldAutoRecreate) {
-        // Without autoRecreate enabled: disable from active reach and place in Expired tab
+        // Without autoRecreate enabled (Custom period): disable from active reach and place in Expired tab
         if (!b.isExpiredDisabled || b.activePeriodStart !== assignedStart || b.activePeriodEnd !== assignedEnd) {
           const expiredBudget: FinancialBudget = {
             ...b,
@@ -449,7 +453,18 @@ export function reconcileRecurringBudgets(
       let newEndYmd: string;
 
       const prevEndDate = parseLocalCalendarDate(assignedEnd);
-      if (b.recreateDays !== undefined && Number(b.recreateDays) > 0) {
+      if (b.periodType !== 'custom') {
+        const recurringType: 'weekly' | 'monthly' | 'yearly' =
+          b.periodType === 'weekly' || b.periodType === 'yearly'
+            ? b.periodType
+            : 'monthly';
+        const currentBounds = computeRecurringPeriodBounds(
+          recurringType,
+          referenceDate
+        );
+        newStartYmd = currentBounds.startYmd;
+        newEndYmd = currentBounds.endYmd;
+      } else if (b.recreateDays !== undefined && Number(b.recreateDays) > 0) {
         // Advance in increments of configuredDays until the new window covers todayYmd
         let cycleStart = prevEndDate
           ? new Date(
@@ -482,17 +497,6 @@ export function reconcileRecurringBudgets(
 
         newStartYmd = toYmd(cycleStart);
         newEndYmd = toYmd(cycleEnd);
-      } else if (b.periodType !== 'custom') {
-        const recurringType: 'weekly' | 'monthly' | 'yearly' =
-          b.periodType === 'weekly' || b.periodType === 'yearly'
-            ? b.periodType
-            : 'monthly';
-        const currentBounds = computeRecurringPeriodBounds(
-          recurringType,
-          referenceDate
-        );
-        newStartYmd = currentBounds.startYmd;
-        newEndYmd = currentBounds.endYmd;
       } else {
         const startD = new Date(
           referenceDate.getFullYear(),
@@ -606,21 +610,32 @@ function getExpenseAmountInCurrency(
   accounts: FinancialAccount[],
   fxSnapshot?: MarketFxSnapshot
 ): number {
+  const targetUpper = (targetCurrency || baseCurrency).toUpperCase();
+  const baseUpper = (baseCurrency || 'GHS').toUpperCase();
   const matchedAcc = exp.accountId
     ? accounts.find((a) => a.id === exp.accountId)
     : undefined;
   const expCurr = (
-    exp.currency || getAccountCurrency(matchedAcc, baseCurrency)
+    exp.currency || getAccountCurrency(matchedAcc, baseUpper)
   ).toUpperCase();
   const rawNativeAmt =
     exp.originalAmount !== undefined && exp.originalAmount > 0
       ? Number(exp.originalAmount)
       : Number(exp.amount || 0);
 
-  if (expCurr === targetCurrency.toUpperCase()) {
+  if (expCurr === targetUpper) {
     return roundTo2Decimals(rawNativeAmt);
   }
-  return convertCurrency2dp(rawNativeAmt, expCurr, targetCurrency, fxSnapshot)
+  if (
+    targetUpper === baseUpper &&
+    exp.originalAmount !== undefined &&
+    exp.originalAmount > 0 &&
+    exp.amount > 0 &&
+    Math.abs(exp.amount - exp.originalAmount) > 0.001
+  ) {
+    return roundTo2Decimals(Number(exp.amount));
+  }
+  return convertCurrency2dp(rawNativeAmt, expCurr, targetUpper, fxSnapshot)
     .convertedAmount;
 }
 
@@ -631,6 +646,8 @@ function getTransferAmountInCurrency(
   accounts: FinancialAccount[],
   fxSnapshot?: MarketFxSnapshot
 ): number {
+  const targetUpper = (targetCurrency || baseCurrency).toUpperCase();
+  const baseUpper = (baseCurrency || 'GHS').toUpperCase();
   const destAcc = tr.destinationAccountId
     ? accounts.find((a) => a.id === tr.destinationAccountId)
     : undefined;
@@ -644,26 +661,51 @@ function getTransferAmountInCurrency(
     tr.destinationCurrency
   ) {
     const destCurr = tr.destinationCurrency.toUpperCase();
-    if (destCurr === targetCurrency.toUpperCase()) {
+    if (destCurr === targetUpper) {
       return roundTo2Decimals(Number(tr.destinationAmount));
+    }
+    if (
+      tr.sourceCurrency &&
+      tr.sourceCurrency.toUpperCase() === targetUpper &&
+      tr.sourceAmount !== undefined &&
+      tr.sourceAmount > 0
+    ) {
+      return roundTo2Decimals(Number(tr.sourceAmount));
     }
     return convertCurrency2dp(
       Number(tr.destinationAmount),
       destCurr,
-      targetCurrency,
+      targetUpper,
+      fxSnapshot
+    ).convertedAmount;
+  }
+
+  if (
+    tr.sourceAmount !== undefined &&
+    tr.sourceAmount > 0 &&
+    tr.sourceCurrency
+  ) {
+    const srcCurr = tr.sourceCurrency.toUpperCase();
+    if (srcCurr === targetUpper) {
+      return roundTo2Decimals(Number(tr.sourceAmount));
+    }
+    return convertCurrency2dp(
+      Number(tr.sourceAmount),
+      srcCurr,
+      targetUpper,
       fxSnapshot
     ).convertedAmount;
   }
 
   const trCurr = (
     tr.sourceCurrency ||
-    getAccountCurrency(destAcc || srcAcc, baseCurrency)
+    getAccountCurrency(destAcc || srcAcc, baseUpper)
   ).toUpperCase();
   const rawAmt = Number(tr.amount || 0);
-  if (trCurr === targetCurrency.toUpperCase()) {
+  if (trCurr === targetUpper) {
     return roundTo2Decimals(rawAmt);
   }
-  return convertCurrency2dp(rawAmt, trCurr, targetCurrency, fxSnapshot)
+  return convertCurrency2dp(rawAmt, trCurr, targetUpper, fxSnapshot)
     .convertedAmount;
 }
 
@@ -685,7 +727,9 @@ export function evaluateBudgetProgress(
   const todayYmd = toYmd(referenceDate);
   const isExpired =
     Boolean(budget.isExpiredDisabled) || todayYmd > periodWindow.endYmd;
-  const isDisabledFromReach = isExpired && !budget.autoRecreate;
+  const effectiveAutoRecreate =
+    budget.periodType !== 'custom' ? true : Boolean(budget.autoRecreate);
+  const isDisabledFromReach = isExpired && !effectiveAutoRecreate;
   const recreateDays =
     budget.recreateDays !== undefined && Number(budget.recreateDays) > 0
       ? Math.max(1, Math.round(Number(budget.recreateDays)))
@@ -696,11 +740,21 @@ export function evaluateBudgetProgress(
         );
 
   const budgetLimit = roundTo2Decimals(Math.max(0, Number(budget.amount || 0)));
-  const budgetLimitBase =
+  const conversionToBase =
     budgetCurrency === baseCurrency
-      ? budgetLimit
-      : convertCurrency2dp(budgetLimit, budgetCurrency, baseCurrency, fxSnapshot)
-          .convertedAmount;
+      ? { convertedAmount: budgetLimit, exchangeRate2dp: 1 }
+      : convertCurrency2dp(budgetLimit, budgetCurrency, baseCurrency, fxSnapshot);
+  const budgetLimitBase = conversionToBase.convertedAmount;
+  const conversionRateToBase =
+    budgetCurrency === baseCurrency
+      ? 1
+      : convertCurrency2dp(1, budgetCurrency, baseCurrency, fxSnapshot)
+          .exchangeRate2dp;
+  const inverseConversionRateToBase =
+    budgetCurrency === baseCurrency
+      ? 1
+      : convertCurrency2dp(1, baseCurrency, budgetCurrency, fxSnapshot)
+          .exchangeRate2dp;
 
   const linkedAccount = budget.accountId
     ? accounts.find((a) => a.id === budget.accountId)
@@ -861,6 +915,8 @@ export function evaluateBudgetProgress(
       isExpired,
       isDisabledFromReach,
       recreateDays,
+      conversionRateToBase,
+      inverseConversionRateToBase,
       subcategoryBreakdowns,
       matchedExpenses: [],
       matchedTransfers: sortRecordsByArrivalTime(matchedTransfers),
@@ -1042,6 +1098,8 @@ export function evaluateBudgetProgress(
     isExpired,
     isDisabledFromReach,
     recreateDays,
+    conversionRateToBase,
+    inverseConversionRateToBase,
     subcategoryBreakdowns,
     matchedExpenses: sortedMatchedExpenses,
     matchedTransfers: [],

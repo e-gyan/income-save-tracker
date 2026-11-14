@@ -28,6 +28,7 @@ import {
   fetchMarketExchangeRates,
   MarketFxSnapshot,
   roundTo2Decimals,
+  convertCurrency2dp,
 } from '../lib/currencyService.ts';
 import {
   formatDateDDMMYYYY,
@@ -183,6 +184,40 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
   );
   const [modalGroupBy, setModalGroupBy] = useState<RecordGroupPeriod>('none');
   const [quickRecreateDays, setQuickRecreateDays] = useState<string>('30');
+  const [confirmDeleteBudgetId, setConfirmDeleteBudgetId] = useState<
+    string | null
+  >(null);
+
+  // Live conversion rate preview when selected budgetCurrency differs from baseCurrency
+  const formConversionPreview = useMemo(() => {
+    const selectedCurr = (budgetCurrency || baseCurrency).toUpperCase();
+    if (selectedCurr === baseCurrency) return null;
+    const unitToBase = convertCurrency2dp(
+      1,
+      selectedCurr,
+      baseCurrency,
+      fxSnapshot
+    );
+    const unitFromBase = convertCurrency2dp(
+      1,
+      baseCurrency,
+      selectedCurr,
+      fxSnapshot
+    );
+    const parsedAmt = Number(amount);
+    const convertedAmt =
+      Number.isFinite(parsedAmt) && parsedAmt > 0
+        ? convertCurrency2dp(parsedAmt, selectedCurr, baseCurrency, fxSnapshot)
+            .convertedAmount
+        : 0;
+    return {
+      selectedCurr,
+      baseCurrency,
+      rateToBase: unitToBase.exchangeRate2dp,
+      inverseRate: unitFromBase.exchangeRate2dp,
+      convertedAmt,
+    };
+  }, [budgetCurrency, baseCurrency, amount, fxSnapshot]);
 
   // Gather all available expense subcategories from settings + historical expenses
   const allSubcategoryCatalog = useMemo(() => {
@@ -403,6 +438,9 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
       customEndDate
     );
     setRecreateDays(String(defaultDays));
+    if (pt !== 'custom') {
+      setAutoRecreate(true);
+    }
   };
 
   const handleOpenCreate = (overridePurpose?: BudgetPurposeType) => {
@@ -412,6 +450,7 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
 
   const handleOpenEdit = (budget: FinancialBudget) => {
     setActiveModalBudgetId(null);
+    setConfirmDeleteBudgetId(null);
     setEditingBudget(budget);
     setPurposeType(budget.purposeType === 'goal' ? 'goal' : 'budget');
     setName(budget.name);
@@ -420,7 +459,9 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
     setPeriodType(budget.periodType);
     if (budget.customStartDate) setCustomStartDate(budget.customStartDate);
     if (budget.customEndDate) setCustomEndDate(budget.customEndDate);
-    setAutoRecreate(Boolean(budget.autoRecreate));
+    setAutoRecreate(
+      budget.periodType !== 'custom' ? true : Boolean(budget.autoRecreate)
+    );
     setRecreateDays(
       String(
         budget.recreateDays ||
@@ -580,6 +621,19 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
       Math.max(1, Math.round(Number(alertThresholdPercent || 80)))
     );
 
+    const effectiveAutoRecreate =
+      periodType !== 'custom' ? true : Boolean(autoRecreate);
+
+    if (periodType === 'custom' && effectiveAutoRecreate) {
+      const rawDays = Number(recreateDays);
+      if (!Number.isFinite(rawDays) || rawDays < 1) {
+        setFormError(
+          'Enter valid recreation days (at least 1 day) for custom period recreation.'
+        );
+        return;
+      }
+    }
+
     onSaveBudget({
       id: editingBudget?.id,
       createdAt: editingBudget?.createdAt,
@@ -593,8 +647,8 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
       customEndDate: periodType === 'custom' ? customEndDate : undefined,
       activePeriodStart: editingBudget?.activePeriodStart,
       activePeriodEnd: editingBudget?.activePeriodEnd,
-      autoRecreate,
-      recreateDays: autoRecreate ? parsedRecreateDays : undefined,
+      autoRecreate: effectiveAutoRecreate,
+      recreateDays: effectiveAutoRecreate ? parsedRecreateDays : undefined,
       parentRecurringBudgetId: editingBudget?.parentRecurringBudgetId,
       isArchivedPeriod: false,
       isExpiredDisabled: false,
@@ -936,77 +990,92 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
             </div>
           )}
 
-          {/* Auto-Recreation After Period Expires & Recreation Days */}
-          <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-              <div className="flex items-start gap-2.5">
-                <RotateCcw className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-xs font-bold text-slate-900">
-                    Recreate After Date Period Expires
-                  </p>
-                  <p className="text-[11px] text-slate-500">
-                    {autoRecreate
-                      ? `Automatically recreates for ${recreateDays || 30} days when the period ends.`
-                      : 'Will be disabled from reach and moved to Expired / Disabled once its period ends.'}
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setAutoRecreate((prev) => !prev)}
-                  className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-all cursor-pointer ${
-                    autoRecreate
-                      ? 'bg-emerald-600 text-white shadow-2xs'
-                      : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
-                  }`}
-                >
-                  {autoRecreate ? 'Enabled' : 'Disabled'}
-                </button>
-              </div>
-            </div>
-
-            {autoRecreate && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-200/70">
-                <div>
-                  <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
-                    Recreation Duration (Days)
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      min="1"
-                      max="3650"
-                      value={recreateDays}
-                      onChange={(e) => setRecreateDays(e.target.value)}
-                      className="w-28 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-mono font-bold text-slate-900 focus:border-emerald-500 focus:outline-none"
-                    />
-                    <span className="text-xs font-semibold text-slate-600">
-                      days per recreated cycle
-                    </span>
+          {/* Automatic Recreation for Weekly/Monthly/Yearly vs Custom Period Recreation Definition */}
+          {periodType === 'custom' ? (
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <RotateCcw className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="text-xs font-bold text-slate-900">
+                      Custom Period Recreation Definition (Required)
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      {autoRecreate
+                        ? `Automatically recreates for ${recreateDays || 30} days when the custom period ends.`
+                        : 'Will be disabled from reach and moved to Expired / Disabled once its custom period ends.'}
+                    </p>
                   </div>
                 </div>
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  {[7, 14, 30, 90, 365].map((presetDays) => (
-                    <button
-                      key={presetDays}
-                      type="button"
-                      onClick={() => setRecreateDays(String(presetDays))}
-                      className={`rounded-lg px-2.5 py-1 text-[11px] font-mono font-bold transition-all cursor-pointer ${
-                        Number(recreateDays) === presetDays
-                          ? 'bg-slate-900 text-white'
-                          : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
-                      }`}
-                    >
-                      {presetDays}d
-                    </button>
-                  ))}
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAutoRecreate((prev) => !prev)}
+                    className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-all cursor-pointer ${
+                      autoRecreate
+                        ? 'bg-emerald-600 text-white shadow-2xs'
+                        : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
+                    }`}
+                  >
+                    {autoRecreate ? 'Auto-Recreate Enabled' : 'Do Not Recreate'}
+                  </button>
                 </div>
               </div>
-            )}
-          </div>
+
+              {autoRecreate && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-200/70">
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
+                      Recreation Duration (Days)
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min="1"
+                        max="3650"
+                        required
+                        value={recreateDays}
+                        onChange={(e) => setRecreateDays(e.target.value)}
+                        className="w-28 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-mono font-bold text-slate-900 focus:border-emerald-500 focus:outline-none"
+                      />
+                      <span className="text-xs font-semibold text-slate-600">
+                        days per recreated cycle
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {[7, 14, 30, 90, 365].map((presetDays) => (
+                      <button
+                        key={presetDays}
+                        type="button"
+                        onClick={() => setRecreateDays(String(presetDays))}
+                        className={`rounded-lg px-2.5 py-1 text-[11px] font-mono font-bold transition-all cursor-pointer ${
+                          Number(recreateDays) === presetDays
+                            ? 'bg-slate-900 text-white'
+                            : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                        }`}
+                      >
+                        {presetDays}d
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-200/80 bg-emerald-50/50 px-3.5 py-2.5">
+              <div className="flex items-center gap-2 min-w-0">
+                <RotateCcw className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                <span className="text-xs font-semibold text-emerald-950">
+                  Automatic Recreation: {periodType.charAt(0).toUpperCase() + periodType.slice(1)} periods recreate automatically when each cycle ends.
+                </span>
+              </div>
+              <span className="rounded-md bg-emerald-100 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-800 shrink-0">
+                Auto Cycle
+              </span>
+            </div>
+          )}
 
           {/* Amount, Currency, Account/Vault Scope, and Alert Threshold */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -1101,6 +1170,36 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Foreign Currency Conversion Rate Display when budgetCurrency !== baseCurrency */}
+          {formConversionPreview && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-indigo-200/80 bg-indigo-50/60 px-3.5 py-2.5 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-md bg-indigo-600 px-2 py-0.5 font-mono text-[10px] font-bold text-white">
+                  FX Conversion Rate
+                </span>
+                <span className="font-mono font-bold text-slate-900">
+                  1 {formConversionPreview.selectedCurr} ={' '}
+                  {formConversionPreview.rateToBase.toFixed(2)}{' '}
+                  {formConversionPreview.baseCurrency}
+                </span>
+                <span className="font-mono text-[11px] text-slate-500">
+                  (1 {formConversionPreview.baseCurrency} ={' '}
+                  {formConversionPreview.inverseRate.toFixed(2)}{' '}
+                  {formConversionPreview.selectedCurr})
+                </span>
+              </div>
+              {formConversionPreview.convertedAmt > 0 && (
+                <div className="font-mono font-bold text-indigo-800">
+                  App Currency Equivalent:{' '}
+                  {formatCurrency(
+                    formConversionPreview.convertedAmt,
+                    formConversionPreview.baseCurrency
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Goal Cause & Funding Source OR Expense Subcategories */}
           {purposeType === 'goal' ? (
@@ -1465,6 +1564,11 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
                       <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
                         Expired • Disabled
                       </span>
+                    ) : budget.periodType !== 'custom' ? (
+                      <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-mono font-bold text-emerald-700">
+                        <RotateCcw className="h-2.5 w-2.5" />
+                        Auto {budget.periodType}
+                      </span>
                     ) : budget.autoRecreate ? (
                       <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-mono font-bold text-emerald-700">
                         <RotateCcw className="h-2.5 w-2.5" />
@@ -1542,8 +1646,8 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
                   </span>
                 </div>
 
-                {/* 5. Beneath that: Residual / Remaining amount on its left */}
-                <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between">
+                {/* 5. Beneath that: Residual / Remaining amount on its left + Conversion Rate if foreign currency */}
+                <div className="mt-2.5 pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
                   <span
                     className={`text-xs font-mono font-bold ${
                       isGoal
@@ -1575,6 +1679,12 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
                           budget.currency
                         )}`}
                   </span>
+                  {budget.currency.toUpperCase() !== baseCurrency && (
+                    <span className="font-mono text-[10px] font-semibold text-slate-500">
+                      1 {budget.currency.toUpperCase()} ={' '}
+                      {ev.conversionRateToBase.toFixed(2)} {baseCurrency}
+                    </span>
+                  )}
                 </div>
               </div>
             );
@@ -1728,71 +1838,104 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
                     Threshold: {activeModalEvaluated.alertThresholdPercent}%
                   </span>
                 </div>
+
+                {activeModalEvaluated.budget.currency.toUpperCase() !==
+                  baseCurrency && (
+                  <div className="pt-2 border-t border-slate-200/60 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono">
+                    <span className="font-semibold text-indigo-700">
+                      Conversion Rate: 1{' '}
+                      {activeModalEvaluated.budget.currency.toUpperCase()} ={' '}
+                      {activeModalEvaluated.conversionRateToBase.toFixed(2)}{' '}
+                      {baseCurrency}
+                    </span>
+                    <span className="text-slate-600">
+                      App Currency:{' '}
+                      {formatCurrency(
+                        activeModalEvaluated.spentAmountBase,
+                        baseCurrency
+                      )}{' '}
+                      /{' '}
+                      {formatCurrency(
+                        activeModalEvaluated.budgetLimitBase,
+                        baseCurrency
+                      )}
+                    </span>
+                  </div>
+                )}
               </div>
 
-              {/* Auto-Recreation Settings for Existing or Expired Budgets */}
+              {/* Auto-Recreation Settings: Automatic for Weekly/Monthly/Yearly, Custom Definition for Custom Period */}
               <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2.5">
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <RotateCcw className="h-3.5 w-3.5 text-emerald-600" />
                     <span className="text-[11px] font-bold uppercase tracking-wider text-slate-700">
-                      Auto-Recreation After Expiry
+                      Period Recreation
                     </span>
                   </div>
                   <span
                     className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${
+                      activeModalEvaluated.budget.periodType !== 'custom' ||
                       activeModalEvaluated.budget.autoRecreate
                         ? 'bg-emerald-100 text-emerald-800'
                         : 'bg-amber-100 text-amber-800'
                     }`}
                   >
-                    {activeModalEvaluated.budget.autoRecreate
+                    {activeModalEvaluated.budget.periodType !== 'custom'
+                      ? `Automatic (${activeModalEvaluated.budget.periodType})`
+                      : activeModalEvaluated.budget.autoRecreate
                       ? `Every ${activeModalEvaluated.recreateDays} Days`
                       : 'Disabled'}
                   </span>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
-                  <input
-                    type="number"
-                    min="1"
-                    max="3650"
-                    value={quickRecreateDays}
-                    onChange={(e) => setQuickRecreateDays(e.target.value)}
-                    className="w-20 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-mono font-bold text-slate-900"
-                  />
-                  <span className="text-xs text-slate-600">days</span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleQuickUpdateRecreation(
-                        activeModalEvaluated.budget,
-                        true,
-                        quickRecreateDays
-                      )
-                    }
-                    className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-bold text-white hover:bg-emerald-700 cursor-pointer"
-                  >
-                    {activeModalEvaluated.isDisabledFromReach
-                      ? 'Recreate & Activate'
-                      : 'Save Recreation Days'}
-                  </button>
-                  {activeModalEvaluated.budget.autoRecreate && (
+                {activeModalEvaluated.budget.periodType !== 'custom' ? (
+                  <p className="text-xs text-slate-600">
+                    This {activeModalEvaluated.budget.periodType} period recreates automatically when the current cycle ends.
+                  </p>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      type="number"
+                      min="1"
+                      max="3650"
+                      value={quickRecreateDays}
+                      onChange={(e) => setQuickRecreateDays(e.target.value)}
+                      className="w-20 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-mono font-bold text-slate-900"
+                    />
+                    <span className="text-xs text-slate-600">days</span>
                     <button
                       type="button"
                       onClick={() =>
                         handleQuickUpdateRecreation(
                           activeModalEvaluated.budget,
-                          false,
+                          true,
                           quickRecreateDays
                         )
                       }
-                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-bold text-slate-600 hover:bg-slate-100 cursor-pointer"
+                      className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-bold text-white hover:bg-emerald-700 cursor-pointer"
                     >
-                      Disable Auto-Recreate
+                      {activeModalEvaluated.isDisabledFromReach
+                        ? 'Recreate & Activate'
+                        : 'Save Recreation Days'}
                     </button>
-                  )}
-                </div>
+                    {activeModalEvaluated.budget.autoRecreate && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleQuickUpdateRecreation(
+                            activeModalEvaluated.budget,
+                            false,
+                            quickRecreateDays
+                          )
+                        }
+                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-bold text-slate-600 hover:bg-slate-100 cursor-pointer"
+                      >
+                        Disable Auto-Recreate
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Accounts / Vault Chosen */}
@@ -2034,55 +2177,86 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
               </div>
             </div>
 
-            {/* Modal Footer: Edit & Delete */}
-            <div className="flex items-center justify-between gap-2 px-5 py-3.5 bg-slate-50 border-t border-slate-200/80">
-              {onNavigateToTab ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const targetTab =
-                      activeModalEvaluated.purposeType === 'goal'
-                        ? 'accounts'
-                        : 'flexible_expenses';
-                    setActiveModalBudgetId(null);
-                    onNavigateToTab(targetTab);
-                  }}
-                  className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700 hover:text-emerald-800 cursor-pointer"
-                >
-                  {activeModalEvaluated.purposeType === 'goal'
-                    ? 'Open Accounts & Transfers'
-                    : 'Open Expenses'}
-                  <ArrowRight className="h-3.5 w-3.5" />
-                </button>
+            {/* Modal Footer: Edit & Delete with Action Notification */}
+            <div className="px-5 py-3.5 bg-slate-50 border-t border-slate-200/80 space-y-2.5">
+              {confirmDeleteBudgetId === activeModalEvaluated.budget.id ? (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5">
+                  <p className="text-xs font-semibold text-rose-900">
+                    Delete "{activeModalEvaluated.budget.name}"? Linked transactions remain intact, but this{' '}
+                    {activeModalEvaluated.purposeType === 'goal' ? 'goal' : 'budget'}{' '}
+                    will be removed.
+                  </p>
+                  <div className="flex items-center justify-end gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDeleteBudgetId(null)}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100 cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const id = activeModalEvaluated.budget.id;
+                        setConfirmDeleteBudgetId(null);
+                        setActiveModalBudgetId(null);
+                        onDeleteBudget(id);
+                      }}
+                      className="rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-rose-700 cursor-pointer"
+                    >
+                      Confirm Delete
+                    </button>
+                  </div>
+                </div>
               ) : (
-                <div />
-              )}
+                <div className="flex items-center justify-between gap-2">
+                  {onNavigateToTab ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const targetTab =
+                          activeModalEvaluated.purposeType === 'goal'
+                            ? 'accounts'
+                            : 'flexible_expenses';
+                        setActiveModalBudgetId(null);
+                        onNavigateToTab(targetTab);
+                      }}
+                      className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700 hover:text-emerald-800 cursor-pointer"
+                    >
+                      {activeModalEvaluated.purposeType === 'goal'
+                        ? 'Open Accounts & Transfers'
+                        : 'Open Expenses'}
+                      <ArrowRight className="h-3.5 w-3.5" />
+                    </button>
+                  ) : (
+                    <div />
+                  )}
 
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleOpenEdit(activeModalEvaluated.budget)}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100 cursor-pointer"
-                >
-                  <Edit2 className="h-3.5 w-3.5" />
-                  Edit{' '}
-                  {activeModalEvaluated.purposeType === 'goal'
-                    ? 'Goal'
-                    : 'Budget'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const id = activeModalEvaluated.budget.id;
-                    setActiveModalBudgetId(null);
-                    onDeleteBudget(id);
-                  }}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 cursor-pointer"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  Delete
-                </button>
-              </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenEdit(activeModalEvaluated.budget)}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100 cursor-pointer"
+                    >
+                      <Edit2 className="h-3.5 w-3.5" />
+                      Edit{' '}
+                      {activeModalEvaluated.purposeType === 'goal'
+                        ? 'Goal'
+                        : 'Budget'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setConfirmDeleteBudgetId(activeModalEvaluated.budget.id)
+                      }
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 cursor-pointer"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -29,7 +29,7 @@ export const CleanSheetModal: React.FC<CleanSheetModalProps> = ({
         </h3>
 
         <p className="text-xs text-slate-600">
-          Clears all income records, expenses, and transfers. Accounts and settings remain intact.
+          Clears all income transactions, expenses, and transfers. Accounts and settings remain intact.
         </p>
 
         <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">

@@ -2842,7 +2842,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               </div>
               {analytics.recipientsList.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-slate-200 p-6 text-center text-xs text-slate-400">
-                  No recipient or cause records in selected range
+                  No recipient or cause transactions in selected range
                 </div>
               ) : (
                 <div className="divide-y divide-slate-100 rounded-xl border border-slate-200/80">
