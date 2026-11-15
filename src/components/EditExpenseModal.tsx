@@ -167,9 +167,13 @@ export const EditExpenseModal: React.FC<EditExpenseModalProps> = ({
   if (!isOpen || !expense) return null;
 
   const isDeductionDerived =
-    expense.id.startsWith('exp_ded_') || expense.id.startsWith('inc_ded_exp_');
+    expense.id.startsWith('exp_ded_') ||
+    expense.id.startsWith('exp_cut_') ||
+    expense.id.startsWith('inc_ded_exp_') ||
+    Boolean(expense.incomeReceiptId);
 
   const handleMoveSub = async () => {
+    if (isDeductionDerived) return;
     const cleanSub = subcategory.trim();
     const cleanTarget = moveTargetCategory.trim();
     if (!cleanSub || !cleanTarget || !onMoveSubcategory) return;
@@ -186,6 +190,13 @@ export const EditExpenseModal: React.FC<EditExpenseModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+
+    if (isDeductionDerived) {
+      setErrorMsg(
+        'Income deduction expense transactions cannot be edited; they can only be deleted.'
+      );
+      return;
+    }
 
     const parsedAmt = roundTo2Decimals(parseFloat(amount));
     if (isNaN(parsedAmt) || parsedAmt <= 0) {
@@ -282,7 +293,7 @@ export const EditExpenseModal: React.FC<EditExpenseModalProps> = ({
 
           {isDeductionDerived && (
             <div className="rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-2 text-[11px] text-amber-900">
-              Linked to an Income Deduction record. Saving updates the deduction on the parent income receipt.
+              Income deduction expense transactions cannot be edited; they can only be deleted.
             </div>
           )}
 

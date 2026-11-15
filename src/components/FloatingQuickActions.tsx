@@ -651,7 +651,7 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
       {/* Floating Bottom-Right + Button and Pop-Up Menu Right On Top */}
       <div
         ref={menuContainerRef}
-        className="fixed bottom-5 right-5 sm:bottom-6 sm:right-6 z-40 flex flex-col items-end"
+        className="fixed bottom-20 right-4 sm:bottom-22 sm:right-6 z-40 flex flex-col items-end"
       >
         {isMenuOpen && (
           <div className="mb-3 w-64 rounded-2xl border-2 border-slate-200 bg-white p-2.5 shadow-2xl space-y-1.5">

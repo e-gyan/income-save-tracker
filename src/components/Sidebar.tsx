@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ActiveTab, NAV_ITEMS } from './Navigation.tsx';
+import { ActiveTab, NAV_ITEMS, renderNavIcon } from './Navigation.tsx';
 import { APP_VERSION } from './Header.tsx';
 import {
   ThemeMode,
@@ -267,7 +267,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           : 'font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900'
                       }`}
                     >
-                      <span>{item.label}</span>
+                      <span className="inline-flex items-center gap-2.5">
+                        {renderNavIcon(item.id, 'h-4.5 w-4.5 shrink-0')}
+                        <span>{item.label}</span>
+                      </span>
                       <div className="flex items-center gap-1.5">
                         {item.id === 'budgets' && budgetsCount > 0 && (
                           <span

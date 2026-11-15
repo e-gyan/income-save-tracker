@@ -1873,7 +1873,7 @@ export function getEffectiveIncomeDeductions(
     definedCuts.map((c) => c.name.trim().toLowerCase())
   );
 
-  if (Array.isArray(receipt.allocatedDeductions) && receipt.allocatedDeductions.length > 0) {
+  if (Array.isArray(receipt.allocatedDeductions)) {
     const filtered = receipt.allocatedDeductions.filter((d) => {
       if (
         d.id.includes('cut_support_2_5') ||

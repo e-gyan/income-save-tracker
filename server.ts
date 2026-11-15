@@ -1847,6 +1847,19 @@ app.post('/api/expenses/update', (req: Request, res: Response) => {
       });
     }
 
+    const expIdStr = String(expense.id);
+    if (
+      expIdStr.startsWith('exp_ded_') ||
+      expIdStr.startsWith('exp_cut_') ||
+      Boolean(expense.incomeReceiptId)
+    ) {
+      return res.status(403).json({
+        success: false,
+        error:
+          'Income deduction expense transactions cannot be edited; they can only be deleted.',
+      });
+    }
+
     const upperBase = String(baseCurrency || 'GHS').trim().toUpperCase();
     const cachedFx = fxCache.get(upperBase);
     const activeRates = cachedFx?.rates || buildFallbackRatesForBase(upperBase);
@@ -1894,6 +1907,62 @@ app.post('/api/expenses/update', (req: Request, res: Response) => {
     return res.status(500).json({
       success: false,
       error: err?.message || 'Expense update failed.',
+    });
+  }
+});
+
+/**
+ * Backend Income Deduction Expense Deletion Endpoint (`POST /api/expenses/delete-deduction`)
+ * Removes a specific income deduction expense transaction (`exp_ded_<incId>_<dedId>`) from its
+ * parent income receipt while keeping editing of income deduction expenses strictly disabled.
+ */
+app.post('/api/expenses/delete-deduction', (req: Request, res: Response) => {
+  try {
+    const { expenseId = '', incomeReceipt = {} } = req.body || {};
+    const expIdStr = String(expenseId || '').trim();
+    if (!expIdStr.startsWith('exp_ded_') || !incomeReceipt || !incomeReceipt.id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Valid income deduction expense ID and parent income receipt are required.',
+      });
+    }
+
+    const prefix = `exp_ded_${incomeReceipt.id}_`;
+    const dedId = expIdStr.startsWith(prefix) ? expIdStr.slice(prefix.length) : '';
+    const existingDeds = Array.isArray(incomeReceipt.allocatedDeductions)
+      ? incomeReceipt.allocatedDeductions
+      : [];
+    const nextDeductions = existingDeds.filter(
+      (d: any) => String(d?.id || '') !== dedId
+    );
+    const totalDedAmt = nextDeductions.reduce(
+      (sum: number, d: any) => sum + (Number(d?.amount) || 0),
+      0
+    );
+    const gross = Number(
+      incomeReceipt.originalGrossAmount ?? incomeReceipt.grossAmount ?? 0
+    );
+    const nextSavingsRate =
+      gross > 0
+        ? Math.min(100, Math.round(((totalDedAmt / gross) * 100) * 100) / 100)
+        : 0;
+
+    const updatedIncome = {
+      ...incomeReceipt,
+      allocatedDeductions: nextDeductions,
+      savingsRate: nextSavingsRate,
+      updatedAt: new Date().toISOString(),
+    };
+
+    return res.json({
+      success: true,
+      deletedExpenseId: expIdStr,
+      updatedIncome,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Income deduction expense deletion failed.',
     });
   }
 });

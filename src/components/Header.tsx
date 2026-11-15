@@ -7,10 +7,11 @@ import {
 } from '../lib/dateFilters.ts';
 import { PWAInstallButton } from './PWAInstallButton.tsx';
 
-export const APP_VERSION = '3.5.0';
+export const APP_VERSION = '4.3.3';
 
 interface HeaderProps {
   activeTab?: ActiveTab;
+  onSelectTab?: (tab: ActiveTab) => void;
   isSidebarOpen?: boolean;
   onToggleSidebar?: () => void;
   timeRange?: TimeRangePreset;
@@ -20,6 +21,7 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({
+  onSelectTab,
   isSidebarOpen = false,
   onToggleSidebar,
   timeRange = 'all',
@@ -30,8 +32,13 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/95 backdrop-blur-md">
       <div className="mx-auto flex h-12 sm:h-14 max-w-7xl items-center justify-between gap-2 px-3 sm:px-6 lg:px-8">
-        {/* Left: App Brand Name Only (No Menu Option Description) */}
-        <div className="flex items-center gap-2 min-w-0">
+        {/* Left: App Brand Name (Click to return to Overview) */}
+        <button
+          type="button"
+          onClick={() => onSelectTab?.('dashboard')}
+          className="flex items-center gap-2 min-w-0 text-left cursor-pointer focus:outline-none"
+          title="Overview"
+        >
           <div
             className="flex h-7 w-7 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-lg text-white font-display font-bold text-xs sm:text-sm shadow-xs"
             style={{ backgroundColor: 'var(--app-accent)' }}
@@ -41,7 +48,7 @@ export const Header: React.FC<HeaderProps> = ({
           <span className="font-display text-sm sm:text-base font-extrabold tracking-tight text-slate-900 truncate">
             Save N Know
           </span>
-        </div>
+        </button>
 
         {/* Right: Desktop Inline Date Filter + Mobile Date Filter Pill + Top-Right Menu Trigger */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">

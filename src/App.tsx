@@ -2,7 +2,7 @@
  * Save N Know — Main Application Orchestrator
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   auth,
   onAuthStateChanged,
@@ -27,6 +27,7 @@ import {
   LEGACY_SEEDED_CUT_IDS,
   getEffectiveSavingsPillars,
   getEffectiveExpenseCategoryPreferences,
+  getEffectiveIncomeDeductions,
   isSavingsVaultAccount,
   buildDefaultDeductionsForIncome,
   resolveIntuitiveSubcategoryColor,
@@ -75,7 +76,12 @@ import {
 } from './lib/firestoreService.ts';
 
 import { Header } from './components/Header.tsx';
-import { Navigation, ActiveTab } from './components/Navigation.tsx';
+import {
+  Navigation,
+  BottomMenuBar,
+  NAV_ITEMS,
+  ActiveTab,
+} from './components/Navigation.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { SettingsView } from './components/SettingsView.tsx';
 import { IncomeLogView } from './components/IncomeLogView.tsx';
@@ -769,46 +775,13 @@ export default function App() {
   };
 
   const handleUpdateExpense = async (updatedExpense: FlexibleExpense) => {
-    // Support editing deduction-derived expenses (exp_ded_<incId>_<dedId>) as well as standalone expenses
-    if (updatedExpense.id.startsWith('exp_ded_') && updatedExpense.incomeReceiptId) {
-      const parentIncome = incomes.find(
-        (inc) => inc.id === updatedExpense.incomeReceiptId
-      );
-      if (parentIncome && Array.isArray(parentIncome.allocatedDeductions)) {
-        const prefix = `exp_ded_${parentIncome.id}_`;
-        const dedId = updatedExpense.id.startsWith(prefix)
-          ? updatedExpense.id.slice(prefix.length)
-          : '';
-        const nextDeductions = parentIncome.allocatedDeductions.map((ded) => {
-          if (
-            ded.id === dedId ||
-            ded.name.trim().toLowerCase() ===
-              (updatedExpense.recipient || '').trim().toLowerCase()
-          ) {
-            const newAmt = Number(
-              updatedExpense.originalAmount ?? updatedExpense.amount ?? ded.amount
-            );
-            return {
-              ...ded,
-              name: updatedExpense.recipient || ded.name,
-              type: 'fixed' as const,
-              value: newAmt,
-              amount: newAmt,
-              expenseCategory: updatedExpense.category,
-              expenseSubcategory: updatedExpense.subcategory,
-            };
-          }
-          return ded;
-        });
-        await handleUpdateIncome({
-          ...parentIncome,
-          date: updatedExpense.date || parentIncome.date,
-          accountId: updatedExpense.accountId || parentIncome.accountId,
-          allocatedDeductions: nextDeductions,
-          updatedAt: new Date().toISOString(),
-        });
-        return;
-      }
+    // Income deduction expense transactions are read-only for editing and can only be deleted
+    if (
+      updatedExpense.id.startsWith('exp_ded_') ||
+      updatedExpense.id.startsWith('exp_cut_') ||
+      Boolean(updatedExpense.incomeReceiptId)
+    ) {
+      return;
     }
 
     const selectedAcc = updatedExpense.accountId
@@ -1047,6 +1020,65 @@ export default function App() {
   };
 
   const handleDeleteExpense = async (expenseId: string) => {
+    // Support deleting income deduction expense transactions (exp_ded_<incId>_<dedId>)
+    if (expenseId.startsWith('exp_ded_')) {
+      const parentIncome = incomes.find((inc) =>
+        expenseId.startsWith(`exp_ded_${inc.id}_`)
+      );
+      if (parentIncome) {
+        const prefix = `exp_ded_${parentIncome.id}_`;
+        const dedId = expenseId.slice(prefix.length);
+        const currentDeds = Array.isArray(parentIncome.allocatedDeductions)
+          ? parentIncome.allocatedDeductions
+          : getEffectiveIncomeDeductions(parentIncome, settings, expenses);
+        const nextDeductions = currentDeds.filter((d) => d.id !== dedId);
+        const totalDedAmt = nextDeductions.reduce(
+          (sum, d) => sum + (Number(d.amount) || 0),
+          0
+        );
+        const gross = Number(
+          parentIncome.originalGrossAmount ?? parentIncome.grossAmount ?? 0
+        );
+        const nextSavingsRate =
+          gross > 0
+            ? Math.min(100, Math.round(((totalDedAmt / gross) * 100) * 100) / 100)
+            : 0;
+
+        const updatedIncome: IncomeReceipt = {
+          ...parentIncome,
+          allocatedDeductions: nextDeductions,
+          savingsRate: nextSavingsRate,
+          updatedAt: new Date().toISOString(),
+        };
+
+        const nextIncomes = incomes.map((inc) =>
+          inc.id === updatedIncome.id ? updatedIncome : inc
+        );
+        setIncomes(nextIncomes);
+        setLocalData('incomes', nextIncomes, effectiveUserId);
+
+        fetch('/api/expenses/delete-deduction', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            expenseId,
+            incomeReceipt: parentIncome,
+          }),
+        }).catch(() => {});
+
+        (async () => {
+          try {
+            if (currentUser) {
+              await saveIncomeReceipt(currentUser.uid, updatedIncome);
+            }
+          } catch (err) {
+            console.error('Income deduction expense delete error:', err);
+          }
+        })();
+        return;
+      }
+    }
+
     const nextExpenses = expenses.filter((e) => e.id !== expenseId);
     setExpenses(nextExpenses);
     setLocalData('expenses', nextExpenses, effectiveUserId);
@@ -1504,6 +1536,127 @@ export default function App() {
     ).length;
   }, [budgets, expenses, incomes, activeAccounts, settings, transfers]);
 
+  const mainScrollRef = useRef<HTMLDivElement | null>(null);
+  const swipeStartXRef = useRef<number | null>(null);
+  const swipeStartYRef = useRef<number | null>(null);
+  const swipeAbortedRef = useRef(false);
+
+  const activeNavIndex = useMemo(
+    () => Math.max(0, NAV_ITEMS.findIndex((item) => item.id === activeTab)),
+    [activeTab]
+  );
+
+  // Reset middle workspace scroll position immediately when switching menu options
+  useEffect(() => {
+    if (mainScrollRef.current) {
+      mainScrollRef.current.scrollTop = 0;
+    }
+  }, [activeTab]);
+
+  const shouldIgnoreWorkspaceSwipe = (
+    target: EventTarget | null
+  ): boolean => {
+    // Ignore swipes when any pop-up modal or drawer is open
+    if (
+      isMenuOpen ||
+      Boolean(editingExpense) ||
+      isDeductionAgentOpen ||
+      isCleanSheetModalOpen
+    ) {
+      return true;
+    }
+    if (!(target instanceof HTMLElement)) return false;
+    if (
+      target.closest(
+        'button, a, input, textarea, select, label, [contenteditable="true"], [role="dialog"], .fixed.inset-0, [data-no-swipe]'
+      )
+    ) {
+      return true;
+    }
+    let el: HTMLElement | null = target;
+    while (el && el !== mainScrollRef.current) {
+      const style = window.getComputedStyle(el);
+      const overflowX = style.overflowX;
+      if (
+        (overflowX === 'auto' || overflowX === 'scroll') &&
+        el.scrollWidth > el.clientWidth + 6
+      ) {
+        return true;
+      }
+      el = el.parentElement;
+    }
+    return false;
+  };
+
+  const handleWorkspaceTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (e.touches.length !== 1 || shouldIgnoreWorkspaceSwipe(e.target)) {
+      swipeStartXRef.current = null;
+      swipeStartYRef.current = null;
+      swipeAbortedRef.current = true;
+      return;
+    }
+    swipeStartXRef.current = e.touches[0].clientX;
+    swipeStartYRef.current = e.touches[0].clientY;
+    swipeAbortedRef.current = false;
+  };
+
+  const handleWorkspaceTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (
+      swipeAbortedRef.current ||
+      swipeStartXRef.current === null ||
+      swipeStartYRef.current === null ||
+      e.touches.length !== 1
+    ) {
+      return;
+    }
+    const dx = e.touches[0].clientX - swipeStartXRef.current;
+    const dy = e.touches[0].clientY - swipeStartYRef.current;
+
+    // If user is scrolling vertically, immediately abort horizontal swipe tracking for rock-solid vertical scroll
+    if (Math.abs(dy) > 18 && Math.abs(dy) >= Math.abs(dx) * 0.75) {
+      swipeAbortedRef.current = true;
+      swipeStartXRef.current = null;
+      swipeStartYRef.current = null;
+    }
+  };
+
+  const handleWorkspaceTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (
+      swipeAbortedRef.current ||
+      swipeStartXRef.current === null ||
+      swipeStartYRef.current === null ||
+      e.changedTouches.length === 0
+    ) {
+      swipeStartXRef.current = null;
+      swipeStartYRef.current = null;
+      swipeAbortedRef.current = false;
+      return;
+    }
+    const dx = e.changedTouches[0].clientX - swipeStartXRef.current;
+    const dy = e.changedTouches[0].clientY - swipeStartYRef.current;
+
+    swipeStartXRef.current = null;
+    swipeStartYRef.current = null;
+    swipeAbortedRef.current = false;
+
+    // Require an intentional, predominantly horizontal swipe and clamp strictly at start/end boundaries
+    if (Math.abs(dx) >= 75 && Math.abs(dy) < 48 && Math.abs(dx) > Math.abs(dy) * 1.8) {
+      if (dx < 0 && activeNavIndex < NAV_ITEMS.length - 1) {
+        // Slide left -> next menu option (impossible past last option)
+        setActiveTab(NAV_ITEMS[activeNavIndex + 1].id);
+      } else if (dx > 0 && activeNavIndex > 0) {
+        // Slide right -> previous menu option (impossible before first option)
+        setActiveTab(NAV_ITEMS[activeNavIndex - 1].id);
+      }
+    }
+  };
+
+  const handleWorkspaceTouchCancel = () => {
+    swipeStartXRef.current = null;
+    swipeStartYRef.current = null;
+    swipeAbortedRef.current = false;
+  };
+
   if (isLoading) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-slate-50 text-slate-500 font-mono text-xs">
@@ -1522,6 +1675,7 @@ export default function App() {
         />
         <Header
           activeTab={activeTab}
+          onSelectTab={setActiveTab}
           isSidebarOpen={isMenuOpen}
           onToggleSidebar={() => setIsMenuOpen((prev) => !prev)}
           timeRange={timeRange}
@@ -1566,8 +1720,15 @@ export default function App() {
         onReset={() => setIsCleanSheetModalOpen(true)}
       />
 
-      {/* Scrollable Main Workspace */}
-      <div className="flex-1 w-full overflow-y-auto overflow-x-hidden">
+      {/* Scrollable Main Workspace In-Between Static Top Header and Static Bottom Menu Bar */}
+      <div
+        ref={mainScrollRef}
+        onTouchStart={handleWorkspaceTouchStart}
+        onTouchMove={handleWorkspaceTouchMove}
+        onTouchEnd={handleWorkspaceTouchEnd}
+        onTouchCancel={handleWorkspaceTouchCancel}
+        className="flex-1 w-full overflow-y-auto overflow-x-hidden overscroll-y-contain scroll-smooth"
+      >
         <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8 py-6">
           <main className="w-full min-w-0">
             {activeTab === 'dashboard' && (
@@ -1697,6 +1858,12 @@ export default function App() {
           </main>
         </div>
       </div>
+
+      {/* Static Horizontal Menu Options Icon Bar Beneath (Locked at Bottom of Viewport) */}
+      <BottomMenuBar
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
+      />
 
       {/* Floating Bottom-Right + Quick Actions (Transfer Fund, Income, Expense) */}
       <FloatingQuickActions

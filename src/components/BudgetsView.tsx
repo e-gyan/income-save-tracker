@@ -750,19 +750,20 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
 
         {/* Workspace Purpose & Expiration Tabs */}
         <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
-          <div className="inline-flex items-center rounded-xl bg-slate-100 p-1 gap-1">
+          <div className="inline-flex items-center rounded-xl bg-slate-100 p-1.5 gap-1.5">
             <button
               type="button"
               onClick={() => setWorkspaceTab('budgets')}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-all cursor-pointer ${
+              aria-label="Budgets"
+              title="Budgets"
+              className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-2 transition-all cursor-pointer ${
                 workspaceTab === 'budgets'
                   ? 'bg-white text-slate-900 shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <Target className="h-3.5 w-3.5 text-emerald-600" />
-              Budgets
-              <span className="rounded-md bg-slate-200/70 px-1.5 py-0.5 text-[10px] font-mono font-bold text-slate-700">
+              <Target className="h-5 w-5 sm:h-6 sm:w-6 text-emerald-600 stroke-[2.25]" />
+              <span className="rounded-lg bg-slate-200/80 px-2 py-0.5 text-xs sm:text-sm font-mono font-extrabold text-slate-800 tabular-nums">
                 {activeExpenseBudgets.length}
               </span>
             </button>
@@ -770,15 +771,16 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
             <button
               type="button"
               onClick={() => setWorkspaceTab('goals')}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-all cursor-pointer ${
+              aria-label="Goals"
+              title="Goals"
+              className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-2 transition-all cursor-pointer ${
                 workspaceTab === 'goals'
                   ? 'bg-white text-slate-900 shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <TrendingUp className="h-3.5 w-3.5 text-indigo-600" />
-              Goals
-              <span className="rounded-md bg-slate-200/70 px-1.5 py-0.5 text-[10px] font-mono font-bold text-slate-700">
+              <TrendingUp className="h-5 w-5 sm:h-6 sm:w-6 text-indigo-600 stroke-[2.25]" />
+              <span className="rounded-lg bg-slate-200/80 px-2 py-0.5 text-xs sm:text-sm font-mono font-extrabold text-slate-800 tabular-nums">
                 {activeGoals.length}
               </span>
             </button>
@@ -786,19 +788,20 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({
             <button
               type="button"
               onClick={() => setWorkspaceTab('expired')}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-all cursor-pointer ${
+              aria-label="Expired / Disabled"
+              title="Expired / Disabled"
+              className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-2 transition-all cursor-pointer ${
                 workspaceTab === 'expired'
                   ? 'bg-white text-slate-900 shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <Archive className="h-3.5 w-3.5 text-amber-600" />
-              Expired / Disabled
+              <Archive className="h-5 w-5 sm:h-6 sm:w-6 text-amber-600 stroke-[2.25]" />
               <span
-                className={`rounded-md px-1.5 py-0.5 text-[10px] font-mono font-bold ${
+                className={`rounded-lg px-2 py-0.5 text-xs sm:text-sm font-mono font-extrabold tabular-nums ${
                   expiredDisabledItems.length > 0
                     ? 'bg-amber-100 text-amber-800'
-                    : 'bg-slate-200/70 text-slate-700'
+                    : 'bg-slate-200/80 text-slate-800'
                 }`}
               >
                 {expiredDisabledItems.length}

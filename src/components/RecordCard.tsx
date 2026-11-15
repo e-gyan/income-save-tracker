@@ -189,7 +189,9 @@ export const ExpenseDetailPopupModal: React.FC<ExpenseDetailPopupModalProps> = (
   if (!expense) return null;
 
   const isDeductionDerived =
-    expense.id.startsWith('exp_ded_') || expense.id.startsWith('exp_cut_');
+    expense.id.startsWith('exp_ded_') ||
+    expense.id.startsWith('exp_cut_') ||
+    Boolean(expense.incomeReceiptId);
   const defaultAccount =
     accounts.find((a) => a.isDefaultDeposit) || accounts[0];
   const matchedAccount =
@@ -362,8 +364,9 @@ export const ExpenseDetailPopupModal: React.FC<ExpenseDetailPopupModalProps> = (
           )}
         </div>
 
-        {/* Optional Move Subcategory to Another Category */}
-        {onMoveSubcategory &&
+        {/* Optional Move Subcategory to Another Category (Standalone Expenses Only) */}
+        {!isDeductionDerived &&
+          onMoveSubcategory &&
           expense.subcategory &&
           availableTargetCategories.length > 0 && (
             <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 space-y-2">
@@ -410,12 +413,16 @@ export const ExpenseDetailPopupModal: React.FC<ExpenseDetailPopupModalProps> = (
             </div>
           )}
 
-        {/* Action Footer: Edit & Delete */}
+        {/* Action Footer: Edit (Standalone Only) & Delete (All Expenses Including Income Deductions) */}
         <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
           <div>
-            {isVault &&
+            {isDeductionDerived ? (
+              <span className="text-[11px] font-medium text-slate-500">
+                Income deduction transactions cannot be edited, only deleted.
+              </span>
+            ) : (
+              isVault &&
               !isCredit &&
-              !isDeductionDerived &&
               !isAlreadyCredited &&
               onCreditVaultInstance && (
                 <button
@@ -429,14 +436,17 @@ export const ExpenseDetailPopupModal: React.FC<ExpenseDetailPopupModalProps> = (
                 >
                   Credit Instance
                 </button>
-              )}
+              )
+            )}
           </div>
 
           <div className="flex items-center gap-2 ml-auto">
             {confirmingDelete ? (
               <div className="flex flex-wrap items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs">
                 <span className="font-semibold text-rose-800">
-                  Delete this expense transaction? Account balances will update.
+                  {isDeductionDerived
+                    ? 'Delete this income deduction expense transaction? Account balances will update.'
+                    : 'Delete this expense transaction? Account balances will update.'}
                 </span>
                 <button
                   type="button"
@@ -460,7 +470,7 @@ export const ExpenseDetailPopupModal: React.FC<ExpenseDetailPopupModalProps> = (
               </div>
             ) : (
               <>
-                {effectiveOnEdit && (
+                {effectiveOnEdit && !isDeductionDerived && (
                   <button
                     type="button"
                     onClick={() => {
@@ -473,7 +483,7 @@ export const ExpenseDetailPopupModal: React.FC<ExpenseDetailPopupModalProps> = (
                     Edit
                   </button>
                 )}
-                {effectiveOnDelete && !isDeductionDerived && (
+                {effectiveOnDelete && (
                   <button
                     type="button"
                     onClick={() => setConfirmingDelete(true)}
