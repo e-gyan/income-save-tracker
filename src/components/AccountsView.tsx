@@ -279,6 +279,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
     totalCashAcrossAllAccounts,
     totalGrossDeposited,
     totalTransferredSavings,
+    manualVaultTransfersCount,
     totalAllocatedSavings,
     cashByCurrency,
     grossDepositedByCurrency,
@@ -1518,6 +1519,12 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                     transferredSavingsByCurrency,
                     settings
                   )}
+                </div>
+              )}
+              {manualVaultTransfersCount > 0 && (
+                <div className="mt-1 text-[11px] text-slate-400">
+                  Includes {manualVaultTransfersCount} manual vault transfer
+                  {manualVaultTransfersCount === 1 ? '' : 's'}
                 </div>
               )}
             </div>

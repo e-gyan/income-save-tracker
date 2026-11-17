@@ -271,6 +271,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   defaultAccountId: '',
   askNetIncomeTransfer: true,
   defaultNetIncomeAccountId: '',
+  autoDebitSavingsVaults: false,
   updatedAt: new Date().toISOString(),
 };
 
@@ -2411,6 +2412,364 @@ export function calculateAllocation(
   };
 }
 
+export interface ManualSavingsVaultTransferBreakdown {
+  totalManualToVaultBase: number;
+  totalVaultToOperatingBase: number;
+  netManualToVaultBase: number;
+  manualToVaultCount: number;
+  vaultToOperatingCount: number;
+  manualToVaultTransfers: AccountTransfer[];
+  perVaultStats: Map<
+    string,
+    {
+      inCount: number;
+      inBase: number;
+      outCount: number;
+      outBase: number;
+      netBase: number;
+    }
+  >;
+  netByCurrencyMap: Map<string, number>;
+  byQuarter: Record<
+    Quarter,
+    {
+      base: number;
+      count: number;
+      perVault: Record<string, number>;
+    }
+  >;
+  byMonth: Map<string, number>;
+}
+
+/**
+ * Computes Savings Accumulated contributions & returns arising from manual Account-to-Savings-Vault
+ * transfers (both historical/previous occurrences and newly recorded transfers) plus direct
+ * Net-Income-to-Savings-Vault routes, converted cleanly to app base currency & per-vault currency.
+ */
+export function getManualSavingsVaultTransfersBreakdown(
+  transfers: AccountTransfer[] = [],
+  accounts: FinancialAccount[] = [],
+  settings: UserSettings,
+  incomes: IncomeReceipt[] = [],
+  snapshot?: MarketFxSnapshot | null
+): ManualSavingsVaultTransferBreakdown {
+  const sysCurr = (settings.currency || 'GHS').trim().toUpperCase();
+  const effectivePillars = getEffectiveSavingsPillars(settings);
+  const operatingAccountsList = accounts.filter(
+    (a) => !isSavingsVaultAccount(a, settings)
+  );
+  const ensuredOperatingAccountsList =
+    operatingAccountsList.length > 0
+      ? operatingAccountsList
+      : [
+          {
+            ...DEFAULT_FINANCIAL_ACCOUNTS[0],
+            userId: settings.userId || DEFAULT_FINANCIAL_ACCOUNTS[0].userId,
+          },
+        ];
+
+  const vaultAccountsList: FinancialAccount[] = effectivePillars.map((pillar) => {
+    const existing = accounts.find(
+      (a) =>
+        a.id === pillar.accountId ||
+        (a.linkedSavingsBucketId && a.linkedSavingsBucketId === pillar.bucketId)
+    );
+    return {
+      id: pillar.accountId,
+      userId: existing?.userId || settings.userId,
+      name: pillar.name,
+      type: 'Savings Pillar',
+      institution: pillar.institution,
+      currency: existing?.currency || sysCurr,
+      isDefaultDeposit: false,
+      isVirtual:
+        existing?.isVirtual !== undefined
+          ? Boolean(existing.isVirtual)
+          : pillar.isVirtual,
+      initialBalance: existing?.initialBalance || 0,
+      originalInitialBalance: existing?.originalInitialBalance,
+      color: existing?.color || pillar.color,
+      linkedSavingsBucketId: pillar.bucketId,
+      custodianAccountId:
+        settings.vaultCustodianAccounts?.[pillar.accountId] ||
+        pillar.custodianAccountId ||
+        existing?.custodianAccountId,
+      description: pillar.description,
+      createdAt: existing?.createdAt || new Date().toISOString(),
+      updatedAt: existing?.updatedAt || new Date().toISOString(),
+    };
+  });
+
+  const effectiveAccountsList = [
+    ...ensuredOperatingAccountsList,
+    ...vaultAccountsList,
+  ];
+  const accountMap = new Map<string, FinancialAccount>(
+    effectiveAccountsList.map((a) => [a.id, a])
+  );
+
+  const perVaultStats = new Map<
+    string,
+    {
+      inCount: number;
+      inBase: number;
+      outCount: number;
+      outBase: number;
+      netBase: number;
+    }
+  >();
+  for (const v of vaultAccountsList) {
+    perVaultStats.set(v.id, {
+      inCount: 0,
+      inBase: 0,
+      outCount: 0,
+      outBase: 0,
+      netBase: 0,
+    });
+  }
+
+  const netByCurrencyMap = new Map<string, number>();
+  const byQuarter: ManualSavingsVaultTransferBreakdown['byQuarter'] = {
+    Q1: { base: 0, count: 0, perVault: {} },
+    Q2: { base: 0, count: 0, perVault: {} },
+    Q3: { base: 0, count: 0, perVault: {} },
+    Q4: { base: 0, count: 0, perVault: {} },
+  };
+  const byMonth = new Map<string, number>();
+
+  let totalManualToVaultBase = 0;
+  let totalVaultToOperatingBase = 0;
+  let manualToVaultCount = 0;
+  let vaultToOperatingCount = 0;
+  const manualToVaultTransfers: AccountTransfer[] = [];
+
+  const ensureVaultStat = (vaultId: string) => {
+    const existing = perVaultStats.get(vaultId);
+    if (existing) return existing;
+    const init = {
+      inCount: 0,
+      inBase: 0,
+      outCount: 0,
+      outBase: 0,
+      netBase: 0,
+    };
+    perVaultStats.set(vaultId, init);
+    return init;
+  };
+
+  const manualTransfers = (transfers || []).filter(
+    (t) =>
+      !t.id.startsWith('trans_auto_') &&
+      !t.id.startsWith('trans_sav_') &&
+      !t.id.startsWith('trans_net_')
+  );
+
+  for (const t of manualTransfers) {
+    const srcId = resolveValidAccountId(
+      t.sourceAccountId,
+      effectiveAccountsList,
+      settings
+    );
+    const destId = resolveValidAccountId(
+      t.destinationAccountId,
+      effectiveAccountsList,
+      settings
+    );
+    if (!srcId || !destId || srcId === destId) continue;
+
+    const srcAcc = accountMap.get(srcId);
+    const destAcc = accountMap.get(destId);
+    const srcIsVault = Boolean(srcAcc && isSavingsVaultAccount(srcAcc, settings));
+    const destIsVault = Boolean(destAcc && isSavingsVaultAccount(destAcc, settings));
+    if (!srcIsVault && !destIsVault) continue;
+
+    const srcCurr = (
+      t.sourceCurrency || (srcAcc ? getAccountCurrency(srcAcc, sysCurr) : sysCurr)
+    )
+      .trim()
+      .toUpperCase();
+    const destCurr = (
+      t.destinationCurrency ||
+      (destAcc ? getAccountCurrency(destAcc, sysCurr) : sysCurr)
+    )
+      .trim()
+      .toUpperCase();
+
+    let baseAmt =
+      Number(t.amount) > 0 ? roundTo2Decimals(Number(t.amount)) : 0;
+    if (baseAmt <= 0 && t.destinationAmount && Number(t.destinationAmount) > 0) {
+      baseAmt = convertCurrency2dp(
+        Number(t.destinationAmount),
+        destCurr,
+        sysCurr,
+        snapshot
+      ).convertedAmount;
+    } else if (baseAmt <= 0 && t.sourceAmount && Number(t.sourceAmount) > 0) {
+      baseAmt = convertCurrency2dp(
+        Number(t.sourceAmount),
+        srcCurr,
+        sysCurr,
+        snapshot
+      ).convertedAmount;
+    }
+    if (baseAmt <= 0) continue;
+
+    const destAmt =
+      t.destinationAmount !== undefined && Number(t.destinationAmount) > 0
+        ? roundTo2Decimals(Number(t.destinationAmount))
+        : convertCurrency2dp(baseAmt, sysCurr, destCurr, snapshot)
+            .convertedAmount;
+    const srcAmt =
+      t.sourceAmount !== undefined && Number(t.sourceAmount) > 0
+        ? roundTo2Decimals(Number(t.sourceAmount))
+        : convertCurrency2dp(baseAmt, sysCurr, srcCurr, snapshot)
+            .convertedAmount;
+
+    const q = getQuarterFromDate(t.date);
+    const ym = (t.date || '').slice(0, 7) || 'Unknown';
+
+    if (!srcIsVault && destIsVault) {
+      totalManualToVaultBase += baseAmt;
+      manualToVaultCount += 1;
+      manualToVaultTransfers.push(t);
+
+      const dStat = ensureVaultStat(destId);
+      dStat.inCount += 1;
+      dStat.inBase = roundTo2Decimals(dStat.inBase + baseAmt);
+      dStat.netBase = roundTo2Decimals(dStat.netBase + baseAmt);
+
+      addCurrencyBucketAmount(netByCurrencyMap, destCurr, destAmt);
+      byQuarter[q].base = roundTo2Decimals(byQuarter[q].base + baseAmt);
+      byQuarter[q].count += 1;
+      byQuarter[q].perVault[destId] = roundTo2Decimals(
+        (byQuarter[q].perVault[destId] || 0) + baseAmt
+      );
+      byMonth.set(ym, roundTo2Decimals((byMonth.get(ym) || 0) + baseAmt));
+    } else if (srcIsVault && !destIsVault) {
+      totalVaultToOperatingBase += baseAmt;
+      vaultToOperatingCount += 1;
+
+      const sStat = ensureVaultStat(srcId);
+      sStat.outCount += 1;
+      sStat.outBase = roundTo2Decimals(sStat.outBase + baseAmt);
+      sStat.netBase = roundTo2Decimals(sStat.netBase - baseAmt);
+
+      addCurrencyBucketAmount(netByCurrencyMap, srcCurr, -srcAmt);
+      byQuarter[q].base = roundTo2Decimals(byQuarter[q].base - baseAmt);
+      byQuarter[q].perVault[srcId] = roundTo2Decimals(
+        (byQuarter[q].perVault[srcId] || 0) - baseAmt
+      );
+      byMonth.set(ym, roundTo2Decimals((byMonth.get(ym) || 0) - baseAmt));
+    } else if (srcIsVault && destIsVault) {
+      // Internal rebalance between two savings vaults keeps app-wide total unchanged
+      const dStat = ensureVaultStat(destId);
+      dStat.inCount += 1;
+      dStat.inBase = roundTo2Decimals(dStat.inBase + baseAmt);
+      dStat.netBase = roundTo2Decimals(dStat.netBase + baseAmt);
+
+      const sStat = ensureVaultStat(srcId);
+      sStat.outCount += 1;
+      sStat.outBase = roundTo2Decimals(sStat.outBase + baseAmt);
+      sStat.netBase = roundTo2Decimals(sStat.netBase - baseAmt);
+
+      byQuarter[q].perVault[destId] = roundTo2Decimals(
+        (byQuarter[q].perVault[destId] || 0) + baseAmt
+      );
+      byQuarter[q].perVault[srcId] = roundTo2Decimals(
+        (byQuarter[q].perVault[srcId] || 0) - baseAmt
+      );
+    }
+  }
+
+  // Also include Net Income transfers when the user explicitly routed remaining Net Income to a Savings Vault
+  for (const inc of incomes || []) {
+    const srcId = resolveValidAccountId(
+      inc.accountId,
+      effectiveAccountsList,
+      settings
+    );
+    const netDestId = getEffectiveNetTransferAccountId(
+      inc,
+      settings,
+      effectiveAccountsList
+    );
+    if (!netDestId || netDestId === srcId) continue;
+
+    const srcAcc = accountMap.get(srcId);
+    const destAcc = accountMap.get(netDestId);
+    const srcIsVault = Boolean(srcAcc && isSavingsVaultAccount(srcAcc, settings));
+    const destIsVault = Boolean(destAcc && isSavingsVaultAccount(destAcc, settings));
+    if (srcIsVault || !destIsVault) continue;
+
+    const { nativeGross, currency: incCurr } = getIncomeNativeGross(
+      inc,
+      settings,
+      effectiveAccountsList
+    );
+    const deds = getEffectiveIncomeDeductions(inc, settings);
+    const incTotalDeds = deds.reduce(
+      (sum, d) => sum + (Number(d.amount) || 0),
+      0
+    );
+    const incNetNative = Math.max(
+      0,
+      roundTo2Decimals(nativeGross - incTotalDeds)
+    );
+    if (incNetNative <= 0) continue;
+
+    const destCurr = (
+      destAcc ? getAccountCurrency(destAcc, sysCurr) : sysCurr
+    ).toUpperCase();
+    const baseAmt =
+      incCurr === sysCurr
+        ? incNetNative
+        : convertCurrency2dp(incNetNative, incCurr, sysCurr, snapshot)
+            .convertedAmount;
+    const destAmt =
+      incCurr === destCurr
+        ? incNetNative
+        : convertCurrency2dp(incNetNative, incCurr, destCurr, snapshot)
+            .convertedAmount;
+
+    totalManualToVaultBase += baseAmt;
+    manualToVaultCount += 1;
+
+    const dStat = ensureVaultStat(netDestId);
+    dStat.inCount += 1;
+    dStat.inBase = roundTo2Decimals(dStat.inBase + baseAmt);
+    dStat.netBase = roundTo2Decimals(dStat.netBase + baseAmt);
+
+    addCurrencyBucketAmount(netByCurrencyMap, destCurr, destAmt);
+    const q = inc.quarter || getQuarterFromDate(inc.date);
+    const ym = (inc.date || '').slice(0, 7) || 'Unknown';
+    byQuarter[q].base = roundTo2Decimals(byQuarter[q].base + baseAmt);
+    byQuarter[q].count += 1;
+    byQuarter[q].perVault[netDestId] = roundTo2Decimals(
+      (byQuarter[q].perVault[netDestId] || 0) + baseAmt
+    );
+    byMonth.set(ym, roundTo2Decimals((byMonth.get(ym) || 0) + baseAmt));
+  }
+
+  totalManualToVaultBase = roundTo2Decimals(totalManualToVaultBase);
+  totalVaultToOperatingBase = roundTo2Decimals(totalVaultToOperatingBase);
+  const netManualToVaultBase = roundTo2Decimals(
+    totalManualToVaultBase - totalVaultToOperatingBase
+  );
+
+  return {
+    totalManualToVaultBase,
+    totalVaultToOperatingBase,
+    netManualToVaultBase,
+    manualToVaultCount,
+    vaultToOperatingCount,
+    manualToVaultTransfers,
+    perVaultStats,
+    netByCurrencyMap,
+    byQuarter,
+    byMonth,
+  };
+}
+
 /**
  * Aggregates monthly and cumulative performance metrics in the system base currency (`settings.currency`),
  * converting all non-base currency incomes, deductions, and expenses using real-time 2-point floating market rates.
@@ -2418,7 +2777,9 @@ export function calculateAllocation(
 export function calculateMonthlySummary(
   incomes: IncomeReceipt[],
   settings: UserSettings,
-  expenses: FlexibleExpense[]
+  expenses: FlexibleExpense[],
+  transfers: AccountTransfer[] = [],
+  accounts: FinancialAccount[] = []
 ) {
   const sortedIncomes = [...incomes].sort(
     (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
@@ -2493,6 +2854,21 @@ export function calculateMonthlySummary(
     group.savingsAllocatedTotal += alloc.quarterSavingsAllocated;
     group.remainingDisposableTotal += alloc.remainingDisposable;
     group.allocations.push(alloc);
+  }
+
+  const manualVaultBreakdown = getManualSavingsVaultTransfersBreakdown(
+    transfers,
+    accounts,
+    settings,
+    incomes
+  );
+  cumulativeQuarterSavingsAllocated += manualVaultBreakdown.netManualToVaultBase;
+  for (const [mKey, mSavAmt] of manualVaultBreakdown.byMonth.entries()) {
+    if (monthlyGroups[mKey]) {
+      monthlyGroups[mKey].savingsAllocatedTotal = roundTo2Decimals(
+        monthlyGroups[mKey].savingsAllocatedTotal + mSavAmt
+      );
+    }
   }
 
   const generalExpenses = expenses.filter(
@@ -3320,8 +3696,18 @@ export function calculateAccountSummaries(
   const totalDeductionsAcrossIncomes = roundTo2Decimals(
     summaries.reduce((sum, s) => sum + s.totalDeductionsIncurred, 0)
   );
-  const totalSavingsRouted = roundTo2Decimals(
+  const totalIncomeSavingsRouted = roundTo2Decimals(
     summaries.reduce((sum, s) => sum + s.savingsAllocatedIncurred, 0)
+  );
+  const manualSavingsBreakdown = getManualSavingsVaultTransfersBreakdown(
+    manualTransfers,
+    effectiveAccountsList,
+    settings,
+    incomes,
+    snapshot
+  );
+  const totalSavingsRouted = roundTo2Decimals(
+    totalIncomeSavingsRouted + manualSavingsBreakdown.netManualToVaultBase
   );
 
   // Per-account original currency totals for `totalsCurrencyMode === 'original'`
@@ -3373,11 +3759,19 @@ export function calculateAccountSummaries(
     addCurrencyBucketAmount(savByCurrMap, incCurr, incSavDed);
   }
 
+  for (const [mCurr, mAmt] of manualSavingsBreakdown.netByCurrencyMap.entries()) {
+    addCurrencyBucketAmount(savByCurrMap, mCurr, mAmt);
+  }
+
   return {
     summaries,
     totalCashAcrossAllAccounts,
     totalGrossDeposited,
     totalTransferredSavings: totalSavingsRouted,
+    totalIncomeSavingsAccumulated: totalIncomeSavingsRouted,
+    totalManualVaultTransfersAccumulated:
+      manualSavingsBreakdown.netManualToVaultBase,
+    manualVaultTransfersCount: manualSavingsBreakdown.manualToVaultCount,
     totalAllocatedSavings: totalDeductionsAcrossIncomes,
     totalPendingSavingsTransfers: 0,
     cashByCurrency: mapToCurrencyBucketTotals(cashByCurrMap, sysCurr),

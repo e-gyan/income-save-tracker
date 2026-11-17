@@ -5,6 +5,8 @@ import {
   calculateAccountSummaries,
   formatAmount,
   DEFAULT_SAVINGS_BUCKETS,
+  getEffectiveSavingsPillars,
+  getManualSavingsVaultTransfersBreakdown,
 } from '../lib/calculations.ts';
 
 interface SavingsDetailViewProps {
@@ -30,9 +32,21 @@ export const SavingsDetailView: React.FC<SavingsDetailViewProps> = ({
 
   // Calculate allocation for each income receipt using configured settings
   const allocations = incomes.map((inc) => calculateAllocation(inc, settings, expenses));
+  const manualVaultBreakdown = getManualSavingsVaultTransfersBreakdown(
+    transfers,
+    accounts,
+    settings,
+    incomes
+  );
+  const effectivePillars = getEffectiveSavingsPillars(settings);
 
-  // Cumulative total of all quarterly savings deducted across receipts
-  const totalSavingsDeducted = allocations.reduce((sum, a) => sum + a.quarterSavingsAllocated, 0);
+  // Cumulative total of all quarterly savings deducted + manual account-to-vault transfers
+  const totalSavingsDeducted =
+    Math.round(
+      (allocations.reduce((sum, a) => sum + a.quarterSavingsAllocated, 0) +
+        manualVaultBreakdown.netManualToVaultBase) *
+        100
+    ) / 100;
 
   // Compute live account cash summaries for vault reconciliation
   const accountSummaries = accounts.length > 0
@@ -90,6 +104,17 @@ export const SavingsDetailView: React.FC<SavingsDetailViewProps> = ({
     }
   }
 
+  // Merge manual Account-to-Savings-Vault transfers per pillar
+  for (const pillar of effectivePillars) {
+    const manualStat = manualVaultBreakdown.perVaultStats.get(pillar.accountId);
+    if (manualStat && bucketTotals[pillar.bucketId]) {
+      bucketTotals[pillar.bucketId].totalSaved =
+        Math.round(
+          (bucketTotals[pillar.bucketId].totalSaved + manualStat.netBase) * 100
+        ) / 100;
+    }
+  }
+
   const bucketsList = Object.values(bucketTotals);
 
   return (
@@ -100,7 +125,7 @@ export const SavingsDetailView: React.FC<SavingsDetailViewProps> = ({
           Savings Detail
         </h1>
         <p className="mt-1 text-xs text-slate-600">
-          Review the savings distribution structure and its underlying sub-buckets. All values are calculated from the savings deducted per the quarterly rate on each income receipt.
+          Review the savings distribution structure and its underlying sub-buckets across income savings deductions and manual vault transfers.
         </p>
       </div>
 
@@ -109,14 +134,18 @@ export const SavingsDetailView: React.FC<SavingsDetailViewProps> = ({
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold block">
-              Total Cumulative Net Savings Deducted
+              Total Savings Accumulated
             </span>
             <span className="text-2xl sm:text-3xl font-extrabold font-mono text-slate-900 tabular-nums">
               {formatAmount(totalSavingsDeducted, currency)}
             </span>
           </div>
           <div className="text-xs text-slate-600 font-mono bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-lg">
-            {incomes.length} receipts · {activeBuckets.length} Governed Savings Pillars
+            {incomes.length} receipts
+            {manualVaultBreakdown.manualToVaultCount > 0
+              ? ` · ${manualVaultBreakdown.manualToVaultCount} manual transfers`
+              : ''}{' '}
+            · {activeBuckets.length} Governed Savings Pillars
           </div>
         </div>
       </div>

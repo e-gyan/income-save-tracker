@@ -28,6 +28,7 @@ import {
   mapToCurrencyBucketTotals,
   formatTotalByCurrencyMode,
   getSecondaryCurrencyModeCaption,
+  getManualSavingsVaultTransfersBreakdown,
 } from '../lib/calculations.ts';
 import {
   fetchMarketExchangeRates,
@@ -702,6 +703,53 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       }
     }
 
+    const manualVaultBreakdown = getManualSavingsVaultTransfersBreakdown(
+      transfers,
+      accounts,
+      settings,
+      incomes,
+      fxSnapshot
+    );
+    totalSavingsSplitRouted += manualVaultBreakdown.netManualToVaultBase;
+    for (const [mCurr, mAmt] of manualVaultBreakdown.netByCurrencyMap.entries()) {
+      addCurrencyBucketAmount(savingsByCurrencyMap, mCurr, mAmt);
+    }
+    for (const [vId, vStat] of manualVaultBreakdown.perVaultStats.entries()) {
+      if (vStat.inCount === 0 && vStat.netBase === 0) continue;
+      const prevP = pillarTotals.get(vId) || {
+        count: 0,
+        transferredIn: 0,
+        causeCreditsOut: 0,
+      };
+      pillarTotals.set(vId, {
+        ...prevP,
+        count: prevP.count + vStat.inCount,
+        transferredIn:
+          Math.round((prevP.transferredIn + vStat.netBase) * 100) / 100,
+      });
+    }
+    for (const qKey of ['Q1', 'Q2', 'Q3', 'Q4'] as Quarter[]) {
+      const qManual = manualVaultBreakdown.byQuarter[qKey];
+      if (!qManual) continue;
+      quarterMap[qKey].savings =
+        Math.round((quarterMap[qKey].savings + qManual.base) * 100) / 100;
+      for (const [vId, vAmt] of Object.entries(qManual.perVault)) {
+        quarterMap[qKey].vaultShares[vId] =
+          Math.round(
+            ((quarterMap[qKey].vaultShares[vId] || 0) + vAmt) * 100
+          ) / 100;
+      }
+    }
+    for (const [mKey, mSav] of manualVaultBreakdown.byMonth.entries()) {
+      const prevM = monthMap.get(mKey);
+      if (prevM) {
+        monthMap.set(mKey, {
+          ...prevM,
+          savings: Math.round((prevM.savings + mSav) * 100) / 100,
+        });
+      }
+    }
+
     totalGross = Math.round(totalGross * 100) / 100;
     totalDeductions = Math.round(totalDeductions * 100) / 100;
     totalSavingsSplitRouted = Math.round(totalSavingsSplitRouted * 100) / 100;
@@ -855,6 +903,8 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       totalGross,
       totalDeductions,
       totalSavingsSplitRouted,
+      manualVaultTransferCount: manualVaultBreakdown.manualToVaultCount,
+      manualVaultTransferNet: manualVaultBreakdown.netManualToVaultBase,
       totalDeductionExpenses,
       totalRecordedExpenses,
       totalAllExpenses,
@@ -1072,6 +1122,11 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           <div className="mt-1 text-xs text-slate-400 break-words">
             {formatPercent(analytics.effectiveSavingsRate)} of gross ·{' '}
             {savingsSplitTransfers.length} split transfers
+            {analytics.manualVaultTransferCount > 0
+              ? ` · ${analytics.manualVaultTransferCount} manual transfer${
+                  analytics.manualVaultTransferCount === 1 ? '' : 's'
+                }`
+              : ''}
           </div>
         </div>
 

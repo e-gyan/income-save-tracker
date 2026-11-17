@@ -49,6 +49,8 @@ import { WrapSelect } from './WrapSelect.tsx';
 import {
   learnDeductionSuggestions,
   suggestionToIncomeDeductionItem,
+  buildAutomatedSavingsVaultDebitPlan,
+  plannedVaultDebitToExpensePayload,
 } from '../lib/deductionIntelligence.ts';
 import {
   formatDateTimeDDMMYYYY,
@@ -67,9 +69,12 @@ interface IncomeLogViewProps {
   currency: string;
   onAddIncome: (
     receipt: Omit<IncomeReceipt, 'id' | 'createdAt' | 'updatedAt' | 'userId'>
-  ) => Promise<void>;
+  ) => Promise<IncomeReceipt | void>;
   onUpdateIncome: (receipt: IncomeReceipt) => Promise<void>;
   onDeleteIncome: (id: string) => Promise<void>;
+  onAddExpenses?: (
+    items: Omit<FlexibleExpense, 'id' | 'createdAt' | 'userId'>[]
+  ) => Promise<void>;
   onAddAccount?: (
     account: Omit<FinancialAccount, 'id' | 'createdAt' | 'updatedAt'>
   ) => Promise<void>;
@@ -95,6 +100,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
   onAddIncome,
   onUpdateIncome,
   onDeleteIncome,
+  onAddExpenses,
   onAddAccount,
   onSaveSettings,
   onNavigateToSettings,
@@ -413,10 +419,18 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
     settings.defaultNetIncomeAccountId || ''
   );
   const [isNetTransferPromptOpen, setIsNetTransferPromptOpen] = useState(false);
+  const [automateVaultDebit, setAutomateVaultDebit] = useState<boolean>(
+    Boolean(settings.autoDebitSavingsVaults)
+  );
+  const [excludedAutoVaultIds, setExcludedAutoVaultIds] = useState<string[]>([]);
 
   useEffect(() => {
     setDraftNetTransferAccountId(settings.defaultNetIncomeAccountId || '');
   }, [settings.defaultNetIncomeAccountId]);
+
+  useEffect(() => {
+    setAutomateVaultDebit(Boolean(settings.autoDebitSavingsVaults));
+  }, [settings.autoDebitSavingsVaults]);
 
   // When the selected date changes on the Record Income form, automatically update savings deduction rates for that date's quarter unless customized by the user
   const handleDateChange = (nextDate: string) => {
@@ -677,6 +691,38 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
     [computedDraftDeductions]
   );
 
+  const plannedVaultDebits = useMemo(
+    () =>
+      buildAutomatedSavingsVaultDebitPlan({
+        savingsAmountInIncomeCurr: draftSavingsTotal,
+        incomeCurrency: activeIncomeCurrency,
+        incomeDate: date,
+        incomeSource: clientOrSource.trim(),
+        expenses,
+        accounts,
+        settings,
+        fxSnapshot,
+      }),
+    [
+      draftSavingsTotal,
+      activeIncomeCurrency,
+      date,
+      clientOrSource,
+      expenses,
+      accounts,
+      settings,
+      fxSnapshot,
+    ]
+  );
+
+  const selectedAutoVaultDebits = useMemo(
+    () =>
+      plannedVaultDebits.filter(
+        (p) => !excludedAutoVaultIds.includes(p.vaultAccountId)
+      ),
+    [plannedVaultDebits, excludedAutoVaultIds]
+  );
+
   const draftExpenseDeductionsTotal = useMemo(
     () =>
       Math.round(
@@ -862,7 +908,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
       }
 
       // Save the income directly in the account's currency without conversion
-      await onAddIncome({
+      const createdReceipt = await onAddIncome({
         date,
         quarter: getQuarterFromDate(date),
         clientOrSource: clientOrSource.trim(),
@@ -879,6 +925,24 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
         allocatedDeductions: validDeductions,
       });
 
+      if (
+        automateVaultDebit &&
+        selectedAutoVaultDebits.length > 0 &&
+        onAddExpenses
+      ) {
+        const batchKey = `auto_vault_debit_${
+          (createdReceipt && createdReceipt.id) || Date.now()
+        }`;
+        const autoDebitPayloads = selectedAutoVaultDebits.map((plan) =>
+          plannedVaultDebitToExpensePayload(plan, {
+            date,
+            batchId: batchKey,
+            incomeSource: clientOrSource.trim(),
+          })
+        );
+        await onAddExpenses(autoDebitPayloads);
+      }
+
       setGrossAmount('');
       setClientOrSource('');
       setNotes('');
@@ -888,6 +952,8 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
       setIsAddingNewOrigin(false);
       setNewOriginDraft('');
       setIsNetTransferPromptOpen(false);
+      setExcludedAutoVaultIds([]);
+      setAutomateVaultDebit(Boolean(settings.autoDebitSavingsVaults));
       setDraftNetTransferAccountId(settings.defaultNetIncomeAccountId || '');
       setDraftDeductions(
         buildDefaultDeductionsForIncome(
@@ -2433,6 +2499,89 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                   />
                 </div>
 
+                {/* 5b. Automated Savings Vault Debit Checkbox */}
+                {draftSavingsTotal > 0 && (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-2">
+                    <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={automateVaultDebit}
+                        onChange={(e) => setAutomateVaultDebit(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 shrink-0"
+                      />
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-slate-900">
+                          Automate vault debit from respective savings vaults
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {plannedVaultDebits.length > 0
+                            ? `Matches ${plannedVaultDebits.length} vault${
+                                plannedVaultDebits.length === 1 ? '' : 's'
+                              } with previous vault debit expenses.`
+                            : 'No past savings vault debit expenses found yet.'}
+                        </div>
+                      </div>
+                    </label>
+
+                    {automateVaultDebit && plannedVaultDebits.length > 0 && (
+                      <div className="space-y-1.5 border-t border-slate-200/80 pt-2">
+                        {plannedVaultDebits.map((plan) => {
+                          const isChecked = !excludedAutoVaultIds.includes(
+                            plan.vaultAccountId
+                          );
+                          return (
+                            <label
+                              key={plan.vaultAccountId}
+                              className="flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] cursor-pointer"
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={(e) => {
+                                    const next = e.target.checked;
+                                    setExcludedAutoVaultIds((prev) =>
+                                      next
+                                        ? prev.filter(
+                                            (id) => id !== plan.vaultAccountId
+                                          )
+                                        : [...prev, plan.vaultAccountId]
+                                    );
+                                  }}
+                                  className="h-3.5 w-3.5 rounded border-slate-300 text-slate-900 focus:ring-slate-900 shrink-0"
+                                />
+                                <div className="min-w-0">
+                                  <div className="font-semibold text-slate-800 truncate">
+                                    {plan.vaultAccountName} → {plan.recipient}
+                                  </div>
+                                  <div className="text-[10px] text-slate-500 truncate">
+                                    {plan.category}
+                                    {plan.subcategory
+                                      ? ` · ${plan.subcategory}`
+                                      : ''}
+                                  </div>
+                                </div>
+                              </div>
+                              <span
+                                className={`font-mono font-semibold tabular-nums shrink-0 ${
+                                  isChecked
+                                    ? 'text-rose-600'
+                                    : 'text-slate-400 line-through'
+                                }`}
+                              >
+                                -{formatAmount(
+                                  plan.debitAmountInVaultCurr,
+                                  plan.vaultCurrency
+                                )}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* 7. Summary */}
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-1">
                   <div className="flex flex-wrap items-center justify-between gap-1 text-xs text-slate-600">
@@ -3593,6 +3742,58 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                 ]}
               />
             </div>
+
+            {draftSavingsTotal > 0 && (
+              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 space-y-2">
+                <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={automateVaultDebit}
+                    onChange={(e) => setAutomateVaultDebit(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 shrink-0"
+                  />
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-slate-900">
+                      Automate vault debit from respective savings vaults
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      {plannedVaultDebits.length > 0
+                        ? `Debits ${selectedAutoVaultDebits.length} matching vault${
+                            selectedAutoVaultDebits.length === 1 ? '' : 's'
+                          } using prior vault debit history.`
+                        : 'No past savings vault debit expenses found yet.'}
+                    </div>
+                  </div>
+                </label>
+
+                {automateVaultDebit && plannedVaultDebits.length > 0 && (
+                  <div className="space-y-1 border-t border-slate-200/80 pt-1.5">
+                    {plannedVaultDebits.map((plan) => {
+                      const isChecked = !excludedAutoVaultIds.includes(
+                        plan.vaultAccountId
+                      );
+                      return (
+                        <div
+                          key={plan.vaultAccountId}
+                          className="flex items-center justify-between gap-2 text-[11px] text-slate-700"
+                        >
+                          <span className="truncate">
+                            {isChecked ? '✓ ' : '— '}
+                            {plan.vaultAccountName} → {plan.recipient}
+                          </span>
+                          <span className="font-mono font-semibold text-rose-600 tabular-nums shrink-0">
+                            -{formatAmount(
+                              plan.debitAmountInVaultCurr,
+                              plan.vaultCurrency
+                            )}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="flex items-center justify-between gap-2 pt-2">
               {onNavigateToSettings ? (

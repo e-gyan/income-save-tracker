@@ -38,7 +38,7 @@ interface DeductionAgentModalProps {
   onSaveSettings: (settings: UserSettings) => Promise<void>;
   onAddIncome: (
     receipt: Omit<IncomeReceipt, 'id' | 'createdAt' | 'updatedAt' | 'userId'>
-  ) => Promise<void>;
+  ) => Promise<IncomeReceipt | void>;
   onAddExpenses: (
     items: Omit<FlexibleExpense, 'id' | 'createdAt' | 'userId'>[]
   ) => Promise<void>;

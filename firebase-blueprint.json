@@ -62,6 +62,10 @@
           "type": "string",
           "description": "JSON stringified quarterly savings target rates"
         },
+        "autoDebitSavingsVaults": {
+          "type": "boolean",
+          "description": "Whether to automate vault debit expenses from respective savings vaults after deducting saving rate"
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time",

@@ -249,6 +249,10 @@ export async function fetchUserSettings(userId: string): Promise<UserSettings> {
           data.defaultNetIncomeAccountId !== undefined
             ? String(data.defaultNetIncomeAccountId)
             : DEFAULT_USER_SETTINGS.defaultNetIncomeAccountId,
+        autoDebitSavingsVaults:
+          data.autoDebitSavingsVaults !== undefined
+            ? Boolean(data.autoDebitSavingsVaults)
+            : DEFAULT_USER_SETTINGS.autoDebitSavingsVaults,
         updatedAt: data.updatedAt || new Date().toISOString(),
       };
       setLocalData('settings', result, userId);
@@ -377,6 +381,7 @@ export async function saveUserSettings(userId: string, settings: UserSettings): 
       accountTypes: JSON.stringify(settings.accountTypes ?? DEFAULT_USER_SETTINGS.accountTypes ?? []),
       askNetIncomeTransfer: settings.askNetIncomeTransfer !== false,
       defaultNetIncomeAccountId: String(settings.defaultNetIncomeAccountId || '').slice(0, 128),
+      autoDebitSavingsVaults: Boolean(settings.autoDebitSavingsVaults),
       updatedAt: new Date().toISOString(),
     };
     if (settings.defaultAccountId) {

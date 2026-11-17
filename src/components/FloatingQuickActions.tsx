@@ -30,6 +30,8 @@ import {
   learnDeductionSuggestions,
   suggestionToIncomeDeductionItem,
   learnSavingsVaultDebitAccount,
+  buildAutomatedSavingsVaultDebitPlan,
+  plannedVaultDebitToExpensePayload,
 } from '../lib/deductionIntelligence.ts';
 import { formatDateDDMMYYYY } from '../lib/dateFilters.ts';
 import {
@@ -56,7 +58,7 @@ interface FloatingQuickActionsProps {
   currency: string;
   onAddIncome: (
     receipt: Omit<IncomeReceipt, 'id' | 'createdAt' | 'updatedAt' | 'userId'>
-  ) => Promise<void>;
+  ) => Promise<IncomeReceipt | void>;
   onAddExpenses: (
     items: Omit<FlexibleExpense, 'id' | 'createdAt' | 'userId'>[]
   ) => Promise<void>;
@@ -380,6 +382,62 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
     );
   }, [incCurrency, fxSnapshot, activeModal]);
 
+  const [quickAutomateVaultDebit, setQuickAutomateVaultDebit] = useState<boolean>(
+    Boolean(settings.autoDebitSavingsVaults)
+  );
+  const [excludedQuickAutoVaultIds, setExcludedQuickAutoVaultIds] = useState<
+    string[]
+  >([]);
+
+  const quickSavingsTotal = useMemo(
+    () =>
+      roundTo2Decimals(
+        incDeductions
+          .filter((d) => isSavingsDeduction(d))
+          .reduce(
+            (sum, d) =>
+              sum + computeDeductionAmount(rawIncGross, d.type, d.value),
+            0
+          )
+      ),
+    [incDeductions, rawIncGross]
+  );
+
+  const quickPlannedVaultDebits = useMemo(
+    () =>
+      buildAutomatedSavingsVaultDebitPlan({
+        savingsAmountInIncomeCurr: quickSavingsTotal,
+        incomeCurrency: incCurrency || currency,
+        incomeDate: incDate,
+        incomeSource: isCustomIncSource ? customIncSourceText : incSource,
+        expenses,
+        accounts,
+        settings,
+        fxSnapshot,
+      }),
+    [
+      quickSavingsTotal,
+      incCurrency,
+      currency,
+      incDate,
+      isCustomIncSource,
+      customIncSourceText,
+      incSource,
+      expenses,
+      accounts,
+      settings,
+      fxSnapshot,
+    ]
+  );
+
+  const selectedQuickAutoVaultDebits = useMemo(
+    () =>
+      quickPlannedVaultDebits.filter(
+        (p) => !excludedQuickAutoVaultIds.includes(p.vaultAccountId)
+      ),
+    [quickPlannedVaultDebits, excludedQuickAutoVaultIds]
+  );
+
   const handleOpenIncomeModal = () => {
     setIsMenuOpen(false);
     setIncDate(todayStr);
@@ -395,6 +453,8 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
     const defaultCurr = getAccountCurrency(defaultIncAcc, currency);
     setIncCurrency(defaultCurr);
     setIncNetTransferAccountId(settings.defaultNetIncomeAccountId || '');
+    setQuickAutomateVaultDebit(Boolean(settings.autoDebitSavingsVaults));
+    setExcludedQuickAutoVaultIds([]);
     setIncDeductions(
       buildDefaultDeductionsForIncome(
         0,
@@ -513,7 +573,7 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
         incCurrency || getAccountCurrency(targetAccObj, currency)
       ).toUpperCase();
 
-      await onAddIncome({
+      const createdReceipt = await onAddIncome({
         date: incDate,
         quarter: activeIncQuarter,
         clientOrSource: finalSource,
@@ -529,6 +589,21 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
         allocatedDeductions: finalizedDeductions,
         notes: finalOrigin || undefined,
       });
+
+      if (quickAutomateVaultDebit && selectedQuickAutoVaultDebits.length > 0) {
+        const batchKey = `auto_vault_debit_${
+          (createdReceipt && createdReceipt.id) || Date.now()
+        }`;
+        const autoDebitPayloads = selectedQuickAutoVaultDebits.map((plan) =>
+          plannedVaultDebitToExpensePayload(plan, {
+            date: incDate,
+            batchId: batchKey,
+            incomeSource: finalSource,
+          })
+        );
+        await onAddExpenses(autoDebitPayloads);
+      }
+
       setActiveModal(null);
     } finally {
       setIsSubmittingInc(false);
@@ -1487,13 +1562,89 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                     </div>
                     {destName && (
                       <div className="text-[11px] text-emerald-700 font-medium">
-                        {formatAmount(quickNet, currency)} will be transferred from{' '}
+                        {formatAmount(quickNet, incCurrency)} will be transferred from{' '}
                         {receivingName} to {destName}.
                       </div>
                     )}
                   </div>
                 );
               })()}
+
+              {quickSavingsTotal > 0 && (
+                <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 space-y-2">
+                  <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={quickAutomateVaultDebit}
+                      onChange={(e) =>
+                        setQuickAutomateVaultDebit(e.target.checked)
+                      }
+                      className="mt-0.5 h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 shrink-0"
+                    />
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold text-slate-900">
+                        Automate vault debit from respective savings vaults
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        {quickPlannedVaultDebits.length > 0
+                          ? `Matches ${quickPlannedVaultDebits.length} vault${
+                              quickPlannedVaultDebits.length === 1 ? '' : 's'
+                            } with previous vault debit expenses.`
+                          : 'No past savings vault debit expenses found yet.'}
+                      </div>
+                    </div>
+                  </label>
+
+                  {quickAutomateVaultDebit && quickPlannedVaultDebits.length > 0 && (
+                    <div className="space-y-1 border-t border-slate-200/80 pt-2">
+                      {quickPlannedVaultDebits.map((plan) => {
+                        const isChecked = !excludedQuickAutoVaultIds.includes(
+                          plan.vaultAccountId
+                        );
+                        return (
+                          <label
+                            key={plan.vaultAccountId}
+                            className="flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] cursor-pointer"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={(e) => {
+                                  const next = e.target.checked;
+                                  setExcludedQuickAutoVaultIds((prev) =>
+                                    next
+                                      ? prev.filter(
+                                          (id) => id !== plan.vaultAccountId
+                                        )
+                                      : [...prev, plan.vaultAccountId]
+                                  );
+                                }}
+                                className="h-3.5 w-3.5 rounded border-slate-300 text-slate-900 focus:ring-slate-900 shrink-0"
+                              />
+                              <span className="font-semibold text-slate-800 truncate">
+                                {plan.vaultAccountName} → {plan.recipient}
+                              </span>
+                            </div>
+                            <span
+                              className={`font-mono font-semibold tabular-nums shrink-0 ${
+                                isChecked
+                                  ? 'text-rose-600'
+                                  : 'text-slate-400 line-through'
+                              }`}
+                            >
+                              -{formatAmount(
+                                plan.debitAmountInVaultCurr,
+                                plan.vaultCurrency
+                              )}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="flex justify-end gap-2 pt-2">
                 <button

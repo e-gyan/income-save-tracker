@@ -618,7 +618,7 @@ export default function App() {
 
   const handleAddIncome = async (
     receiptData: Omit<IncomeReceipt, 'id' | 'createdAt' | 'updatedAt' | 'userId'>
-  ) => {
+  ): Promise<IncomeReceipt> => {
     const newReceipt: IncomeReceipt = {
       ...receiptData,
       id: `inc_${Date.now()}`,
@@ -640,6 +640,8 @@ export default function App() {
         console.error('Background income save error:', err);
       }
     })();
+
+    return newReceipt;
   };
 
   const handleUpdateIncome = async (updatedReceipt: IncomeReceipt) => {
@@ -1759,6 +1761,7 @@ export default function App() {
                 onAddIncome={handleAddIncome}
                 onUpdateIncome={handleUpdateIncome}
                 onDeleteIncome={handleDeleteIncome}
+                onAddExpenses={handleAddExpenses}
                 onAddAccount={handleAddAccount}
                 onSaveSettings={handleSaveSettings}
                 onNavigateToSettings={() => setActiveTab('settings')}

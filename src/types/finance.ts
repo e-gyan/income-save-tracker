@@ -119,6 +119,7 @@ export interface UserSettings {
   defaultAccountId?: string;
   askNetIncomeTransfer?: boolean; // Ask user after deduction of an income where net should be transferred
   defaultNetIncomeAccountId?: string; // Optional default destination account for net income after deductions
+  autoDebitSavingsVaults?: boolean; // Automate vault debit from each respective savings vault based on past vault-debit expenses
   updatedAt: string;
 }
 

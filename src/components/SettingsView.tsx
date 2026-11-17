@@ -122,6 +122,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [defaultNetIncomeAccountId, setDefaultNetIncomeAccountId] = useState<string>(
     settings.defaultNetIncomeAccountId || ''
   );
+  const [autoDebitSavingsVaults, setAutoDebitSavingsVaults] = useState<boolean>(
+    Boolean(settings.autoDebitSavingsVaults)
+  );
 
   // All expandable forms and sections start collapsed by default
   const [isColorsCollapsed, setIsColorsCollapsed] = useState(true);
@@ -259,6 +262,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
     setAskNetIncomeTransfer(settings.askNetIncomeTransfer !== false);
     setDefaultNetIncomeAccountId(settings.defaultNetIncomeAccountId || '');
+    setAutoDebitSavingsVaults(Boolean(settings.autoDebitSavingsVaults));
   }, [settings]);
 
   const effectiveSavingsPillars = useMemo(
@@ -351,6 +355,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       vaultCustodianAccounts: vaultCustodians,
       askNetIncomeTransfer,
       defaultNetIncomeAccountId,
+      autoDebitSavingsVaults,
       ...overrides,
       updatedAt: new Date().toISOString(),
     };
@@ -3797,6 +3802,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 ]}
               />
             </div>
+
+            <label className="flex items-start justify-between gap-4 rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 cursor-pointer">
+              <div className="space-y-0.5 min-w-0">
+                <span className="block font-display text-xs font-semibold text-slate-900">
+                  Automate vault debit from respective savings vaults by default
+                </span>
+                <span className="block text-xs text-slate-500 break-words">
+                  Pre-selects automated vault debit expenses matched from past vault debits when deducting saving rates on income.
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                checked={autoDebitSavingsVaults}
+                onChange={async (e) => {
+                  const nextVal = e.target.checked;
+                  setAutoDebitSavingsVaults(nextVal);
+                  await persistUpdates({ autoDebitSavingsVaults: nextVal });
+                }}
+                className="mt-0.5 h-4 w-4 rounded border-slate-300 shrink-0"
+              />
+            </label>
           </div>
         )}
       </div>

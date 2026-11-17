@@ -1829,6 +1829,71 @@ app.post('/api/expenses/vault-debit-learn', (req: Request, res: Response) => {
 });
 
 /**
+ * Backend Per-Vault Automated Debit Plan Endpoint (`POST /api/savings/vault-debit-plan`)
+ * Evaluates each respective Savings Vault funded by a savings rate deduction against past
+ * vault-debit expenses and returns planned automated debit payloads per vault.
+ */
+app.post('/api/savings/vault-debit-plan', (req: Request, res: Response) => {
+  try {
+    const {
+      shares = [],
+      expenses = [],
+      incomeDate = new Date().toISOString().slice(0, 10),
+      incomeSource = '',
+    } = req.body || {};
+
+    const pastDebits = (Array.isArray(expenses) ? expenses : []).filter(
+      (e: any) =>
+        e &&
+        e.accountId &&
+        e.vaultAction !== 'credit' &&
+        !String(e.id || '').startsWith('exp_ded_') &&
+        !String(e.id || '').startsWith('exp_cut_')
+    );
+
+    const planned: any[] = [];
+    for (const share of Array.isArray(shares) ? shares : []) {
+      const shareAmt = Number(share?.amount) || 0;
+      const vaultAccId = String(share?.accountId || '');
+      if (!vaultAccId || shareAmt <= 0) continue;
+
+      const history = pastDebits
+        .filter((e: any) => String(e.accountId) === vaultAccId)
+        .sort((a: any, b: any) =>
+          String(b.date || '').localeCompare(String(a.date || ''))
+        );
+      if (history.length === 0) continue;
+
+      const sample = history[0];
+      planned.push({
+        vaultAccountId: vaultAccId,
+        vaultAccountName: share.accountName || vaultAccId,
+        recipient:
+          sample.recipient ||
+          sample.description ||
+          sample.subcategory ||
+          share.accountName,
+        category: sample.category || 'Savings Allocation',
+        subcategory: sample.subcategory || undefined,
+        amount: Math.round(shareAmt * 100) / 100,
+        date: incomeDate,
+        notes: incomeSource
+          ? `Auto-debited from ${share.accountName || vaultAccId} (${incomeSource})`
+          : undefined,
+        pastMatchCount: history.length,
+      });
+    }
+
+    return res.json({ success: true, planned });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Unable to compute vault debit plan.',
+    });
+  }
+});
+
+/**
  * Backend Expense Transaction Update Endpoint (`POST /api/expenses/update`)
  * Normalizes an edited expense transaction across all boards with currency conversion and vault debit handling.
  */

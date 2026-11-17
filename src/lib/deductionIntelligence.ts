@@ -13,12 +13,17 @@ import {
   getSavingsCutRateForDate,
   resolveDeductionExpenseMapping,
   computeDeductionAmount,
+  computeSavingsBreakdown,
   formatAmount,
   isSavingsVaultAccount,
+  resolveValidAccountId,
+  resolveIntuitiveSubcategoryColor,
   LEGACY_SEEDED_CUT_IDS,
 } from './calculations.ts';
 import {
   convertCurrency2dp,
+  roundTo2Decimals,
+  getAccountCurrency,
   MarketFxSnapshot,
 } from './currencyService.ts';
 
@@ -854,4 +859,218 @@ export function learnSavingsVaultDebitAccount(params: {
 
   return null;
 }
+
+export interface PlannedSavingsVaultDebit {
+  vaultAccountId: string;
+  vaultAccountName: string;
+  vaultBucketId: string;
+  vaultPercentage: number;
+  vaultCurrency: string;
+  recipient: string;
+  category: string;
+  subcategory?: string;
+  subcategoryColor?: string;
+  description: string;
+  notes?: string;
+  shareAmountInIncomeCurr: number;
+  debitAmountInVaultCurr: number;
+  debitAmountInBaseCurr: number;
+  exchangeRateToBase: number;
+  pastMatchCount: number;
+  lastDebitDate?: string;
+}
+
+/**
+ * Builds an automated Savings Vault debit plan for each respective Savings Vault funded by
+ * a saving rate deduction, learning the primary/most-recent expense pattern previously debited
+ * from each respective vault.
+ */
+export function buildAutomatedSavingsVaultDebitPlan(params: {
+  savingsAmountInIncomeCurr: number;
+  incomeCurrency: string;
+  incomeDate: string;
+  incomeSource?: string;
+  expenses: FlexibleExpense[];
+  accounts: FinancialAccount[];
+  settings: UserSettings;
+  fxSnapshot?: MarketFxSnapshot | null;
+}): PlannedSavingsVaultDebit[] {
+  const {
+    savingsAmountInIncomeCurr,
+    incomeCurrency,
+    expenses,
+    accounts,
+    settings,
+    fxSnapshot,
+  } = params;
+
+  const cleanSavingsAmt = roundTo2Decimals(Math.max(0, savingsAmountInIncomeCurr));
+  if (cleanSavingsAmt <= 0) return [];
+
+  const baseCurr = (settings.currency || 'GHS').trim().toUpperCase();
+  const incCurr = (incomeCurrency || baseCurr).trim().toUpperCase();
+
+  const shares = computeSavingsBreakdown(cleanSavingsAmt, accounts, settings);
+  if (shares.length === 0) return [];
+
+  const pastVaultDebits = (expenses || []).filter(
+    (e) =>
+      Boolean(e.accountId) &&
+      e.vaultAction !== 'credit' &&
+      !e.id.startsWith('exp_ded_') &&
+      !e.id.startsWith('exp_cut_') &&
+      !e.id.startsWith('inc_ded_exp_')
+  );
+
+  const plans: PlannedSavingsVaultDebit[] = [];
+
+  for (const share of shares) {
+    if (share.amount <= 0) continue;
+
+    // Match historical expenses debited specifically from THIS respective Savings Vault
+    const vaultHistory = pastVaultDebits.filter((exp) => {
+      if (exp.accountId === share.accountId) return true;
+      const resolvedAccId = resolveValidAccountId(exp.accountId, accounts, settings);
+      return resolvedAccId === share.accountId;
+    });
+
+    if (vaultHistory.length === 0) continue;
+
+    // Group by normalized cause/category/subcategory signature, weighting frequency & recency
+    const sortedRecent = [...vaultHistory].sort((a, b) => {
+      const cmp = (b.date || '').localeCompare(a.date || '');
+      if (cmp !== 0) return cmp;
+      return (b.createdAt || '').localeCompare(a.createdAt || '');
+    });
+
+    interface CauseGroup {
+      signature: string;
+      sample: FlexibleExpense;
+      count: number;
+      latestDate: string;
+      score: number;
+    }
+
+    const groups = new Map<string, CauseGroup>();
+    sortedRecent.forEach((exp, idx) => {
+      const rec = (exp.recipient || exp.description || '').trim();
+      const cat = (exp.category || 'Savings Allocation').trim();
+      const sub = (exp.subcategory || '').trim();
+      const sig = `${rec.toLowerCase()}||${cat.toLowerCase()}||${sub.toLowerCase()}`;
+      const recencyBoost = Math.max(1, sortedRecent.length - idx);
+      const prev = groups.get(sig);
+      if (prev) {
+        prev.count += 1;
+        prev.score += 10 + recencyBoost;
+      } else {
+        groups.set(sig, {
+          signature: sig,
+          sample: exp,
+          count: 1,
+          latestDate: exp.date || '',
+          score: 10 + recencyBoost,
+        });
+      }
+    });
+
+    const best = Array.from(groups.values()).sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return (b.latestDate || '').localeCompare(a.latestDate || '');
+    })[0];
+
+    if (!best) continue;
+
+    const sample = best.sample;
+    const vaultAcc = accounts.find((a) => a.id === share.accountId);
+    const vaultCurr = getAccountCurrency(vaultAcc, baseCurr);
+
+    const debitInVaultCurr =
+      incCurr === vaultCurr
+        ? roundTo2Decimals(share.amount)
+        : convertCurrency2dp(share.amount, incCurr, vaultCurr, fxSnapshot)
+            .convertedAmount;
+
+    const toBase =
+      vaultCurr === baseCurr
+        ? { convertedAmount: debitInVaultCurr, exchangeRate2dp: 1 }
+        : convertCurrency2dp(debitInVaultCurr, vaultCurr, baseCurr, fxSnapshot);
+
+    if (toBase.convertedAmount <= 0) continue;
+
+    const resolvedRecipient =
+      (sample.recipient || '').trim() ||
+      (sample.description || '').trim() ||
+      (sample.subcategory || '').trim() ||
+      share.accountName;
+    const resolvedCategory = (sample.category || '').trim() || 'Savings Allocation';
+    const resolvedSub = (sample.subcategory || '').trim() || undefined;
+    const resolvedColor =
+      sample.subcategoryColor ||
+      (resolvedSub
+        ? resolveIntuitiveSubcategoryColor(
+            resolvedSub,
+            resolvedCategory,
+            settings,
+            expenses
+          )
+        : undefined);
+
+    plans.push({
+      vaultAccountId: share.accountId,
+      vaultAccountName: share.accountName,
+      vaultBucketId: share.bucketId,
+      vaultPercentage: share.percentage,
+      vaultCurrency: vaultCurr,
+      recipient: resolvedRecipient,
+      category: resolvedCategory,
+      subcategory: resolvedSub,
+      subcategoryColor: resolvedColor,
+      description:
+        (sample.description || '').trim() ||
+        resolvedSub ||
+        resolvedRecipient ||
+        resolvedCategory,
+      notes: (sample.notes || '').trim() || undefined,
+      shareAmountInIncomeCurr: roundTo2Decimals(share.amount),
+      debitAmountInVaultCurr: debitInVaultCurr,
+      debitAmountInBaseCurr: toBase.convertedAmount,
+      exchangeRateToBase: toBase.exchangeRate2dp,
+      pastMatchCount: vaultHistory.length,
+      lastDebitDate: best.latestDate || undefined,
+    });
+  }
+
+  return plans;
+}
+
+export function plannedVaultDebitToExpensePayload(
+  plan: PlannedSavingsVaultDebit,
+  params: {
+    date: string;
+    batchId: string;
+    incomeSource?: string;
+  }
+): Omit<FlexibleExpense, 'id' | 'createdAt' | 'userId'> {
+  const autoNote = params.incomeSource
+    ? `Auto-debited from ${plan.vaultAccountName} (${params.incomeSource})`
+    : `Auto-debited from ${plan.vaultAccountName}`;
+
+  return {
+    date: params.date,
+    batchId: params.batchId,
+    accountId: plan.vaultAccountId,
+    vaultAction: 'debit',
+    recipient: plan.recipient,
+    category: plan.category,
+    subcategory: plan.subcategory,
+    subcategoryColor: plan.subcategoryColor,
+    description: plan.description,
+    notes: plan.notes ? `${plan.notes} · ${autoNote}` : autoNote,
+    currency: plan.vaultCurrency,
+    originalAmount: plan.debitAmountInVaultCurr,
+    exchangeRate: plan.exchangeRateToBase,
+    amount: plan.debitAmountInBaseCurr,
+  };
+}
+
 

@@ -25,6 +25,7 @@ import {
   getSecondaryCurrencyModeCaption,
   formatAccountCardBalanceByMode,
   resolveIntuitiveSubcategoryColor,
+  getManualSavingsVaultTransfersBreakdown,
 } from '../lib/calculations.ts';
 import {
   fetchMarketExchangeRates,
@@ -168,20 +169,33 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       manualExpensesTotal += baseAmount;
       addCurrencyBucketAmount(expensesByCurrMap, accountCurrency, accountAmount);
     }
-    const deductionExpensesTotal = Math.max(
-      0,
-      Math.round((totalDeductions - totalSavings) * 100) / 100
+    const manualVaultBreakdown = getManualSavingsVaultTransfersBreakdown(
+      transfers,
+      accounts,
+      settings,
+      incomes,
+      fxSnapshot
     );
-    const totalAllExpenses =
-      Math.round((manualExpensesTotal + deductionExpensesTotal) * 100) / 100;
+
+    const incomeSavingsTotal = Math.round(totalSavings * 100) / 100;
+    for (const [mCurr, mAmt] of manualVaultBreakdown.netByCurrencyMap.entries()) {
+      addCurrencyBucketAmount(savingsByCurrMap, mCurr, mAmt);
+    }
 
     totalGross = Math.round(totalGross * 100) / 100;
     totalDeductions = Math.round(totalDeductions * 100) / 100;
-    totalSavings = Math.round(totalSavings * 100) / 100;
+    totalSavings =
+      Math.round(
+        (incomeSavingsTotal + manualVaultBreakdown.netManualToVaultBase) * 100
+      ) / 100;
     const otherDeductions = Math.max(
       0,
-      Math.round((totalDeductions - totalSavings) * 100) / 100
+      Math.round((totalDeductions - incomeSavingsTotal) * 100) / 100
     );
+    const deductionExpensesTotal = otherDeductions;
+    const totalAllExpenses =
+      Math.round((manualExpensesTotal + deductionExpensesTotal) * 100) / 100;
+
     const netRetained = Math.round((totalGross - totalDeductions) * 100) / 100;
     const deductionRate = totalGross > 0 ? (totalDeductions / totalGross) * 100 : 0;
     const netRate =
@@ -195,6 +209,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       totalGross,
       totalDeductions,
       totalSavings,
+      manualVaultTransferCount: manualVaultBreakdown.manualToVaultCount,
+      manualVaultTransferNet: manualVaultBreakdown.netManualToVaultBase,
       otherDeductions,
       totalAllExpenses,
       totalExpensesCount: manualExpensesOnly.length + deductionExpenses.length,
@@ -208,7 +224,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       savingsByCurrency: mapToCurrencyBucketTotals(savingsByCurrMap, currency),
       expensesByCurrency: mapToCurrencyBucketTotals(expensesByCurrMap, currency),
     };
-  }, [incomes, expenses, settings, accounts, currency, fxSnapshot]);
+  }, [incomes, expenses, transfers, settings, accounts, currency, fxSnapshot]);
 
   const recentIncomes = useMemo(
     () => sortRecordsByArrivalTime(incomes).slice(0, 12),
@@ -391,6 +407,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           )}
           <div className="mt-1 text-xs text-slate-400">
             {formatPercent(incomeMetrics.savingsRate)} of gross
+            {incomeMetrics.manualVaultTransferCount > 0
+              ? ` · ${incomeMetrics.manualVaultTransferCount} manual transfer${
+                  incomeMetrics.manualVaultTransferCount === 1 ? '' : 's'
+                }`
+              : ''}
           </div>
         </div>
       </div>
@@ -431,21 +452,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <div
               className="h-full transition-all"
               style={{
-                width: `${incomeMetrics.netRate}%`,
+                width: `${Math.min(100, Math.max(0, incomeMetrics.netRate))}%`,
                 backgroundColor: colorConfig.primary,
               }}
             />
             <div
               className="h-full transition-all"
               style={{
-                width: `${incomeMetrics.savingsRate}%`,
+                width: `${Math.min(100, Math.max(0, incomeMetrics.savingsRate))}%`,
                 backgroundColor: colorConfig.chartSecondary,
               }}
             />
             <div
               className="h-full transition-all"
               style={{
-                width: `${incomeMetrics.otherRate}%`,
+                width: `${Math.min(100, Math.max(0, incomeMetrics.otherRate))}%`,
                 backgroundColor: colorConfig.chartTertiary,
               }}
             />

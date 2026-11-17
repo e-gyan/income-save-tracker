@@ -2,7 +2,7 @@
  * Firebase Client SDK Initialization and Hardened Error Interceptors
  */
 
-import { initializeApp } from 'firebase/app';
+import { initializeApp, setLogLevel as setFirebaseAppLogLevel } from 'firebase/app';
 import {
   getAuth,
   GoogleAuthProvider,
@@ -20,6 +20,7 @@ import {
   initializeFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
+  setLogLevel as setFirestoreLogLevel,
   doc,
   getDocFromServer,
 } from 'firebase/firestore';
@@ -46,8 +47,16 @@ export const effectiveFirebaseConfig = {
 // Initialize Firebase App
 export const app = initializeApp(effectiveFirebaseConfig);
 
-// CRITICAL: Initialize Firestore with persistent IndexedDB offline cache using the exact configured database ID
-// so signed-in users continue reading/writing their cloud data seamlessly when offline without falling back to local ledger.
+// Silence internal @firebase/app & @firebase/firestore offline fallback console error logs in proxy/iframe environments
+try {
+  setFirebaseAppLogLevel('silent');
+  setFirestoreLogLevel('silent');
+} catch {
+  // Ignore if unsupported
+}
+
+// CRITICAL: Initialize Firestore with persistent IndexedDB offline cache and forced HTTPS long polling
+// so Cloud Run / iframe proxies connect immediately without waiting 10s for WebChannel fallback.
 function createPersistentFirestore() {
   try {
     return initializeFirestore(
@@ -56,6 +65,7 @@ function createPersistentFirestore() {
         localCache: persistentLocalCache({
           tabManager: persistentMultipleTabManager(),
         }),
+        experimentalForceLongPolling: true,
       },
       effectiveFirebaseConfig.firestoreDatabaseId
     );
@@ -137,15 +147,14 @@ export function clearPersistedAuthUser(): void {
   }
 }
 
-// Validate connection to Firestore on boot (only when online)
+// Validate connection to Firestore when online and authenticated; fall back silently to persistent offline cache
 async function testConnection() {
   if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+  if (!auth.currentUser) return;
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
-    }
+  } catch {
+    // Client seamlessly operates in persistent offline cache mode until backend connection resumes
   }
 }
 testConnection();
