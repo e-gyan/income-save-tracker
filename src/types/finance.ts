@@ -72,7 +72,7 @@ export interface QuarterlyRates {
   q4TargetRate: number;
 }
 
-export type ThemeMode = 'light' | 'dark' | 'system';
+export type ThemeMode = 'light' | 'dark' | 'schedule' | 'system';
 
 export type TotalsCurrencyMode = 'base' | 'original';
 
@@ -84,7 +84,10 @@ export type AppColorTheme =
   | 'violet'
   | 'amber'
   | 'rose'
-  | 'slate';
+  | 'fuchsia'
+  | 'slate'
+  | 'cyan'
+  | 'sky';
 
 export interface ExpenseCategoryPreference {
   id: string;

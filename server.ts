@@ -2296,6 +2296,236 @@ app.post('/api/records/format-card', (req: Request, res: Response) => {
   }
 });
 
+function isExpenseDateInPresetBackend(
+  dateString: string | undefined | null,
+  preset: string = 'all'
+): boolean {
+  if (!preset || preset === 'all') return true;
+  if (!dateString) return false;
+  const normalized = normalizeDateString(dateString);
+  const parts = /^(\d{4})-(\d{2})-(\d{2})/.exec(normalized);
+  if (!parts) return false;
+  const itemDay = new Date(
+    Number(parts[1]),
+    Number(parts[2]) - 1,
+    Number(parts[3]),
+    0,
+    0,
+    0,
+    0
+  );
+  const now = new Date();
+  const refDay = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    0,
+    0,
+    0,
+    0
+  );
+  const diffDays = Math.round(
+    (refDay.getTime() - itemDay.getTime()) / (1000 * 60 * 60 * 24)
+  );
+  switch (preset) {
+    case '7d':
+      return diffDays >= 0 && diffDays <= 6;
+    case 'this_month':
+      return (
+        itemDay.getFullYear() === refDay.getFullYear() &&
+        itemDay.getMonth() === refDay.getMonth()
+      );
+    case '31d':
+    case '1m':
+      return diffDays >= 0 && diffDays <= 30;
+    case 'last_month': {
+      const prev = new Date(refDay.getFullYear(), refDay.getMonth() - 1, 1);
+      return (
+        itemDay.getFullYear() === prev.getFullYear() &&
+        itemDay.getMonth() === prev.getMonth()
+      );
+    }
+    case 'this_year':
+      return itemDay.getFullYear() === refDay.getFullYear();
+    case '365d':
+    case '1y':
+      return diffDays >= 0 && diffDays <= 364;
+    case 'last_year':
+      return itemDay.getFullYear() === refDay.getFullYear() - 1;
+    case '1d':
+      return diffDays === 0;
+    case '14d':
+      return diffDays >= 0 && diffDays <= 13;
+    case '3m':
+      return diffDays >= 0 && diffDays <= 89;
+    default:
+      return true;
+  }
+}
+
+function getBackendPeriodBucket(
+  dateString: string,
+  groupByPeriod: string
+): { key: string; label: string } {
+  if (!groupByPeriod || groupByPeriod === 'none') {
+    return { key: 'all', label: 'All Expenses' };
+  }
+  const normalized = normalizeDateString(dateString);
+  const parts = /^(\d{4})-(\d{2})-(\d{2})/.exec(normalized);
+  if (!parts) return { key: 'all', label: 'All Expenses' };
+  const year = Number(parts[1]);
+  const monthIdx = Number(parts[2]) - 1;
+  const dayNum = Number(parts[3]);
+  const d = new Date(year, monthIdx, dayNum, 0, 0, 0, 0);
+
+  if (groupByPeriod === 'year') {
+    return { key: String(year), label: String(year) };
+  }
+  if (groupByPeriod === 'month') {
+    const mm = String(monthIdx + 1).padStart(2, '0');
+    const monthLabel = d.toLocaleDateString('en-US', {
+      month: 'long',
+      year: 'numeric',
+    });
+    return { key: `${year}-${mm}`, label: monthLabel };
+  }
+  // week (Monday start)
+  const dow = d.getDay();
+  const mondayOffset = dow === 0 ? -6 : 1 - dow;
+  const start = new Date(year, monthIdx, dayNum + mondayOffset);
+  const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6);
+  const fmt = (dt: Date) =>
+    `${String(dt.getDate()).padStart(2, '0')}/${String(dt.getMonth() + 1).padStart(2, '0')}/${dt.getFullYear()}`;
+  const startKey = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
+  return { key: startKey, label: `${fmt(start)} – ${fmt(end)}` };
+}
+
+/**
+ * Backend Expenses By Category Aggregation Endpoint (`POST /api/expenses/by-category`)
+ * Responds to global `timeRange` presets, `groupByPeriod` (`none | week | month | year`),
+ * account/category filters, and search terms so the By Category view stays synced with date filters.
+ */
+app.post('/api/expenses/by-category', (req: Request, res: Response) => {
+  try {
+    const {
+      expenses = [],
+      timeRange = 'all',
+      groupByPeriod = 'none',
+      accountFilter = 'all',
+      categoryFilter = 'all',
+      searchTerm = '',
+    } = req.body || {};
+
+    const rawList: any[] = Array.isArray(expenses) ? expenses : [];
+    const q = String(searchTerm || '').trim().toLowerCase();
+
+    const filtered = rawList.filter((exp: any) => {
+      if (!exp) return false;
+      if (!isExpenseDateInPresetBackend(exp.date, String(timeRange || 'all'))) {
+        return false;
+      }
+      if (accountFilter && accountFilter !== 'all' && exp.accountId !== accountFilter) {
+        return false;
+      }
+      if (categoryFilter && categoryFilter !== 'all' && exp.category !== categoryFilter) {
+        return false;
+      }
+      if (q) {
+        const match =
+          String(exp.recipient || '').toLowerCase().includes(q) ||
+          String(exp.category || '').toLowerCase().includes(q) ||
+          String(exp.subcategory || '').toLowerCase().includes(q) ||
+          String(exp.notes || '').toLowerCase().includes(q) ||
+          String(exp.description || '').toLowerCase().includes(q);
+        if (!match) return false;
+      }
+      return true;
+    });
+
+    const periodMap = new Map<
+      string,
+      {
+        periodKey: string;
+        periodLabel: string;
+        periodTotal: number;
+        count: number;
+        categoriesMap: Map<
+          string,
+          {
+            category: string;
+            total: number;
+            count: number;
+            subTotals: Record<string, number>;
+          }
+        >;
+      }
+    >();
+
+    for (const exp of filtered) {
+      const bucket = getBackendPeriodBucket(
+        String(exp.date || ''),
+        String(groupByPeriod || 'none')
+      );
+      const pGroup = periodMap.get(bucket.key) || {
+        periodKey: bucket.key,
+        periodLabel: bucket.label,
+        periodTotal: 0,
+        count: 0,
+        categoriesMap: new Map(),
+      };
+      const amt = exp.vaultAction === 'credit' ? 0 : Number(exp.amount) || 0;
+      const cat = String(exp.category || 'Uncategorized').trim() || 'Uncategorized';
+      const sub = String(exp.subcategory || 'General').trim() || 'General';
+
+      pGroup.periodTotal = round2dp(pGroup.periodTotal + amt);
+      pGroup.count += 1;
+
+      const cGroup = pGroup.categoriesMap.get(cat) || {
+        category: cat,
+        total: 0,
+        count: 0,
+        subTotals: {},
+      };
+      cGroup.total = round2dp(cGroup.total + amt);
+      cGroup.count += 1;
+      cGroup.subTotals[sub] = round2dp((cGroup.subTotals[sub] || 0) + amt);
+      pGroup.categoriesMap.set(cat, cGroup);
+
+      periodMap.set(bucket.key, pGroup);
+    }
+
+    const periods = Array.from(periodMap.values())
+      .sort((a, b) => b.periodKey.localeCompare(a.periodKey))
+      .map((p) => ({
+        periodKey: p.periodKey,
+        periodLabel: p.periodLabel,
+        periodTotal: p.periodTotal,
+        count: p.count,
+        categories: Array.from(p.categoriesMap.values()).sort(
+          (a, b) => b.total - a.total
+        ),
+      }));
+
+    const grandTotal = round2dp(
+      periods.reduce((sum, p) => sum + p.periodTotal, 0)
+    );
+
+    return res.json({
+      success: true,
+      timeRange,
+      groupByPeriod,
+      totalCount: filtered.length,
+      grandTotal,
+      periods,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Failed to aggregate expenses by category.',
+    });
+  }
+});
+
 /**
  * Authenticated User Cloud-Session Snapshot Store
  * Enables instant zero-wait refresh and offline logged-in data continuity without falling back to the unauthenticated local ledger.

@@ -1284,19 +1284,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <label className="block text-xs font-medium text-slate-700 mb-1.5">
               Theme Mode
             </label>
-            <div className="grid grid-cols-3 gap-1.5 rounded-lg bg-slate-100 p-1">
-              {(['light', 'dark', 'system'] as ThemeMode[]).map((mode) => (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 rounded-lg bg-slate-100 p-1">
+              {(
+                [
+                  { id: 'light', label: 'Light' },
+                  { id: 'dark', label: 'Dark' },
+                  { id: 'schedule', label: '6:45 AM/PM' },
+                  { id: 'system', label: 'Auto' },
+                ] as { id: ThemeMode; label: string }[]
+              ).map((mode) => (
                 <button
-                  key={mode}
+                  key={mode.id}
                   type="button"
-                  onClick={() => handleThemeChange(mode)}
-                  className={`rounded-md py-1.5 px-2.5 text-xs font-semibold capitalize transition-colors ${
-                    themeMode === mode
+                  onClick={() => handleThemeChange(mode.id)}
+                  className={`rounded-md py-1.5 px-2 text-xs font-semibold transition-colors ${
+                    themeMode === mode.id
                       ? 'bg-slate-900 text-white'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  {mode === 'system' ? 'Auto' : mode}
+                  {mode.label}
                 </button>
               ))}
             </div>
@@ -1367,7 +1374,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   App Color Palette
                 </div>
                 <div className="text-xs text-slate-500 break-words">
-                  {activeColorConfig.name} · {activeColorConfig.functionLabel}
+                  {activeColorConfig.name}
                 </div>
               </div>
             </div>
@@ -1396,7 +1403,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
 
           {!isColorsCollapsed && (
-            <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+            <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
               {APP_COLOR_THEMES.map((theme) => {
                 const isSelected = theme.id === colorTheme;
                 return (
@@ -1404,14 +1411,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     key={theme.id}
                     type="button"
                     onClick={() => handleColorThemeSelect(theme.id)}
-                    className={`flex items-start gap-2.5 rounded-xl border p-3 text-left transition-all ${
+                    className={`flex items-center gap-2.5 rounded-xl border p-3 text-left transition-all ${
                       isSelected
                         ? 'border-slate-900 bg-slate-50 ring-1 ring-slate-900/10'
                         : 'border-slate-200/80 bg-white hover:bg-slate-50'
                     }`}
                   >
                     <span
-                      className="mt-0.5 h-5 w-5 rounded-full shrink-0 flex items-center justify-center text-[10px] font-bold text-white"
+                      className="h-5 w-5 rounded-full shrink-0 flex items-center justify-center text-[10px] font-bold text-white"
                       style={{ backgroundColor: theme.primary }}
                     >
                       {isSelected ? '✓' : ''}
@@ -1419,12 +1426,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <div className="min-w-0 flex-1">
                       <div className="font-display text-xs font-semibold text-slate-900 break-words">
                         {theme.name}
-                      </div>
-                      <div className="text-[11px] font-medium text-slate-600 mt-0.5 break-words">
-                        {theme.functionLabel}
-                      </div>
-                      <div className="text-[10px] text-slate-400 mt-0.5 break-words">
-                        {theme.uxInsight}
                       </div>
                     </div>
                   </button>

@@ -91,6 +91,15 @@
     font-weight: 600;
   }
 
+  input:not([type="checkbox"]),
+  textarea {
+    user-select: text;
+    -webkit-user-select: text;
+    overflow-wrap: normal;
+    word-break: normal;
+    touch-action: manipulation;
+  }
+
   select,
   option,
   optgroup {

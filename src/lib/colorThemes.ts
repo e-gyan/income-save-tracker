@@ -28,9 +28,9 @@ export interface ColorThemeConfig {
 export const APP_COLOR_THEMES: ColorThemeConfig[] = [
   {
     id: 'emerald',
-    name: 'Emerald Growth',
-    functionLabel: 'Savings & Compounding',
-    uxInsight: 'Reinforces net retention and vault growth',
+    name: 'Emerald',
+    functionLabel: '',
+    uxInsight: '',
     primary: '#059669',
     primaryHover: '#047857',
     darkPrimary: '#10b981',
@@ -41,7 +41,7 @@ export const APP_COLOR_THEMES: ColorThemeConfig[] = [
     softBorderDark: 'rgba(16, 185, 129, 0.35)',
     accentTextLight: '#047857',
     accentTextDark: '#34d399',
-    canvasTintLight: '#f4fbf7',
+    canvasTintLight: '#effaf4',
     canvasTintDark: '#07120e',
     chartSecondary: '#10b981',
     chartTertiary: '#34d399',
@@ -57,9 +57,9 @@ export const APP_COLOR_THEMES: ColorThemeConfig[] = [
   },
   {
     id: 'sapphire',
-    name: 'Sapphire Trust',
-    functionLabel: 'Treasury & Banking',
-    uxInsight: 'Enhances focus and account clarity',
+    name: 'Sapphire',
+    functionLabel: '',
+    uxInsight: '',
     primary: '#2563eb',
     primaryHover: '#1d4ed8',
     darkPrimary: '#3b82f6',
@@ -70,7 +70,7 @@ export const APP_COLOR_THEMES: ColorThemeConfig[] = [
     softBorderDark: 'rgba(59, 130, 246, 0.35)',
     accentTextLight: '#1d4ed8',
     accentTextDark: '#60a5fa',
-    canvasTintLight: '#f5f8ff',
+    canvasTintLight: '#eff5ff',
     canvasTintDark: '#080e1a',
     chartSecondary: '#3b82f6',
     chartTertiary: '#60a5fa',
@@ -86,9 +86,9 @@ export const APP_COLOR_THEMES: ColorThemeConfig[] = [
   },
   {
     id: 'indigo',
-    name: 'Indigo Strategy',
-    functionLabel: 'Allocation & Routing',
-    uxInsight: 'Supports structured multi-pillar splits',
+    name: 'Indigo',
+    functionLabel: '',
+    uxInsight: '',
     primary: '#4f46e5',
     primaryHover: '#4338ca',
     darkPrimary: '#6366f1',
@@ -99,7 +99,7 @@ export const APP_COLOR_THEMES: ColorThemeConfig[] = [
     softBorderDark: 'rgba(99, 102, 241, 0.35)',
     accentTextLight: '#4338ca',
     accentTextDark: '#818cf8',
-    canvasTintLight: '#f6f7ff',
+    canvasTintLight: '#f1f3ff',
     canvasTintDark: '#0b0c1a',
     chartSecondary: '#6366f1',
     chartTertiary: '#818cf8',
@@ -115,9 +115,9 @@ export const APP_COLOR_THEMES: ColorThemeConfig[] = [
   },
   {
     id: 'teal',
-    name: 'Teal Liquidity',
-    functionLabel: 'Cash Flow Balance',
-    uxInsight: 'Balances operating inflows and outflows',
+    name: 'Teal',
+    functionLabel: '',
+    uxInsight: '',
     primary: '#0d9488',
     primaryHover: '#0f766e',
     darkPrimary: '#14b8a6',
@@ -128,7 +128,7 @@ export const APP_COLOR_THEMES: ColorThemeConfig[] = [
     softBorderDark: 'rgba(20, 184, 166, 0.35)',
     accentTextLight: '#0f766e',
     accentTextDark: '#2dd4bf',
-    canvasTintLight: '#f3fbfa',
+    canvasTintLight: '#edfbf9',
     canvasTintDark: '#071313',
     chartSecondary: '#14b8a6',
     chartTertiary: '#2dd4bf',
@@ -144,9 +144,9 @@ export const APP_COLOR_THEMES: ColorThemeConfig[] = [
   },
   {
     id: 'violet',
-    name: 'Violet Stewardship',
-    functionLabel: 'Endowment & Vision',
-    uxInsight: 'Encourages long-term capital discipline',
+    name: 'Violet',
+    functionLabel: '',
+    uxInsight: '',
     primary: '#7c3aed',
     primaryHover: '#6d28d9',
     darkPrimary: '#8b5cf6',
@@ -157,7 +157,7 @@ export const APP_COLOR_THEMES: ColorThemeConfig[] = [
     softBorderDark: 'rgba(139, 92, 246, 0.35)',
     accentTextLight: '#6d28d9',
     accentTextDark: '#a78bfa',
-    canvasTintLight: '#f9f7ff',
+    canvasTintLight: '#f6f2ff',
     canvasTintDark: '#0e0a1a',
     chartSecondary: '#8b5cf6',
     chartTertiary: '#a78bfa',
@@ -173,9 +173,9 @@ export const APP_COLOR_THEMES: ColorThemeConfig[] = [
   },
   {
     id: 'amber',
-    name: 'Amber Capital',
-    functionLabel: 'Seed & Enterprise',
-    uxInsight: 'Highlights revenue velocity and seed funds',
+    name: 'Amber',
+    functionLabel: '',
+    uxInsight: '',
     primary: '#d97706',
     primaryHover: '#b45309',
     darkPrimary: '#f59e0b',
@@ -186,7 +186,7 @@ export const APP_COLOR_THEMES: ColorThemeConfig[] = [
     softBorderDark: 'rgba(245, 158, 11, 0.35)',
     accentTextLight: '#b45309',
     accentTextDark: '#fbbf24',
-    canvasTintLight: '#fffcf5',
+    canvasTintLight: '#fff9eb',
     canvasTintDark: '#141007',
     chartSecondary: '#f59e0b',
     chartTertiary: '#fbbf24',
@@ -202,9 +202,9 @@ export const APP_COLOR_THEMES: ColorThemeConfig[] = [
   },
   {
     id: 'rose',
-    name: 'Crimson Vigilance',
-    functionLabel: 'Expense Control',
-    uxInsight: 'Sharpens focus on expenses and outflow limits',
+    name: 'Rose',
+    functionLabel: '',
+    uxInsight: '',
     primary: '#e11d48',
     primaryHover: '#be123c',
     darkPrimary: '#f43f5e',
@@ -215,7 +215,7 @@ export const APP_COLOR_THEMES: ColorThemeConfig[] = [
     softBorderDark: 'rgba(244, 63, 94, 0.35)',
     accentTextLight: '#be123c',
     accentTextDark: '#fb7185',
-    canvasTintLight: '#fff7f8',
+    canvasTintLight: '#fff2f4',
     canvasTintDark: '#16090d',
     chartSecondary: '#f43f5e',
     chartTertiary: '#fb7185',
@@ -230,23 +230,52 @@ export const APP_COLOR_THEMES: ColorThemeConfig[] = [
     ],
   },
   {
+    id: 'fuchsia',
+    name: 'Fuchsia',
+    functionLabel: '',
+    uxInsight: '',
+    primary: '#c026d3',
+    primaryHover: '#a21caf',
+    darkPrimary: '#e879f9',
+    darkPrimaryHover: '#d946ef',
+    softBgLight: '#fdf4ff',
+    softBgDark: 'rgba(217, 70, 239, 0.15)',
+    softBorderLight: '#f5d0fe',
+    softBorderDark: 'rgba(217, 70, 239, 0.35)',
+    accentTextLight: '#a21caf',
+    accentTextDark: '#f0abfc',
+    canvasTintLight: '#fdf2fb',
+    canvasTintDark: '#17081a',
+    chartSecondary: '#d946ef',
+    chartTertiary: '#e879f9',
+    chartPalette: [
+      '#86198f',
+      '#a21caf',
+      '#c026d3',
+      '#d946ef',
+      '#e879f9',
+      '#f0abfc',
+      '#db2777',
+    ],
+  },
+  {
     id: 'slate',
-    name: 'Obsidian Ledger',
-    functionLabel: 'Executive Minimalist',
-    uxInsight: 'High-contrast distraction-free accounting',
-    primary: '#0f172a',
+    name: 'Slate',
+    functionLabel: '',
+    uxInsight: '',
+    primary: '#334155',
     primaryHover: '#1e293b',
-    darkPrimary: '#38bdf8',
-    darkPrimaryHover: '#0284c7',
+    darkPrimary: '#94a3b8',
+    darkPrimaryHover: '#cbd5e1',
     softBgLight: '#f1f5f9',
-    softBgDark: 'rgba(56, 189, 248, 0.14)',
+    softBgDark: 'rgba(148, 163, 184, 0.16)',
     softBorderLight: '#cbd5e1',
-    softBorderDark: 'rgba(56, 189, 248, 0.35)',
-    accentTextLight: '#0f172a',
-    accentTextDark: '#38bdf8',
-    canvasTintLight: '#f8fafc',
+    softBorderDark: 'rgba(148, 163, 184, 0.35)',
+    accentTextLight: '#1e293b',
+    accentTextDark: '#cbd5e1',
+    canvasTintLight: '#f3f6fa',
     canvasTintDark: '#090d16',
-    chartSecondary: '#334155',
+    chartSecondary: '#475569',
     chartTertiary: '#64748b',
     chartPalette: [
       '#0f172a',
@@ -258,7 +287,72 @@ export const APP_COLOR_THEMES: ColorThemeConfig[] = [
       '#0284c7',
     ],
   },
+  {
+    id: 'cyan',
+    name: 'Cyan',
+    functionLabel: '',
+    uxInsight: '',
+    primary: '#0891b2',
+    primaryHover: '#0e7490',
+    darkPrimary: '#22d3ee',
+    darkPrimaryHover: '#06b6d4',
+    softBgLight: '#ecfeff',
+    softBgDark: 'rgba(34, 211, 238, 0.14)',
+    softBorderLight: '#a5f3fc',
+    softBorderDark: 'rgba(34, 211, 238, 0.35)',
+    accentTextLight: '#0e7490',
+    accentTextDark: '#67e8f9',
+    canvasTintLight: '#ecfeff',
+    canvasTintDark: '#061519',
+    chartSecondary: '#06b6d4',
+    chartTertiary: '#22d3ee',
+    chartPalette: [
+      '#155e75',
+      '#0e7490',
+      '#0891b2',
+      '#06b6d4',
+      '#22d3ee',
+      '#67e8f9',
+      '#0284c7',
+    ],
+  },
+  {
+    id: 'sky',
+    name: 'Sky',
+    functionLabel: '',
+    uxInsight: '',
+    primary: '#0284c7',
+    primaryHover: '#0369a1',
+    darkPrimary: '#38bdf8',
+    darkPrimaryHover: '#0ea5e9',
+    softBgLight: '#f0f9ff',
+    softBgDark: 'rgba(56, 189, 248, 0.15)',
+    softBorderLight: '#bae6fd',
+    softBorderDark: 'rgba(56, 189, 248, 0.35)',
+    accentTextLight: '#0369a1',
+    accentTextDark: '#7dd3fc',
+    canvasTintLight: '#eef8ff',
+    canvasTintDark: '#07131d',
+    chartSecondary: '#0ea5e9',
+    chartTertiary: '#38bdf8',
+    chartPalette: [
+      '#075985',
+      '#0369a1',
+      '#0284c7',
+      '#0ea5e9',
+      '#38bdf8',
+      '#7dd3fc',
+      '#2563eb',
+    ],
+  },
 ];
+
+export function getScheduledThemeIsDark(now: Date = new Date()): boolean {
+  const minutesOfDay = now.getHours() * 60 + now.getMinutes();
+  const lightStart = 6 * 60 + 45; // 06:45 AM
+  const darkStart = 18 * 60 + 45; // 06:45 PM
+  return minutesOfDay < lightStart || minutesOfDay >= darkStart;
+}
 
 export function getPersistedColorTheme(): AppColorTheme {
   try {
@@ -283,13 +377,18 @@ export function setPersistedColorTheme(themeId: AppColorTheme): void {
 export function getPersistedThemeMode(): ThemeMode {
   try {
     const saved = localStorage.getItem(THEME_MODE_STORAGE_KEY) as ThemeMode | null;
-    if (saved === 'light' || saved === 'dark' || saved === 'system') {
+    if (
+      saved === 'light' ||
+      saved === 'dark' ||
+      saved === 'schedule' ||
+      saved === 'system'
+    ) {
       return saved;
     }
   } catch {
     // ignore storage errors
   }
-  return 'light';
+  return 'schedule';
 }
 
 export function setPersistedThemeMode(mode: ThemeMode): void {

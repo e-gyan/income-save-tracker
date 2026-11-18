@@ -49,6 +49,7 @@ import { WrapSelect } from './WrapSelect.tsx';
 import {
   buildAutomatedSavingsVaultDebitPlan,
   plannedVaultDebitToExpensePayload,
+  PlannedSavingsVaultDebit,
 } from '../lib/deductionIntelligence.ts';
 import {
   formatDateTimeDDMMYYYY,
@@ -421,6 +422,20 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
     Boolean(settings.autoDebitSavingsVaults)
   );
   const [excludedAutoVaultIds, setExcludedAutoVaultIds] = useState<string[]>([]);
+  const [vaultDebitEdits, setVaultDebitEdits] = useState<
+    Record<
+      string,
+      {
+        recipient?: string;
+        category?: string;
+        subcategory?: string;
+        amountStr?: string;
+        notes?: string;
+      }
+    >
+  >({});
+  const [editingVaultPlanId, setEditingVaultPlanId] = useState<string | null>(null);
+  const [dedValueDrafts, setDedValueDrafts] = useState<Record<string, string>>({});
 
   useEffect(() => {
     setDraftNetTransferAccountId(settings.defaultNetIncomeAccountId || '');
@@ -686,12 +701,68 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
     ]
   );
 
+  const effectivePlannedVaultDebits: PlannedSavingsVaultDebit[] = useMemo(() => {
+    const baseCurr = (currency || 'GHS').trim().toUpperCase();
+    return plannedVaultDebits.map((plan) => {
+      const edit = vaultDebitEdits[plan.vaultAccountId];
+      if (!edit) return plan;
+
+      const nextRecipient =
+        edit.recipient !== undefined ? edit.recipient : plan.recipient;
+      const nextCategory =
+        edit.category !== undefined ? edit.category : plan.category;
+      const nextSubcategory =
+        edit.subcategory !== undefined ? edit.subcategory : plan.subcategory;
+      const nextNotes = edit.notes !== undefined ? edit.notes : plan.notes;
+
+      let nextDebitInVault = plan.debitAmountInVaultCurr;
+      let nextDebitInBase = plan.debitAmountInBaseCurr;
+      if (edit.amountStr !== undefined) {
+        const parsed = parseFloat(edit.amountStr);
+        nextDebitInVault =
+          !isNaN(parsed) && parsed >= 0 ? roundTo2Decimals(parsed) : 0;
+        nextDebitInBase =
+          plan.vaultCurrency === baseCurr
+            ? nextDebitInVault
+            : convertCurrency2dp(
+                nextDebitInVault,
+                plan.vaultCurrency,
+                baseCurr,
+                fxSnapshot
+              ).convertedAmount;
+      }
+
+      const nextColor =
+        nextSubcategory && nextSubcategory !== plan.subcategory
+          ? resolveIntuitiveSubcategoryColor(
+              nextSubcategory,
+              nextCategory || 'Savings Allocation',
+              settings,
+              expenses
+            )
+          : plan.subcategoryColor;
+
+      return {
+        ...plan,
+        recipient: nextRecipient,
+        category: nextCategory,
+        subcategory: nextSubcategory || undefined,
+        subcategoryColor: nextColor,
+        notes: nextNotes || undefined,
+        debitAmountInVaultCurr: nextDebitInVault,
+        debitAmountInBaseCurr: nextDebitInBase,
+      };
+    });
+  }, [plannedVaultDebits, vaultDebitEdits, currency, fxSnapshot, settings, expenses]);
+
   const selectedAutoVaultDebits = useMemo(
     () =>
-      plannedVaultDebits.filter(
-        (p) => !excludedAutoVaultIds.includes(p.vaultAccountId)
+      effectivePlannedVaultDebits.filter(
+        (p) =>
+          !excludedAutoVaultIds.includes(p.vaultAccountId) &&
+          p.debitAmountInVaultCurr > 0
       ),
-    [plannedVaultDebits, excludedAutoVaultIds]
+    [effectivePlannedVaultDebits, excludedAutoVaultIds]
   );
 
   const draftExpenseDeductionsTotal = useMemo(
@@ -924,6 +995,9 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
       setNewOriginDraft('');
       setIsNetTransferPromptOpen(false);
       setExcludedAutoVaultIds([]);
+      setVaultDebitEdits({});
+      setEditingVaultPlanId(null);
+      setDedValueDrafts({});
       setAutomateVaultDebit(Boolean(settings.autoDebitSavingsVaults));
       setDraftNetTransferAccountId(settings.defaultNetIncomeAccountId || '');
       setDraftDeductions(
@@ -1692,84 +1766,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                 )}
               </div>
 
-              {/* 3. Total Income Amount, Currency & Date (With Quarter Intelligence & Real-Time Market FX) */}
-              <div className="space-y-2.5">
-                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
-                  <div className="sm:col-span-3">
-                    <label className="block text-xs font-medium text-slate-700 mb-1">
-                      Currency
-                    </label>
-                    <select
-                      value={incomeCurrency}
-                      onChange={(e) => setIncomeCurrency(e.target.value)}
-                      className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 font-mono text-xs font-semibold text-slate-900 focus:border-slate-900 focus:outline-none"
-                    >
-                      {SUPPORTED_CURRENCIES.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="sm:col-span-5">
-                    <label className="block text-xs font-medium text-slate-700 mb-1">
-                      Total Income ({incomeCurrency})
-                    </label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0.01"
-                      required
-                      value={grossAmount}
-                      onChange={(e) => setGrossAmount(e.target.value)}
-                      placeholder="0.00"
-                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 tabular-nums placeholder:text-slate-400 focus:border-slate-900 focus:outline-none"
-                    />
-                  </div>
-
-                  <div className="sm:col-span-4">
-                    <div className="flex items-center justify-between gap-1 mb-1">
-                      <label className="block text-xs font-medium text-slate-700">
-                        Date
-                      </label>
-                      <span className="rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-700">
-                        {selectedDraftQuarter}
-                      </span>
-                    </div>
-                    <input
-                      type="date"
-                      required
-                      value={date}
-                      onChange={(e) => handleDateChange(e.target.value)}
-                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 tabular-nums focus:border-slate-900 focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                {activeIncomeCurrency !== currency && (
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 space-y-1 text-xs">
-                    <div className="flex items-center justify-between gap-2 text-slate-600">
-                      <span>
-                        Saved in Account Currency ({activeIncomeCurrency})
-                      </span>
-                      <span className="font-mono font-semibold text-emerald-700 tabular-nums">
-                        {formatAmount(rawDraftInputGross, activeIncomeCurrency)} (No Conversion)
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between text-[11px] text-slate-500 border-t border-slate-200/70 pt-1">
-                      <span>
-                        Totals Equivalent ({currency} @ {format2PointFloat(draftConversion.exchangeRate2dp)})
-                      </span>
-                      <span className="font-mono font-semibold text-slate-800 tabular-nums">
-                        {formatAmount(draftConversion.convertedAmount, currency)}
-                      </span>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* 4. Receiving Account */}
+              {/* 3. Receiving Account */}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="block text-xs font-medium text-slate-700">
@@ -1953,6 +1950,83 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                       >
                         {isCreatingQuickAcc ? 'Saving...' : 'Save Account'}
                       </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* 4. Total Income Amount, Currency & Date (With Quarter Intelligence & Real-Time Market FX) */}
+              <div className="space-y-2.5">
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+                  <div className="sm:col-span-3">
+                    <label className="block text-xs font-medium text-slate-700 mb-1">
+                      Currency
+                    </label>
+                    <select
+                      value={incomeCurrency}
+                      onChange={(e) => setIncomeCurrency(e.target.value)}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 font-mono text-xs font-semibold text-slate-900 focus:border-slate-900 focus:outline-none"
+                    >
+                      {SUPPORTED_CURRENCIES.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="sm:col-span-5">
+                    <label className="block text-xs font-medium text-slate-700 mb-1">
+                      Total Income ({incomeCurrency})
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      required
+                      value={grossAmount}
+                      onChange={(e) => setGrossAmount(e.target.value)}
+                      placeholder="0.00"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 tabular-nums placeholder:text-slate-400 focus:border-slate-900 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-4">
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <label className="block text-xs font-medium text-slate-700">
+                        Date
+                      </label>
+                      <span className="rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-700">
+                        {selectedDraftQuarter}
+                      </span>
+                    </div>
+                    <input
+                      type="date"
+                      required
+                      value={date}
+                      onChange={(e) => handleDateChange(e.target.value)}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 tabular-nums focus:border-slate-900 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                {activeIncomeCurrency !== currency && (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 space-y-1 text-xs">
+                    <div className="flex items-center justify-between gap-2 text-slate-600">
+                      <span>
+                        Saved in Account Currency ({activeIncomeCurrency})
+                      </span>
+                      <span className="font-mono font-semibold text-emerald-700 tabular-nums">
+                        {formatAmount(rawDraftInputGross, activeIncomeCurrency)} (No Conversion)
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] text-slate-500 border-t border-slate-200/70 pt-1">
+                      <span>
+                        Totals Equivalent ({currency} @ {format2PointFloat(draftConversion.exchangeRate2dp)})
+                      </span>
+                      <span className="font-mono font-semibold text-slate-800 tabular-nums">
+                        {formatAmount(draftConversion.convertedAmount, currency)}
+                      </span>
                     </div>
                   </div>
                 )}
@@ -2185,11 +2259,31 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                                       type="number"
                                       step="0.01"
                                       min="0"
-                                      value={ded.value}
-                                      onChange={(e) =>
+                                      value={
+                                        dedValueDrafts[ded.id] !== undefined
+                                          ? dedValueDrafts[ded.id]
+                                          : String(ded.value)
+                                      }
+                                      onChange={(e) => {
+                                        const raw = e.target.value;
+                                        setDedValueDrafts((prev) => ({
+                                          ...prev,
+                                          [ded.id]: raw,
+                                        }));
+                                        const parsed =
+                                          raw.trim() === ''
+                                            ? 0
+                                            : Math.max(0, parseFloat(raw) || 0);
                                         handleUpdateDraftDeduction(ded.id, {
-                                          value: Math.max(0, parseFloat(e.target.value) || 0),
+                                          value: parsed,
                                           isCustomRateOverride: true,
+                                        });
+                                      }}
+                                      onBlur={() =>
+                                        setDedValueDrafts((prev) => {
+                                          const next = { ...prev };
+                                          delete next[ded.id];
+                                          return next;
                                         })
                                       }
                                       placeholder="0"
@@ -2421,58 +2515,242 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                       </div>
                     </label>
 
-                    {automateVaultDebit && plannedVaultDebits.length > 0 && (
+                    {automateVaultDebit && effectivePlannedVaultDebits.length > 0 && (
                       <div className="space-y-1.5 border-t border-slate-200/80 pt-2">
-                        {plannedVaultDebits.map((plan) => {
+                        {effectivePlannedVaultDebits.map((plan) => {
                           const isChecked = !excludedAutoVaultIds.includes(
                             plan.vaultAccountId
                           );
+                          const isEditingThis =
+                            editingVaultPlanId === plan.vaultAccountId;
+                          const editObj = vaultDebitEdits[plan.vaultAccountId] || {};
+                          const catPref = effectiveExpensePrefs.find(
+                            (p) => p.name === plan.category
+                          );
+                          const subOpts = catPref?.subcategories || [];
+
                           return (
-                            <label
+                            <div
                               key={plan.vaultAccountId}
-                              className="flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] cursor-pointer"
+                              className="rounded-md border border-slate-200 bg-white px-2.5 py-2 text-[11px] space-y-2"
                             >
-                              <div className="flex items-center gap-2 min-w-0">
-                                <input
-                                  type="checkbox"
-                                  checked={isChecked}
-                                  onChange={(e) => {
-                                    const next = e.target.checked;
-                                    setExcludedAutoVaultIds((prev) =>
-                                      next
-                                        ? prev.filter(
-                                            (id) => id !== plan.vaultAccountId
-                                          )
-                                        : [...prev, plan.vaultAccountId]
-                                    );
-                                  }}
-                                  className="h-3.5 w-3.5 rounded border-slate-300 text-slate-900 focus:ring-slate-900 shrink-0"
-                                />
-                                <div className="min-w-0">
-                                  <div className="font-semibold text-slate-800 truncate">
-                                    {plan.vaultAccountName} → {plan.recipient}
+                              <div className="flex items-center justify-between gap-2">
+                                <label className="flex items-center gap-2 min-w-0 cursor-pointer flex-1">
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={(e) => {
+                                      const next = e.target.checked;
+                                      setExcludedAutoVaultIds((prev) =>
+                                        next
+                                          ? prev.filter(
+                                              (id) => id !== plan.vaultAccountId
+                                            )
+                                          : [...prev, plan.vaultAccountId]
+                                      );
+                                    }}
+                                    className="h-3.5 w-3.5 rounded border-slate-300 text-slate-900 focus:ring-slate-900 shrink-0"
+                                  />
+                                  <div className="min-w-0">
+                                    <div className="font-semibold text-slate-800 truncate">
+                                      {plan.vaultAccountName} → {plan.recipient}
+                                    </div>
+                                    <div className="text-[10px] text-slate-500 truncate">
+                                      {plan.category}
+                                      {plan.subcategory
+                                        ? ` · ${plan.subcategory}`
+                                        : ''}
+                                    </div>
                                   </div>
-                                  <div className="text-[10px] text-slate-500 truncate">
-                                    {plan.category}
-                                    {plan.subcategory
-                                      ? ` · ${plan.subcategory}`
-                                      : ''}
-                                  </div>
+                                </label>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <span
+                                    className={`font-mono font-semibold tabular-nums ${
+                                      isChecked
+                                        ? 'text-rose-600'
+                                        : 'text-slate-400 line-through'
+                                    }`}
+                                  >
+                                    -{formatAmount(
+                                      plan.debitAmountInVaultCurr,
+                                      plan.vaultCurrency
+                                    )}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setEditingVaultPlanId(
+                                        isEditingThis ? null : plan.vaultAccountId
+                                      )
+                                    }
+                                    className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-100"
+                                  >
+                                    {isEditingThis ? 'Done' : 'Edit'}
+                                  </button>
                                 </div>
                               </div>
-                              <span
-                                className={`font-mono font-semibold tabular-nums shrink-0 ${
-                                  isChecked
-                                    ? 'text-rose-600'
-                                    : 'text-slate-400 line-through'
-                                }`}
-                              >
-                                -{formatAmount(
-                                  plan.debitAmountInVaultCurr,
-                                  plan.vaultCurrency
-                                )}
-                              </span>
-                            </label>
+
+                              {isEditingThis && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 border-t border-slate-100 pt-2">
+                                  <div>
+                                    <label className="block text-[10px] font-medium text-slate-500 mb-0.5">
+                                      To / Cause
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={
+                                        editObj.recipient !== undefined
+                                          ? editObj.recipient
+                                          : plan.recipient
+                                      }
+                                      onChange={(e) =>
+                                        setVaultDebitEdits((prev) => ({
+                                          ...prev,
+                                          [plan.vaultAccountId]: {
+                                            ...prev[plan.vaultAccountId],
+                                            recipient: e.target.value,
+                                          },
+                                        }))
+                                      }
+                                      className="w-full rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-900 focus:border-slate-900 focus:outline-none"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-[10px] font-medium text-slate-500 mb-0.5">
+                                      Debit Amount ({plan.vaultCurrency})
+                                    </label>
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      min="0"
+                                      value={
+                                        editObj.amountStr !== undefined
+                                          ? editObj.amountStr
+                                          : String(plan.debitAmountInVaultCurr)
+                                      }
+                                      onChange={(e) =>
+                                        setVaultDebitEdits((prev) => ({
+                                          ...prev,
+                                          [plan.vaultAccountId]: {
+                                            ...prev[plan.vaultAccountId],
+                                            amountStr: e.target.value,
+                                          },
+                                        }))
+                                      }
+                                      className="w-full rounded border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-900 tabular-nums focus:border-slate-900 focus:outline-none"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-[10px] font-medium text-slate-500 mb-0.5">
+                                      Category
+                                    </label>
+                                    <select
+                                      value={plan.category}
+                                      onChange={(e) => {
+                                        const nextCat = e.target.value;
+                                        const nextPref = effectiveExpensePrefs.find(
+                                          (p) => p.name === nextCat
+                                        );
+                                        setVaultDebitEdits((prev) => ({
+                                          ...prev,
+                                          [plan.vaultAccountId]: {
+                                            ...prev[plan.vaultAccountId],
+                                            category: nextCat,
+                                            subcategory:
+                                              nextPref?.subcategories?.[0] || '',
+                                          },
+                                        }));
+                                      }}
+                                      className="w-full rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-900 focus:border-slate-900 focus:outline-none"
+                                    >
+                                      {effectiveExpensePrefs.map((p) => (
+                                        <option key={p.id} value={p.name}>
+                                          {p.name}
+                                        </option>
+                                      ))}
+                                      {!effectiveExpensePrefs.some(
+                                        (p) => p.name === plan.category
+                                      ) && (
+                                        <option value={plan.category}>
+                                          {plan.category}
+                                        </option>
+                                      )}
+                                    </select>
+                                  </div>
+                                  <div>
+                                    <label className="block text-[10px] font-medium text-slate-500 mb-0.5">
+                                      Subcategory
+                                    </label>
+                                    {subOpts.length > 0 ? (
+                                      <select
+                                        value={plan.subcategory || ''}
+                                        onChange={(e) =>
+                                          setVaultDebitEdits((prev) => ({
+                                            ...prev,
+                                            [plan.vaultAccountId]: {
+                                              ...prev[plan.vaultAccountId],
+                                              subcategory: e.target.value,
+                                            },
+                                          }))
+                                        }
+                                        className="w-full rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-900 focus:border-slate-900 focus:outline-none"
+                                      >
+                                        <option value="">None</option>
+                                        {subOpts.map((s) => (
+                                          <option key={s} value={s}>
+                                            {s}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    ) : (
+                                      <input
+                                        type="text"
+                                        value={
+                                          editObj.subcategory !== undefined
+                                            ? editObj.subcategory
+                                            : plan.subcategory || ''
+                                        }
+                                        onChange={(e) =>
+                                          setVaultDebitEdits((prev) => ({
+                                            ...prev,
+                                            [plan.vaultAccountId]: {
+                                              ...prev[plan.vaultAccountId],
+                                              subcategory: e.target.value,
+                                            },
+                                          }))
+                                        }
+                                        placeholder="Subcategory"
+                                        className="w-full rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-900 focus:border-slate-900 focus:outline-none"
+                                      />
+                                    )}
+                                  </div>
+                                  <div className="sm:col-span-2">
+                                    <label className="block text-[10px] font-medium text-slate-500 mb-0.5">
+                                      Notes
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={
+                                        editObj.notes !== undefined
+                                          ? editObj.notes
+                                          : plan.notes || ''
+                                      }
+                                      onChange={(e) =>
+                                        setVaultDebitEdits((prev) => ({
+                                          ...prev,
+                                          [plan.vaultAccountId]: {
+                                            ...prev[plan.vaultAccountId],
+                                            notes: e.target.value,
+                                          },
+                                        }))
+                                      }
+                                      placeholder="Optional notes"
+                                      className="w-full rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-900 focus:border-slate-900 focus:outline-none"
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                            </div>
                           );
                         })}
                       </div>
@@ -3222,21 +3500,46 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                                         {ded.name}
                                       </span>
                                       <div className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
-                                        <input
-                                          type="number"
-                                          step="0.01"
-                                          min="0"
-                                          aria-label={`${ded.name} rate`}
-                                          value={ded.value}
-                                          onChange={(e) =>
-                                            handleUpdateExistingIncomeDeductionRate(
-                                              inc,
-                                              ded.id,
-                                              parseFloat(e.target.value) || 0
-                                            )
-                                          }
-                                          className="w-14 bg-transparent font-mono text-[11px] font-semibold text-slate-900 tabular-nums focus:outline-none"
-                                        />
+                                        {(() => {
+                                          const draftKey = `${inc.id}:${ded.id}`;
+                                          return (
+                                            <input
+                                              type="number"
+                                              step="0.01"
+                                              min="0"
+                                              aria-label={`${ded.name} rate`}
+                                              value={
+                                                dedValueDrafts[draftKey] !== undefined
+                                                  ? dedValueDrafts[draftKey]
+                                                  : String(ded.value)
+                                              }
+                                              onChange={(e) => {
+                                                const raw = e.target.value;
+                                                setDedValueDrafts((prev) => ({
+                                                  ...prev,
+                                                  [draftKey]: raw,
+                                                }));
+                                                const parsed =
+                                                  raw.trim() === ''
+                                                    ? 0
+                                                    : Math.max(0, parseFloat(raw) || 0);
+                                                handleUpdateExistingIncomeDeductionRate(
+                                                  inc,
+                                                  ded.id,
+                                                  parsed
+                                                );
+                                              }}
+                                              onBlur={() =>
+                                                setDedValueDrafts((prev) => {
+                                                  const next = { ...prev };
+                                                  delete next[draftKey];
+                                                  return next;
+                                                })
+                                              }
+                                              className="w-14 bg-transparent font-mono text-[11px] font-semibold text-slate-900 tabular-nums focus:outline-none"
+                                            />
+                                          );
+                                        })()}
                                         <span>
                                           {ded.type === 'percentage' ? '%' : incRecordCurr}
                                           {isSav ? ` · ${getQuarterFromDate(inc.date)}` : ''}
@@ -3664,27 +3967,111 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                   </div>
                 </label>
 
-                {automateVaultDebit && plannedVaultDebits.length > 0 && (
-                  <div className="space-y-1 border-t border-slate-200/80 pt-1.5">
-                    {plannedVaultDebits.map((plan) => {
+                {automateVaultDebit && effectivePlannedVaultDebits.length > 0 && (
+                  <div className="space-y-1.5 border-t border-slate-200/80 pt-2">
+                    {effectivePlannedVaultDebits.map((plan) => {
                       const isChecked = !excludedAutoVaultIds.includes(
                         plan.vaultAccountId
                       );
+                      const isEditingThis =
+                        editingVaultPlanId === plan.vaultAccountId;
+                      const editObj = vaultDebitEdits[plan.vaultAccountId] || {};
                       return (
                         <div
                           key={plan.vaultAccountId}
-                          className="flex items-center justify-between gap-2 text-[11px] text-slate-700"
+                          className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] space-y-1.5"
                         >
-                          <span className="truncate">
-                            {isChecked ? '✓ ' : '— '}
-                            {plan.vaultAccountName} → {plan.recipient}
-                          </span>
-                          <span className="font-mono font-semibold text-rose-600 tabular-nums shrink-0">
-                            -{formatAmount(
-                              plan.debitAmountInVaultCurr,
-                              plan.vaultCurrency
-                            )}
-                          </span>
+                          <div className="flex items-center justify-between gap-2 text-slate-700">
+                            <label className="flex items-center gap-2 min-w-0 cursor-pointer flex-1">
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={(e) => {
+                                  const next = e.target.checked;
+                                  setExcludedAutoVaultIds((prev) =>
+                                    next
+                                      ? prev.filter(
+                                          (id) => id !== plan.vaultAccountId
+                                        )
+                                      : [...prev, plan.vaultAccountId]
+                                  );
+                                }}
+                                className="h-3.5 w-3.5 rounded border-slate-300 text-slate-900 focus:ring-slate-900 shrink-0"
+                              />
+                              <span className="truncate font-medium">
+                                {plan.vaultAccountName} → {plan.recipient}
+                              </span>
+                            </label>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span
+                                className={`font-mono font-semibold tabular-nums ${
+                                  isChecked
+                                    ? 'text-rose-600'
+                                    : 'text-slate-400 line-through'
+                                }`}
+                              >
+                                -{formatAmount(
+                                  plan.debitAmountInVaultCurr,
+                                  plan.vaultCurrency
+                                )}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditingVaultPlanId(
+                                    isEditingThis ? null : plan.vaultAccountId
+                                  )
+                                }
+                                className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-100"
+                              >
+                                {isEditingThis ? 'Done' : 'Edit'}
+                              </button>
+                            </div>
+                          </div>
+                          {isEditingThis && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 border-t border-slate-100 pt-1.5">
+                              <input
+                                type="text"
+                                value={
+                                  editObj.recipient !== undefined
+                                    ? editObj.recipient
+                                    : plan.recipient
+                                }
+                                onChange={(e) =>
+                                  setVaultDebitEdits((prev) => ({
+                                    ...prev,
+                                    [plan.vaultAccountId]: {
+                                      ...prev[plan.vaultAccountId],
+                                      recipient: e.target.value,
+                                    },
+                                  }))
+                                }
+                                placeholder="To / Cause"
+                                className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-900 focus:border-slate-900 focus:outline-none"
+                              />
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={
+                                  editObj.amountStr !== undefined
+                                    ? editObj.amountStr
+                                    : String(plan.debitAmountInVaultCurr)
+                                }
+                                onChange={(e) =>
+                                  setVaultDebitEdits((prev) => ({
+                                    ...prev,
+                                    [plan.vaultAccountId]: {
+                                      ...prev[plan.vaultAccountId],
+                                      amountStr: e.target.value,
+                                    },
+                                  }))
+                                }
+                                placeholder={`Amount (${plan.vaultCurrency})`}
+                                className="rounded border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-900 tabular-nums focus:border-slate-900 focus:outline-none"
+                              />
+                            </div>
+                          )}
                         </div>
                       );
                     })}

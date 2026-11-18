@@ -32,6 +32,7 @@ import {
   learnSavingsVaultDebitAccount,
   buildAutomatedSavingsVaultDebitPlan,
   plannedVaultDebitToExpensePayload,
+  PlannedSavingsVaultDebit,
   learnTopFrequentExpenses,
   FrequentExpenseSuggestion,
 } from '../lib/deductionIntelligence.ts';
@@ -390,6 +391,24 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
   const [excludedQuickAutoVaultIds, setExcludedQuickAutoVaultIds] = useState<
     string[]
   >([]);
+  const [quickVaultDebitEdits, setQuickVaultDebitEdits] = useState<
+    Record<
+      string,
+      {
+        recipient?: string;
+        category?: string;
+        subcategory?: string;
+        amountStr?: string;
+        notes?: string;
+      }
+    >
+  >({});
+  const [editingQuickVaultPlanId, setEditingQuickVaultPlanId] = useState<
+    string | null
+  >(null);
+  const [quickDedValueDrafts, setQuickDedValueDrafts] = useState<
+    Record<string, string>
+  >({});
 
   const quickSavingsTotal = useMemo(
     () =>
@@ -432,12 +451,57 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
     ]
   );
 
+  const effectiveQuickPlannedVaultDebits: PlannedSavingsVaultDebit[] = useMemo(() => {
+    const baseCurr = (currency || 'GHS').trim().toUpperCase();
+    return quickPlannedVaultDebits.map((plan) => {
+      const edit = quickVaultDebitEdits[plan.vaultAccountId];
+      if (!edit) return plan;
+
+      const nextRecipient =
+        edit.recipient !== undefined ? edit.recipient : plan.recipient;
+      const nextCategory =
+        edit.category !== undefined ? edit.category : plan.category;
+      const nextSubcategory =
+        edit.subcategory !== undefined ? edit.subcategory : plan.subcategory;
+      const nextNotes = edit.notes !== undefined ? edit.notes : plan.notes;
+
+      let nextDebitInVault = plan.debitAmountInVaultCurr;
+      let nextDebitInBase = plan.debitAmountInBaseCurr;
+      if (edit.amountStr !== undefined) {
+        const parsed = parseFloat(edit.amountStr);
+        nextDebitInVault =
+          !isNaN(parsed) && parsed >= 0 ? roundTo2Decimals(parsed) : 0;
+        nextDebitInBase =
+          plan.vaultCurrency === baseCurr
+            ? nextDebitInVault
+            : convertCurrency2dp(
+                nextDebitInVault,
+                plan.vaultCurrency,
+                baseCurr,
+                fxSnapshot
+              ).convertedAmount;
+      }
+
+      return {
+        ...plan,
+        recipient: nextRecipient,
+        category: nextCategory,
+        subcategory: nextSubcategory || undefined,
+        notes: nextNotes || undefined,
+        debitAmountInVaultCurr: nextDebitInVault,
+        debitAmountInBaseCurr: nextDebitInBase,
+      };
+    });
+  }, [quickPlannedVaultDebits, quickVaultDebitEdits, currency, fxSnapshot]);
+
   const selectedQuickAutoVaultDebits = useMemo(
     () =>
-      quickPlannedVaultDebits.filter(
-        (p) => !excludedQuickAutoVaultIds.includes(p.vaultAccountId)
+      effectiveQuickPlannedVaultDebits.filter(
+        (p) =>
+          !excludedQuickAutoVaultIds.includes(p.vaultAccountId) &&
+          p.debitAmountInVaultCurr > 0
       ),
-    [quickPlannedVaultDebits, excludedQuickAutoVaultIds]
+    [effectiveQuickPlannedVaultDebits, excludedQuickAutoVaultIds]
   );
 
   const handleOpenIncomeModal = () => {
@@ -457,6 +521,9 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
     setIncNetTransferAccountId(settings.defaultNetIncomeAccountId || '');
     setQuickAutomateVaultDebit(Boolean(settings.autoDebitSavingsVaults));
     setExcludedQuickAutoVaultIds([]);
+    setQuickVaultDebitEdits({});
+    setEditingQuickVaultPlanId(null);
+    setQuickDedValueDrafts({});
     setIncDeductions(
       buildDefaultDeductionsForIncome(
         0,
@@ -630,6 +697,7 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
   const [expCurrency, setExpCurrency] = useState(currency);
   const [expAmount, setExpAmount] = useState('');
   const [expNotes, setExpNotes] = useState('');
+  const [expManualAccountOverride, setExpManualAccountOverride] = useState(false);
   const [isSubmittingExp, setIsSubmittingExp] = useState(false);
 
   const activeExpSubcategories = useMemo(() => {
@@ -663,24 +731,26 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
   );
 
   const handleApplyFrequentExpense = (sug: FrequentExpenseSuggestion) => {
+    setExpManualAccountOverride(Boolean(sug.accountId));
     setExpAccountId(sug.accountId || defaultOperatingId);
     setExpCurrency(sug.currency || currency);
     setExpCategory(sug.category || expenseCategories[0]?.name || 'Utilities');
     setExpSubcategory(sug.subcategory || '');
-    setExpRecipient(sug.recipient || sug.label);
+    setExpRecipient('');
     setExpAmount(sug.typicalAmount > 0 ? String(sug.typicalAmount) : '');
-    setExpNotes(sug.notes || '');
+    setExpNotes('');
   };
 
-  // Auto-select learned Savings Vault debit account when matching past vault-debit expenses
+  // Auto-select learned Savings Vault debit account when matching past vault-debit expenses (unless user picked account)
   useEffect(() => {
-    if (activeModal !== 'expense' || !learnedExpVaultDebit) return;
+    if (activeModal !== 'expense' || !learnedExpVaultDebit || expManualAccountOverride) return;
     setExpAccountId(learnedExpVaultDebit.vaultAccountId);
     setExpCurrency(learnedExpVaultDebit.vaultCurrency);
-  }, [learnedExpVaultDebit, activeModal]);
+  }, [learnedExpVaultDebit, activeModal, expManualAccountOverride]);
 
   const handleOpenExpenseModal = () => {
     setIsMenuOpen(false);
+    setExpManualAccountOverride(false);
     setExpDate(todayStr);
     setExpAccountId(defaultOperatingId);
     const defaultExpAcc = accounts.find((a) => a.id === defaultOperatingId);
@@ -1470,12 +1540,21 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                                 type="number"
                                 step="0.01"
                                 min="0"
-                                value={ded.value}
+                                value={
+                                  quickDedValueDrafts[ded.id] !== undefined
+                                    ? quickDedValueDrafts[ded.id]
+                                    : String(ded.value)
+                                }
                                 onChange={(e) => {
-                                  const nextVal = Math.max(
-                                    0,
-                                    parseFloat(e.target.value) || 0
-                                  );
+                                  const raw = e.target.value;
+                                  setQuickDedValueDrafts((prev) => ({
+                                    ...prev,
+                                    [ded.id]: raw,
+                                  }));
+                                  const nextVal =
+                                    raw.trim() === ''
+                                      ? 0
+                                      : Math.max(0, parseFloat(raw) || 0);
                                   setIncDeductions((prev) =>
                                     prev.map((item) =>
                                       item.id === ded.id
@@ -1493,6 +1572,13 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                                     )
                                   );
                                 }}
+                                onBlur={() =>
+                                  setQuickDedValueDrafts((prev) => {
+                                    const next = { ...prev };
+                                    delete next[ded.id];
+                                    return next;
+                                  })
+                                }
                                 className="w-16 rounded border border-slate-300 px-2 py-0.5 font-mono text-xs text-slate-900 tabular-nums focus:border-slate-900 focus:outline-none"
                               />
                               <span className="font-mono text-[11px] text-slate-500">
@@ -1619,54 +1705,191 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                     </div>
                   </label>
 
-                  {quickAutomateVaultDebit && quickPlannedVaultDebits.length > 0 && (
-                    <div className="space-y-1 border-t border-slate-200/80 pt-2">
-                      {quickPlannedVaultDebits.map((plan) => {
-                        const isChecked = !excludedQuickAutoVaultIds.includes(
-                          plan.vaultAccountId
-                        );
-                        return (
-                          <label
-                            key={plan.vaultAccountId}
-                            className="flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] cursor-pointer"
-                          >
-                            <div className="flex items-center gap-2 min-w-0">
-                              <input
-                                type="checkbox"
-                                checked={isChecked}
-                                onChange={(e) => {
-                                  const next = e.target.checked;
-                                  setExcludedQuickAutoVaultIds((prev) =>
-                                    next
-                                      ? prev.filter(
-                                          (id) => id !== plan.vaultAccountId
-                                        )
-                                      : [...prev, plan.vaultAccountId]
-                                  );
-                                }}
-                                className="h-3.5 w-3.5 rounded border-slate-300 text-slate-900 focus:ring-slate-900 shrink-0"
-                              />
-                              <span className="font-semibold text-slate-800 truncate">
-                                {plan.vaultAccountName} → {plan.recipient}
-                              </span>
-                            </div>
-                            <span
-                              className={`font-mono font-semibold tabular-nums shrink-0 ${
-                                isChecked
-                                  ? 'text-rose-600'
-                                  : 'text-slate-400 line-through'
-                              }`}
+                  {quickAutomateVaultDebit &&
+                    effectiveQuickPlannedVaultDebits.length > 0 && (
+                      <div className="space-y-1.5 border-t border-slate-200/80 pt-2">
+                        {effectiveQuickPlannedVaultDebits.map((plan) => {
+                          const isChecked = !excludedQuickAutoVaultIds.includes(
+                            plan.vaultAccountId
+                          );
+                          const isEditingThis =
+                            editingQuickVaultPlanId === plan.vaultAccountId;
+                          const editObj =
+                            quickVaultDebitEdits[plan.vaultAccountId] || {};
+                          const catPref = expenseCategories.find(
+                            (p) => p.name === plan.category
+                          );
+                          const subOpts = catPref?.subcategories || [];
+
+                          return (
+                            <div
+                              key={plan.vaultAccountId}
+                              className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] space-y-1.5"
                             >
-                              -{formatAmount(
-                                plan.debitAmountInVaultCurr,
-                                plan.vaultCurrency
+                              <div className="flex items-center justify-between gap-2">
+                                <label className="flex items-center gap-2 min-w-0 cursor-pointer flex-1">
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={(e) => {
+                                      const next = e.target.checked;
+                                      setExcludedQuickAutoVaultIds((prev) =>
+                                        next
+                                          ? prev.filter(
+                                              (id) => id !== plan.vaultAccountId
+                                            )
+                                          : [...prev, plan.vaultAccountId]
+                                      );
+                                    }}
+                                    className="h-3.5 w-3.5 rounded border-slate-300 text-slate-900 focus:ring-slate-900 shrink-0"
+                                  />
+                                  <span className="font-semibold text-slate-800 truncate">
+                                    {plan.vaultAccountName} → {plan.recipient}
+                                  </span>
+                                </label>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <span
+                                    className={`font-mono font-semibold tabular-nums ${
+                                      isChecked
+                                        ? 'text-rose-600'
+                                        : 'text-slate-400 line-through'
+                                    }`}
+                                  >
+                                    -{formatAmount(
+                                      plan.debitAmountInVaultCurr,
+                                      plan.vaultCurrency
+                                    )}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setEditingQuickVaultPlanId(
+                                        isEditingThis ? null : plan.vaultAccountId
+                                      )
+                                    }
+                                    className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-100"
+                                  >
+                                    {isEditingThis ? 'Done' : 'Edit'}
+                                  </button>
+                                </div>
+                              </div>
+
+                              {isEditingThis && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 border-t border-slate-100 pt-1.5">
+                                  <input
+                                    type="text"
+                                    value={
+                                      editObj.recipient !== undefined
+                                        ? editObj.recipient
+                                        : plan.recipient
+                                    }
+                                    onChange={(e) =>
+                                      setQuickVaultDebitEdits((prev) => ({
+                                        ...prev,
+                                        [plan.vaultAccountId]: {
+                                          ...prev[plan.vaultAccountId],
+                                          recipient: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                    placeholder="To / Cause"
+                                    className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-900 focus:border-slate-900 focus:outline-none"
+                                  />
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    value={
+                                      editObj.amountStr !== undefined
+                                        ? editObj.amountStr
+                                        : String(plan.debitAmountInVaultCurr)
+                                    }
+                                    onChange={(e) =>
+                                      setQuickVaultDebitEdits((prev) => ({
+                                        ...prev,
+                                        [plan.vaultAccountId]: {
+                                          ...prev[plan.vaultAccountId],
+                                          amountStr: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                    placeholder={`Amount (${plan.vaultCurrency})`}
+                                    className="rounded border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-900 tabular-nums focus:border-slate-900 focus:outline-none"
+                                  />
+                                  <select
+                                    value={plan.category}
+                                    onChange={(e) => {
+                                      const nextCat = e.target.value;
+                                      const nextPref = expenseCategories.find(
+                                        (p) => p.name === nextCat
+                                      );
+                                      setQuickVaultDebitEdits((prev) => ({
+                                        ...prev,
+                                        [plan.vaultAccountId]: {
+                                          ...prev[plan.vaultAccountId],
+                                          category: nextCat,
+                                          subcategory:
+                                            nextPref?.subcategories?.[0] || '',
+                                        },
+                                      }));
+                                    }}
+                                    className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-900 focus:border-slate-900 focus:outline-none"
+                                  >
+                                    {expenseCategories.map((p) => (
+                                      <option key={p.id} value={p.name}>
+                                        {p.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  {subOpts.length > 0 ? (
+                                    <select
+                                      value={plan.subcategory || ''}
+                                      onChange={(e) =>
+                                        setQuickVaultDebitEdits((prev) => ({
+                                          ...prev,
+                                          [plan.vaultAccountId]: {
+                                            ...prev[plan.vaultAccountId],
+                                            subcategory: e.target.value,
+                                          },
+                                        }))
+                                      }
+                                      className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-900 focus:border-slate-900 focus:outline-none"
+                                    >
+                                      <option value="">None</option>
+                                      {subOpts.map((s) => (
+                                        <option key={s} value={s}>
+                                          {s}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  ) : (
+                                    <input
+                                      type="text"
+                                      value={
+                                        editObj.subcategory !== undefined
+                                          ? editObj.subcategory
+                                          : plan.subcategory || ''
+                                      }
+                                      onChange={(e) =>
+                                        setQuickVaultDebitEdits((prev) => ({
+                                          ...prev,
+                                          [plan.vaultAccountId]: {
+                                            ...prev[plan.vaultAccountId],
+                                            subcategory: e.target.value,
+                                          },
+                                        }))
+                                      }
+                                      placeholder="Subcategory"
+                                      className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-900 focus:border-slate-900 focus:outline-none"
+                                    />
+                                  )}
+                                </div>
                               )}
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                 </div>
               )}
 
@@ -1793,6 +2016,7 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                   <WrapSelect
                     value={expAccountId}
                     onChange={(val) => {
+                      setExpManualAccountOverride(true);
                       const prevAcc = accounts.find((a) => a.id === expAccountId);
                       const nextAcc = accounts.find((a) => a.id === val);
                       const prevCurr = getAccountCurrency(prevAcc, currency);

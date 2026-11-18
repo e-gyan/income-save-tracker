@@ -1089,9 +1089,10 @@ export interface FrequentExpenseSuggestion {
 }
 
 /**
- * Extracts the top recurring standalone/vault-debit expenses from recorded history,
- * ranked by occurrence frequency descending and then by most recent date,
- * enabling one-tap expense entry while recording expenses.
+ * Dynamically extracts the top recurring expense patterns from recorded history,
+ * grouping by category + subcategory with recency-weighted frequency scoring,
+ * dominant account resolution, and typical recent spend calculation.
+ * Leaves `recipient` (To / Cause) and `notes` blank so users enter context freely on tap.
  */
 export function learnTopFrequentExpenses(params: {
   expenses: FlexibleExpense[];
@@ -1117,47 +1118,80 @@ export function learnTopFrequentExpenses(params: {
 
   if (eligible.length === 0) return [];
 
-  // Sort most recent first so the representative sample carries latest account, amount & notes
+  // Sort most recent first so recency decay and recent typical amounts are accurate
   const sortedByRecency = [...eligible].sort((a, b) => {
     const dateCmp = (b.date || '').localeCompare(a.date || '');
     if (dateCmp !== 0) return dateCmp;
     return (b.createdAt || '').localeCompare(a.createdAt || '');
   });
 
-  interface FrequencyGroup {
+  const totalEligible = sortedByRecency.length;
+
+  interface PatternBucket {
     signature: string;
+    category: string;
+    subcategory: string;
     latest: FlexibleExpense;
     count: number;
+    score: number;
     lastDate: string;
+    recentAmounts: number[];
+    accountCounts: Map<string, number>;
   }
 
-  const groups = new Map<string, FrequencyGroup>();
+  const groups = new Map<string, PatternBucket>();
 
-  for (const exp of sortedByRecency) {
-    const rec = (exp.recipient || '').trim();
-    const desc = (exp.description || '').trim();
-    const cat = (exp.category || '').trim();
-    const sub = (exp.subcategory || '').trim();
-    const causeName = rec || (desc && desc.toLowerCase() !== sub.toLowerCase() ? desc : '') || sub || cat;
-    if (!causeName && !cat) continue;
+  sortedByRecency.forEach((exp, idx) => {
+    const rawCat = (exp.category || '').trim();
+    const rawSub = (exp.subcategory || '').trim();
+    const cat = rawCat || 'Uncategorized';
+    const sub = rawSub;
+    if (!rawCat && !rawSub) return;
 
-    const sig = `${causeName.toLowerCase()}||${cat.toLowerCase()}||${sub.toLowerCase()}`;
+    const sig = `${cat.toLowerCase()}||${sub.toLowerCase()}`;
+    const recencyWeight = (totalEligible - idx) / totalEligible; // 1.0 for newest -> ~0 for oldest
+    const resolvedAccId =
+      resolveValidAccountId(exp.accountId, accounts, settings) ||
+      defaultAcc?.id ||
+      '';
+    const rawAmt = Number(exp.originalAmount ?? exp.amount) || 0;
+
     const existing = groups.get(sig);
     if (existing) {
       existing.count += 1;
+      existing.score += 10 + recencyWeight * 6;
+      if (rawAmt > 0 && existing.recentAmounts.length < 5) {
+        existing.recentAmounts.push(roundTo2Decimals(rawAmt));
+      }
+      if (resolvedAccId) {
+        existing.accountCounts.set(
+          resolvedAccId,
+          (existing.accountCounts.get(resolvedAccId) || 0) + 1
+        );
+      }
     } else {
+      const accountCounts = new Map<string, number>();
+      if (resolvedAccId) {
+        accountCounts.set(resolvedAccId, 1);
+      }
       groups.set(sig, {
         signature: sig,
+        category: cat,
+        subcategory: sub,
         latest: exp,
         count: 1,
+        score: 10 + recencyWeight * 6,
         lastDate: exp.date || '',
+        recentAmounts: rawAmt > 0 ? [roundTo2Decimals(rawAmt)] : [],
+        accountCounts,
       });
     }
-  }
+  });
 
   return Array.from(groups.values())
     .sort((a, b) => {
       if (b.count !== a.count) return b.count - a.count;
+      if (Math.abs(b.score - a.score) > 0.01) return b.score - a.score;
       const dateCmp = (b.lastDate || '').localeCompare(a.lastDate || '');
       if (dateCmp !== 0) return dateCmp;
       return (b.latest.createdAt || '').localeCompare(a.latest.createdAt || '');
@@ -1165,40 +1199,45 @@ export function learnTopFrequentExpenses(params: {
     .slice(0, Math.max(1, limit))
     .map((group) => {
       const sample = group.latest;
-      const resolvedAccountId =
+      const dominantAccountId =
+        Array.from(group.accountCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ||
         resolveValidAccountId(sample.accountId, accounts, settings) ||
         defaultAcc?.id ||
         '';
-      const matchedAcc = accounts.find((a) => a.id === resolvedAccountId) || defaultAcc;
+      const matchedAcc = accounts.find((a) => a.id === dominantAccountId) || defaultAcc;
       const accCurr = getAccountCurrency(matchedAcc, baseCurr);
       const expCurr = (sample.currency || accCurr || baseCurr).trim().toUpperCase();
-      const rawAmt = Number(sample.originalAmount ?? sample.amount) || 0;
-      const rec = (sample.recipient || '').trim();
-      const cat = (sample.category || 'Uncategorized').trim();
-      const sub = (sample.subcategory || '').trim();
-      const desc = (sample.description || '').trim();
-      const label =
-        rec ||
-        (desc && desc.toLowerCase() !== cat.toLowerCase() ? desc : '') ||
-        sub ||
-        cat;
+
+      // Use median of up to 5 most recent entries for a resilient typical amount
+      let typicalAmount = 0;
+      if (group.recentAmounts.length > 0) {
+        const sortedAmts = [...group.recentAmounts].sort((a, b) => a - b);
+        const mid = Math.floor(sortedAmts.length / 2);
+        typicalAmount =
+          sortedAmts.length % 2 === 1
+            ? sortedAmts[mid]
+            : roundTo2Decimals((sortedAmts[mid - 1] + sortedAmts[mid]) / 2);
+      }
+
+      const label = group.subcategory || group.category;
 
       return {
         id: `freq_exp_${group.signature.replace(/[^a-z0-9]/gi, '_')}`,
         label,
-        recipient: rec || (desc && desc !== sub && desc !== cat ? desc : ''),
-        category: cat,
-        subcategory: sub,
-        accountId: resolvedAccountId,
+        recipient: '',
+        category: group.category,
+        subcategory: group.subcategory,
+        accountId: dominantAccountId,
         currency: expCurr,
-        typicalAmount: roundTo2Decimals(rawAmt),
-        notes: (sample.notes || '').trim() || undefined,
+        typicalAmount: roundTo2Decimals(typicalAmount),
+        notes: undefined,
         count: group.count,
         lastDate: group.lastDate,
         isVaultDebit: matchedAcc ? isSavingsVaultAccount(matchedAcc, settings) : false,
       };
     });
 }
+
 
 
 

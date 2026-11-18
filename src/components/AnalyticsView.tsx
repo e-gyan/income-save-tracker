@@ -146,14 +146,14 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
 }) => {
   const [selectedPopupExpense, setSelectedPopupExpense] =
     useState<FlexibleExpense | null>(null);
-  const [isVisualsCollapsed, setIsVisualsCollapsed] = useState(false);
-  const [isPieSectionCollapsed, setIsPieSectionCollapsed] = useState(false);
+  const [isVisualsCollapsed, setIsVisualsCollapsed] = useState(true);
+  const [isPieSectionCollapsed, setIsPieSectionCollapsed] = useState(true);
   const [selectedPieQuarter, setSelectedPieQuarter] = useState<'ALL' | Quarter>('ALL');
   const [pieDetailMode, setPieDetailMode] = useState<'detailed' | 'summary'>('detailed');
   const [hoveredSliceId, setHoveredSliceId] = useState<string | null>(null);
   const [trendMode, setTrendMode] = useState<'records' | 'months' | 'quarters'>('records');
   const [expenseFilterMode, setExpenseFilterMode] = useState<'all' | 'recorded' | 'deductions'>('all');
-  const [isMoMCategoriesCollapsed, setIsMoMCategoriesCollapsed] = useState(false);
+  const [isMoMCategoriesCollapsed, setIsMoMCategoriesCollapsed] = useState(true);
   const [momChartMode, setMomChartMode] = useState<'by_category' | 'by_month'>('by_category');
   const [momFilterCreepingOnly, setMomFilterCreepingOnly] = useState(false);
   const [hoveredMoMBar, setHoveredMoMBar] = useState<{
@@ -161,10 +161,10 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     monthLabel: string;
     amount: number;
   } | null>(null);
-  const [isExpenseCategoriesCollapsed, setIsExpenseCategoriesCollapsed] = useState(false);
-  const [isRecipientsCollapsed, setIsRecipientsCollapsed] = useState(false);
-  const [isVaultsCollapsed, setIsVaultsCollapsed] = useState(false);
-  const [isSourcesCollapsed, setIsSourcesCollapsed] = useState(false);
+  const [isExpenseCategoriesCollapsed, setIsExpenseCategoriesCollapsed] = useState(true);
+  const [isRecipientsCollapsed, setIsRecipientsCollapsed] = useState(true);
+  const [isVaultsCollapsed, setIsVaultsCollapsed] = useState(true);
+  const [isSourcesCollapsed, setIsSourcesCollapsed] = useState(true);
   const [isTimelineCollapsed, setIsTimelineCollapsed] = useState(true);
   const [isRecentExpensesCollapsed, setIsRecentExpensesCollapsed] = useState(true);
 

@@ -45,6 +45,7 @@ import {
   setPersistedColorTheme,
   getPersistedThemeMode,
   setPersistedThemeMode,
+  getScheduledThemeIsDark,
   getPersistedAccountingFiguresEnabled,
   getPersistedPositiveFigureColor,
   getPersistedNegativeFigureColor,
@@ -186,7 +187,7 @@ export default function App() {
 
   const effectiveUserId = currentUser?.uid || 'guest_user';
 
-  // Apply Theme Mode (light / dark / system), Functional Color Theme & Accounting Figure Colors to documentElement
+  // Apply Theme Mode (light / dark / 6:45 AM-PM schedule / Auto system), Color Theme & Accounting Figure Colors
   useEffect(() => {
     const mode: ThemeMode = settings.themeMode || getPersistedThemeMode();
     const colorTheme: AppColorTheme =
@@ -205,14 +206,14 @@ export default function App() {
       let isDark = false;
       if (mode === 'dark') {
         isDark = true;
-        root.classList.add('dark');
       } else if (mode === 'light') {
         isDark = false;
-        root.classList.remove('dark');
+      } else if (mode === 'schedule') {
+        isDark = getScheduledThemeIsDark(new Date());
       } else {
         isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        root.classList.toggle('dark', isDark);
       }
+      root.classList.toggle('dark', isDark);
       applyColorThemeToDocument(colorTheme, isDark);
     };
 
@@ -223,6 +224,20 @@ export default function App() {
       const listener = () => applyThemeAndColors();
       mql.addEventListener('change', listener);
       return () => mql.removeEventListener('change', listener);
+    }
+
+    if (mode === 'schedule') {
+      const intervalId = window.setInterval(applyThemeAndColors, 30_000);
+      const onVis = () => {
+        if (document.visibilityState === 'visible') {
+          applyThemeAndColors();
+        }
+      };
+      document.addEventListener('visibilitychange', onVis);
+      return () => {
+        window.clearInterval(intervalId);
+        document.removeEventListener('visibilitychange', onVis);
+      };
     }
   }, [
     settings.themeMode,
@@ -1707,9 +1722,9 @@ export default function App() {
           setIsMenuOpen(false);
         }}
         onClose={() => setIsMenuOpen(false)}
-        themeMode={settings.themeMode || 'light'}
+        themeMode={settings.themeMode || getPersistedThemeMode()}
         onThemeModeChange={handleThemeModeChange}
-        colorTheme={settings.colorTheme || 'emerald'}
+        colorTheme={settings.colorTheme || getPersistedColorTheme()}
         onColorThemeChange={handleColorThemeChange}
         timeRange={timeRange}
         onSelectTimeRange={setTimeRange}
@@ -1779,6 +1794,7 @@ export default function App() {
                 accounts={filteredAccounts}
                 budgets={budgets}
                 currency={settings.currency}
+                timeRange={timeRange}
                 onAddExpenses={handleAddExpenses}
                 onUpdateExpense={handleUpdateExpense}
                 onDeleteExpense={handleDeleteExpense}

@@ -45,6 +45,8 @@ import {
   sortRecordsByArrivalTime,
   groupRecordsByPeriod,
   RecordGroupPeriod,
+  TimeRangePreset,
+  isDateInPreset,
 } from '../lib/dateFilters.ts';
 import {
   learnSavingsVaultDebitAccount,
@@ -57,6 +59,7 @@ interface ExpenseDraftRow {
   rowId: string;
   date: string;
   accountId: string;
+  manualAccountOverride?: boolean;
   recipient: string;
   category: string;
   subcategory: string;
@@ -73,6 +76,7 @@ interface FlexibleExpensesViewProps {
   transfers?: AccountTransfer[];
   budgets?: FinancialBudget[];
   currency: string;
+  timeRange?: TimeRangePreset;
   onAddExpenses: (
     items: Omit<FlexibleExpense, 'id' | 'createdAt' | 'userId'>[]
   ) => Promise<void>;
@@ -96,6 +100,7 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
   transfers = [],
   budgets = [],
   currency,
+  timeRange = 'all',
   onAddExpenses,
   onDeleteExpense,
   onEditExpense,
@@ -221,26 +226,32 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
     setRows((prev) =>
       prev.map((r) => {
         if (r.rowId !== rowId) return r;
-        const updated = { ...r, ...patch };
-        if (patch.accountId !== undefined && patch.currency === undefined) {
-          const prevAcc = accounts.find((a) => a.id === r.accountId);
-          const nextAcc = accounts.find((a) => a.id === patch.accountId);
-          const prevAccCurr = getAccountCurrency(prevAcc, currency);
-          const nextAccCurr = getAccountCurrency(nextAcc, currency);
-          if (!r.currency || r.currency === prevAccCurr) {
-            updated.currency = nextAccCurr;
+        const updated: ExpenseDraftRow = { ...r, ...patch };
+        if (patch.accountId !== undefined) {
+          updated.manualAccountOverride = true;
+          if (patch.currency === undefined) {
+            const prevAcc = accounts.find((a) => a.id === r.accountId);
+            const nextAcc = accounts.find((a) => a.id === patch.accountId);
+            const prevAccCurr = getAccountCurrency(prevAcc, currency);
+            const nextAccCurr = getAccountCurrency(nextAcc, currency);
+            if (!r.currency || r.currency === prevAccCurr) {
+              updated.currency = nextAccCurr;
+            }
           }
         }
         if (patch.category !== undefined) {
           const matchedPref = categoryPreferences.find((c) => c.name === patch.category);
           updated.subcategory = matchedPref?.subcategories?.[0] || '';
         }
-        // Automate debit from Savings Vault when recipient, subcategory, or category matches past vault-debit expenses
+        // Automate debit from Savings Vault only if user hasn't manually pinned an account
+        // and non-empty cause/subcategory text matches past vault-debit expenses
         if (
+          !updated.manualAccountOverride &&
           patch.accountId === undefined &&
           (patch.recipient !== undefined ||
             patch.subcategory !== undefined ||
-            patch.category !== undefined)
+            patch.category !== undefined) &&
+          (updated.recipient.trim().length >= 2 || updated.subcategory.trim().length >= 2)
         ) {
           const learnedVault = learnSavingsVaultDebitAccount({
             expenses,
@@ -309,12 +320,13 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
           : `row_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         date: lastRow?.date || batchDate || todayStr,
         accountId: sug.accountId || defaultAcc?.id || '',
-        recipient: sug.recipient || sug.label,
+        manualAccountOverride: Boolean(sug.accountId),
+        recipient: '',
         category: sug.category || categoryPreferences[0]?.name || '',
         subcategory: sug.subcategory || '',
         currency: sug.currency || currency,
         amount: sug.typicalAmount > 0 ? String(sug.typicalAmount) : '',
-        notes: sug.notes || '',
+        notes: '',
       };
 
       if (isLastRowBlank) {
@@ -412,6 +424,9 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
 
   const filteredExpenses = useMemo(() => {
     const matched = allCombinedExpenses.filter((exp) => {
+      if (!isDateInPreset(exp.date, timeRange)) {
+        return false;
+      }
       if (selectedAccountFilter !== 'all' && exp.accountId !== selectedAccountFilter) {
         return false;
       }
@@ -434,7 +449,79 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
       return true;
     });
     return sortRecordsByArrivalTime(matched);
-  }, [allCombinedExpenses, selectedAccountFilter, selectedCategoryFilter, searchTerm, accounts]);
+  }, [
+    allCombinedExpenses,
+    timeRange,
+    selectedAccountFilter,
+    selectedCategoryFilter,
+    searchTerm,
+    accounts,
+  ]);
+
+  // Keep backend category breakdown synchronized when toggled to By Category or date filters change
+  const [backendByCategoryTotals, setBackendByCategoryTotals] = useState<
+    Record<string, number>
+  >({});
+
+  useEffect(() => {
+    if (presentationMode !== 'grouped') return;
+    let cancelled = false;
+
+    const baseExpensesPayload = allCombinedExpenses.map((e) => {
+      const { baseAmount } = getExpenseNativeAndBaseAmount(
+        e,
+        settings,
+        accounts,
+        fxSnapshot
+      );
+      return {
+        ...e,
+        amount: baseAmount,
+      };
+    });
+
+    fetch('/api/expenses/by-category', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        expenses: baseExpensesPayload,
+        timeRange,
+        groupByPeriod,
+        accountFilter: selectedAccountFilter,
+        categoryFilter: selectedCategoryFilter,
+        searchTerm,
+      }),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.success || !Array.isArray(data.periods)) return;
+        const map: Record<string, number> = {};
+        for (const p of data.periods) {
+          for (const c of p.categories || []) {
+            map[`${p.periodKey}::${c.category}`] = Number(c.total) || 0;
+          }
+        }
+        setBackendByCategoryTotals(map);
+      })
+      .catch(() => {
+        // Local computation handles offline fallback seamlessly
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    presentationMode,
+    allCombinedExpenses,
+    timeRange,
+    groupByPeriod,
+    selectedAccountFilter,
+    selectedCategoryFilter,
+    searchTerm,
+    settings,
+    accounts,
+    fxSnapshot,
+  ]);
 
   const {
     totalExpensesAmount,
@@ -1427,9 +1514,9 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
           })}
         </div>
       ) : (
-        /* Grouped by Category & Subcategory Presentation */
-        <div className="space-y-3">
-          {(() => {
+        /* Grouped by Category & Subcategory Presentation (Responsive to TimeRange & Period Filters) */
+        <div className="space-y-4">
+          {groupRecordsByPeriod(filteredExpenses, groupByPeriod).map((periodGroup) => {
             const catGroups = new Map<
               string,
               {
@@ -1440,7 +1527,16 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
               }
             >();
 
-            for (const exp of filteredExpenses) {
+            let periodTotal = 0;
+
+            for (const exp of periodGroup.items) {
+              const { baseAmount } = getExpenseNativeAndBaseAmount(
+                exp,
+                settings,
+                accounts,
+                fxSnapshot
+              );
+              const effectiveAmt = exp.vaultAction === 'credit' ? 0 : baseAmount;
               const cat = (exp.category || 'Uncategorized').trim();
               const sub = (exp.subcategory || 'General').trim();
               const existing = catGroups.get(cat) || {
@@ -1449,149 +1545,180 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
                 items: [],
                 subMap: new Map<string, number>(),
               };
-              existing.total += exp.amount || 0;
+              existing.total = roundTo2Decimals(existing.total + effectiveAmt);
               existing.items.push(exp);
               existing.subMap.set(
                 sub,
-                (existing.subMap.get(sub) || 0) + (exp.amount || 0)
+                roundTo2Decimals((existing.subMap.get(sub) || 0) + effectiveAmt)
               );
               catGroups.set(cat, existing);
+              periodTotal = roundTo2Decimals(periodTotal + effectiveAmt);
             }
 
             const sortedGroups = Array.from(catGroups.values()).sort(
               (a, b) => b.total - a.total
             );
 
-            return sortedGroups.map((group) => {
-              const isGroupOpen = expandedCategoryGroups.has(group.category);
-              const sharePct =
-                totalExpensesAmount > 0
-                  ? Math.round((group.total / totalExpensesAmount) * 1000) / 10
-                  : 0;
-
-              const toggleGroup = () => {
-                setExpandedCategoryGroups((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(group.category)) {
-                    next.delete(group.category);
-                  } else {
-                    next.add(group.category);
-                  }
-                  return next;
-                });
-              };
-
-              return (
-                <div
-                  key={group.category}
-                  className="rounded-xl border border-slate-200/90 bg-white overflow-hidden"
-                >
-                  <div
-                    onClick={toggleGroup}
-                    className="p-4 cursor-pointer select-none hover:bg-slate-50/70 transition-colors space-y-2.5"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span
-                          className="h-2.5 w-2.5 rounded-full shrink-0"
-                          style={{ backgroundColor: 'var(--app-accent)' }}
-                        />
-                        <span className="font-display text-sm font-bold text-slate-900 break-words">
-                          {group.category}
-                        </span>
-                        <span className="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-600">
-                          {sharePct}%
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-2.5 shrink-0">
-                        <span className="font-mono text-sm font-bold text-rose-600 tabular-nums">
-                          -{formatAmount(group.total, currency)}
-                        </span>
-                        <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-600">
-                          {isGroupOpen ? 'Collapse' : 'Expand'}
-                        </span>
-                      </div>
+            return (
+              <div key={periodGroup.key} className="space-y-3">
+                {groupByPeriod !== 'none' && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-100/80 px-3.5 py-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-display text-xs font-bold text-slate-900">
+                        {periodGroup.label}
+                      </span>
+                      <span className="rounded bg-white px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-600">
+                        {periodGroup.items.length}{' '}
+                        {periodGroup.items.length === 1 ? 'entry' : 'entries'}
+                      </span>
                     </div>
-
-                    {/* Subcategory chips */}
-                    <div className="flex flex-wrap gap-1.5">
-                      {Array.from(group.subMap.entries())
-                        .sort((a, b) => b[1] - a[1])
-                        .map(([subName, subTotal]) => {
-                          const subColor = resolveIntuitiveSubcategoryColor(
-                            subName,
-                            group.category,
-                            settings,
-                            expenses
-                          );
-                          const subBadge = getSubcategoryBadgeStyle(subColor);
-                          return (
-                            <span
-                              key={subName}
-                              style={{
-                                backgroundColor: subBadge.backgroundColor,
-                                borderColor: subBadge.borderColor,
-                                color: subBadge.color,
-                              }}
-                              className="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px]"
-                            >
-                              <span
-                                className="h-2 w-2 rounded-full shrink-0"
-                                style={{ backgroundColor: subColor }}
-                              />
-                              <span className="font-semibold">{subName}</span>
-                              <span className="font-mono text-[10px] font-semibold tabular-nums opacity-90">
-                                {formatAmount(subTotal, currency)}
-                              </span>
-                            </span>
-                          );
-                        })}
-                    </div>
+                    <span className="font-mono text-xs font-bold text-rose-600 tabular-nums">
+                      -{formatAmount(periodTotal, currency)}
+                    </span>
                   </div>
+                )}
 
-                  {isGroupOpen && (
-                    <div className="border-t border-slate-100 p-3 space-y-2 bg-slate-50/40">
-                      {group.items.map((exp) => {
-                        const acc =
-                          accounts.find((a) => a.id === exp.accountId) ||
-                          defaultAcc;
-                        const subLabel =
-                          exp.subcategory || exp.category || 'Expense';
-                        const itemSubColor = resolveIntuitiveSubcategoryColor(
-                          exp.subcategory,
-                          exp.category,
-                          settings,
-                          expenses
-                        );
-                        const expCurr = (
-                          exp.currency || getAccountCurrency(acc, currency)
-                        ).toUpperCase();
-                        const expNativeAmt =
-                          exp.originalAmount !== undefined &&
-                          exp.originalAmount > 0
-                            ? exp.originalAmount
-                            : exp.amount;
+                {sortedGroups.map((group) => {
+                  const accordionKey = `${periodGroup.key}::${group.category}`;
+                  const syncedTotal =
+                    backendByCategoryTotals[accordionKey] !== undefined
+                      ? backendByCategoryTotals[accordionKey]
+                      : group.total;
+                  const displayGroupTotal =
+                    periodTotal > 0 ? syncedTotal : group.total;
+                  const isGroupOpen = expandedCategoryGroups.has(accordionKey);
+                  const denominator =
+                    groupByPeriod === 'none' ? totalExpensesAmount : periodTotal;
+                  const sharePct =
+                    denominator > 0
+                      ? Math.round((displayGroupTotal / denominator) * 1000) / 10
+                      : 0;
 
-                        return (
-                          <RecordCard
-                            key={exp.id}
-                            subcategory={subLabel}
-                            subcategoryColor={itemSubColor}
-                            accountName={acc?.name || 'Account'}
-                            amountText={`-${formatAmount(expNativeAmt, expCurr)}`}
-                            recordType="expense"
-                            date={exp.date}
-                            onClick={() => setSelectedPopupExpense(exp)}
-                          />
-                        );
-                      })}
+                  const toggleGroup = () => {
+                    setExpandedCategoryGroups((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(accordionKey)) {
+                        next.delete(accordionKey);
+                      } else {
+                        next.add(accordionKey);
+                      }
+                      return next;
+                    });
+                  };
+
+                  return (
+                    <div
+                      key={accordionKey}
+                      className="rounded-xl border border-slate-200/90 bg-white overflow-hidden"
+                    >
+                      <div
+                        onClick={toggleGroup}
+                        className="p-4 cursor-pointer select-none hover:bg-slate-50/70 transition-colors space-y-2.5"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span
+                              className="h-2.5 w-2.5 rounded-full shrink-0"
+                              style={{ backgroundColor: 'var(--app-accent)' }}
+                            />
+                            <span className="font-display text-sm font-bold text-slate-900 break-words">
+                              {group.category}
+                            </span>
+                            <span className="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-600">
+                              {sharePct}%
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2.5 shrink-0">
+                            <span className="font-mono text-sm font-bold text-rose-600 tabular-nums">
+                              -{formatAmount(displayGroupTotal, currency)}
+                            </span>
+                            <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                              {isGroupOpen ? 'Collapse' : 'Expand'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Subcategory chips */}
+                        <div className="flex flex-wrap gap-1.5">
+                          {Array.from(group.subMap.entries())
+                            .sort((a, b) => b[1] - a[1])
+                            .map(([subName, subTotal]) => {
+                              const subColor = resolveIntuitiveSubcategoryColor(
+                                subName,
+                                group.category,
+                                settings,
+                                expenses
+                              );
+                              const subBadge = getSubcategoryBadgeStyle(subColor);
+                              return (
+                                <span
+                                  key={subName}
+                                  style={{
+                                    backgroundColor: subBadge.backgroundColor,
+                                    borderColor: subBadge.borderColor,
+                                    color: subBadge.color,
+                                  }}
+                                  className="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px]"
+                                >
+                                  <span
+                                    className="h-2 w-2 rounded-full shrink-0"
+                                    style={{ backgroundColor: subColor }}
+                                  />
+                                  <span className="font-semibold">{subName}</span>
+                                  <span className="font-mono text-[10px] font-semibold tabular-nums opacity-90">
+                                    {formatAmount(subTotal, currency)}
+                                  </span>
+                                </span>
+                              );
+                            })}
+                        </div>
+                      </div>
+
+                      {isGroupOpen && (
+                        <div className="border-t border-slate-100 p-3 space-y-2 bg-slate-50/40">
+                          {group.items.map((exp) => {
+                            const acc =
+                              accounts.find((a) => a.id === exp.accountId) ||
+                              defaultAcc;
+                            const subLabel =
+                              exp.subcategory || exp.category || 'Expense';
+                            const itemSubColor = resolveIntuitiveSubcategoryColor(
+                              exp.subcategory,
+                              exp.category,
+                              settings,
+                              expenses
+                            );
+                            const expCurr = (
+                              exp.currency || getAccountCurrency(acc, currency)
+                            ).toUpperCase();
+                            const expNativeAmt =
+                              exp.originalAmount !== undefined &&
+                              exp.originalAmount > 0
+                                ? exp.originalAmount
+                                : exp.amount;
+
+                            return (
+                              <RecordCard
+                                key={exp.id}
+                                subcategory={subLabel}
+                                subcategoryColor={itemSubColor}
+                                accountName={acc?.name || 'Account'}
+                                amountText={`-${formatAmount(expNativeAmt, expCurr)}`}
+                                recordType="expense"
+                                date={exp.date}
+                                onClick={() => setSelectedPopupExpense(exp)}
+                              />
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              );
-            });
-          })()}
+                  );
+                })}
+              </div>
+            );
+          })}
         </div>
       )}
 

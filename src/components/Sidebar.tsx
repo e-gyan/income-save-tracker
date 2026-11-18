@@ -353,28 +353,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   Appearance & Color Theme
                 </div>
 
-                {/* Theme Mode (Light / Dark / Auto) */}
-                <div className="space-y-1">
+                {/* Theme Mode (Light / Dark / 6:45 AM-PM Schedule / Auto System) */}
+                <div className="space-y-1.5">
                   <span className="block text-[11px] font-semibold text-slate-600">
                     Display Mode
                   </span>
-                  <div className="grid grid-cols-3 gap-1 rounded-lg bg-slate-100 p-1">
-                    {(['light', 'dark', 'system'] as ThemeMode[]).map(
-                      (mode) => (
-                        <button
-                          key={mode}
-                          type="button"
-                          onClick={() => onThemeModeChange(mode)}
-                          className={`rounded-md py-1.5 text-xs font-semibold capitalize transition-colors ${
-                            themeMode === mode
-                              ? 'bg-slate-900 text-white'
-                              : 'text-slate-600 hover:text-slate-900'
-                          }`}
-                        >
-                          {mode === 'system' ? 'Auto' : mode}
-                        </button>
-                      )
-                    )}
+                  <div className="grid grid-cols-2 gap-1 rounded-lg bg-slate-100 p-1">
+                    {(
+                      [
+                        { id: 'light', label: 'Light' },
+                        { id: 'dark', label: 'Dark' },
+                        { id: 'schedule', label: '6:45 AM/PM' },
+                        { id: 'system', label: 'Auto' },
+                      ] as { id: ThemeMode; label: string }[]
+                    ).map((mode) => (
+                      <button
+                        key={mode.id}
+                        type="button"
+                        onClick={() => onThemeModeChange(mode.id)}
+                        className={`rounded-md py-1.5 px-2 text-xs font-semibold transition-colors ${
+                          themeMode === mode.id
+                            ? 'bg-slate-900 text-white'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        {mode.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
 
