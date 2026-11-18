@@ -1238,6 +1238,193 @@ export function learnTopFrequentExpenses(params: {
     });
 }
 
+export interface ManualTransferVaultShare {
+  bucketId: string;
+  vaultAccountId: string;
+  vaultAccountName: string;
+  vaultPercentage: number;
+  sourceCurrency: string;
+  sourceAmount: number;
+  vaultCurrency: string;
+  destinationAmount: number;
+  baseAmount: number;
+  exchangeRateToDest: number;
+  debitPlan: PlannedSavingsVaultDebit | null;
+}
 
+/**
+ * Distributes a manual transfer amount across each configured Savings Vault by rate
+ * and matches any historical vault-debit expense pattern per vault.
+ */
+export function buildManualTransferSavingsVaultPlan(params: {
+  amountInSourceCurr: number;
+  sourceAccountId: string;
+  sourceCurrency: string;
+  date: string;
+  description?: string;
+  expenses: FlexibleExpense[];
+  accounts: FinancialAccount[];
+  settings: UserSettings;
+  fxSnapshot?: MarketFxSnapshot | null;
+}): ManualTransferVaultShare[] {
+  const {
+    amountInSourceCurr,
+    sourceAccountId,
+    sourceCurrency,
+    date,
+    expenses,
+    accounts,
+    settings,
+    fxSnapshot,
+  } = params;
 
+  const cleanAmt = roundTo2Decimals(Math.max(0, Number(amountInSourceCurr) || 0));
+  const baseCurr = (settings.currency || 'GHS').trim().toUpperCase();
+  const srcCurr = (sourceCurrency || baseCurr).trim().toUpperCase();
 
+  const shares = computeSavingsBreakdown(cleanAmt, accounts, settings).filter(
+    (s) => s.accountId !== sourceAccountId && s.percentage > 0
+  );
+  if (shares.length === 0) return [];
+
+  // Build per-vault debit plans for the full distributed amount (or unit probe when amount is 0)
+  const effectiveProbeAmt = cleanAmt > 0 ? cleanAmt : 100;
+  const debitPlans = buildAutomatedSavingsVaultDebitPlan({
+    savingsAmountInIncomeCurr: effectiveProbeAmt,
+    incomeCurrency: srcCurr,
+    incomeDate: date,
+    expenses,
+    accounts,
+    settings,
+    fxSnapshot,
+  });
+  const debitPlanMap = new Map<string, PlannedSavingsVaultDebit>();
+  for (const dp of debitPlans) {
+    debitPlanMap.set(dp.vaultAccountId, dp);
+  }
+
+  return shares.map((share) => {
+    const vaultAcc = accounts.find((a) => a.id === share.accountId);
+    const vaultCurr = getAccountCurrency(vaultAcc, baseCurr);
+    const shareSrcAmt = cleanAmt > 0 ? roundTo2Decimals(share.amount) : 0;
+
+    const toDest =
+      srcCurr === vaultCurr
+        ? { convertedAmount: shareSrcAmt, exchangeRate2dp: 1 }
+        : convertCurrency2dp(shareSrcAmt, srcCurr, vaultCurr, fxSnapshot);
+
+    const toBase =
+      srcCurr === baseCurr
+        ? { convertedAmount: shareSrcAmt, exchangeRate2dp: 1 }
+        : convertCurrency2dp(shareSrcAmt, srcCurr, baseCurr, fxSnapshot);
+
+    const matchedDebit = debitPlanMap.get(share.accountId) || null;
+    const scaledDebitPlan: PlannedSavingsVaultDebit | null = matchedDebit
+      ? {
+          ...matchedDebit,
+          shareAmountInIncomeCurr: shareSrcAmt,
+          debitAmountInVaultCurr:
+            cleanAmt > 0 ? toDest.convertedAmount : 0,
+          debitAmountInBaseCurr:
+            cleanAmt > 0
+              ? vaultCurr === baseCurr
+                ? toDest.convertedAmount
+                : convertCurrency2dp(
+                    toDest.convertedAmount,
+                    vaultCurr,
+                    baseCurr,
+                    fxSnapshot
+                  ).convertedAmount
+              : 0,
+        }
+      : null;
+
+    return {
+      bucketId: share.bucketId,
+      vaultAccountId: share.accountId,
+      vaultAccountName: share.accountName,
+      vaultPercentage: share.percentage,
+      sourceCurrency: srcCurr,
+      sourceAmount: shareSrcAmt,
+      vaultCurrency: vaultCurr,
+      destinationAmount: toDest.convertedAmount,
+      baseAmount: toBase.convertedAmount,
+      exchangeRateToDest: toDest.exchangeRate2dp,
+      debitPlan: scaledDebitPlan,
+    };
+  });
+}
+
+export async function requestBackendManualTransferAutomation(params: {
+  sourceAccountId: string;
+  sourceCurrency: string;
+  amount: number;
+  date: string;
+  description?: string;
+  baseCurrency: string;
+  accounts: FinancialAccount[];
+  settings: UserSettings;
+  expenses: FlexibleExpense[];
+  distributeToSavingsVaults: boolean;
+  applyVaultDebits: boolean;
+  excludedDistributionVaultIds: string[];
+  excludedDebitVaultIds: string[];
+  debitOverrides: Record<
+    string,
+    {
+      recipient?: string;
+      category?: string;
+      subcategory?: string;
+      debitAmountInVaultCurr?: number;
+      notes?: string;
+    }
+  >;
+}): Promise<{
+  transfers: Array<{
+    date: string;
+    sourceAccountId: string;
+    destinationAccountId: string;
+    sourceCurrency: string;
+    sourceAmount: number;
+    destinationCurrency: string;
+    destinationAmount: number;
+    exchangeRate: number;
+    amount: number;
+    transferType: 'general';
+    description: string;
+  }>;
+  vaultDebits: Array<Omit<FlexibleExpense, 'id' | 'createdAt' | 'userId'>>;
+} | null> {
+  try {
+    const resp = await fetch('/api/transfers/automate-savings-vaults', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sourceAccountId: params.sourceAccountId,
+        sourceCurrency: params.sourceCurrency,
+        amount: params.amount,
+        date: params.date,
+        description: params.description || '',
+        baseCurrency: params.baseCurrency,
+        accounts: params.accounts,
+        savingsBuckets: params.settings.savingsBuckets || [],
+        expenses: params.expenses,
+        distributeToSavingsVaults: params.distributeToSavingsVaults,
+        applyVaultDebits: params.applyVaultDebits,
+        excludedDistributionVaultIds: params.excludedDistributionVaultIds,
+        excludedDebitVaultIds: params.excludedDebitVaultIds,
+        debitOverrides: params.debitOverrides,
+        previewOnly: false,
+      }),
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (!data?.success) return null;
+    return {
+      transfers: Array.isArray(data.transfers) ? data.transfers : [],
+      vaultDebits: Array.isArray(data.vaultDebits) ? data.vaultDebits : [],
+    };
+  } catch {
+    return null;
+  }
+}

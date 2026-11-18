@@ -1211,6 +1211,34 @@ export default function App() {
     })();
   };
 
+  const handleAddTransfers = async (
+    transfersData: Omit<AccountTransfer, 'id' | 'createdAt'>[]
+  ) => {
+    if (transfersData.length === 0) return;
+    const nowMs = Date.now();
+    const newRecords: AccountTransfer[] = transfersData.map((t, index) => ({
+      ...t,
+      id: `trans_${nowMs}_${index}`,
+      userId: effectiveUserId,
+      createdAt: new Date(nowMs + index).toISOString(),
+    }));
+    const nextTransfers = [...newRecords, ...transfers];
+    setTransfers(nextTransfers);
+    setLocalData('transfers', nextTransfers, effectiveUserId);
+
+    (async () => {
+      try {
+        if (currentUser) {
+          for (const rec of newRecords) {
+            await saveAccountTransfer(effectiveUserId, rec);
+          }
+        }
+      } catch (err) {
+        console.error('Batch transfer save error:', err);
+      }
+    })();
+  };
+
   const handleDeleteTransfer = async (id: string) => {
     const nextTransfers = transfers.filter((t) => t.id !== id);
     setTransfers(nextTransfers);
@@ -1834,6 +1862,7 @@ export default function App() {
                 onUpdateAccount={handleUpdateAccount}
                 onDeleteAccount={handleDeleteAccount}
                 onAddTransfer={handleAddTransfer}
+                onAddTransfers={handleAddTransfers}
                 onDeleteTransfer={handleDeleteTransfer}
                 onUpdateIncome={handleUpdateIncome}
                 onAddExpenses={handleAddExpenses}
@@ -1896,6 +1925,7 @@ export default function App() {
         onAddIncome={handleAddIncome}
         onAddExpenses={handleAddExpenses}
         onAddTransfer={handleAddTransfer}
+        onAddTransfers={handleAddTransfers}
         onSaveSettings={handleSaveSettings}
         onOpenDeductionAgent={() => setIsDeductionAgentOpen(true)}
         onNavigateToExpandedForm={(tab, formType) => {

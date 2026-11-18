@@ -35,6 +35,8 @@ import {
   PlannedSavingsVaultDebit,
   learnTopFrequentExpenses,
   FrequentExpenseSuggestion,
+  buildManualTransferSavingsVaultPlan,
+  requestBackendManualTransferAutomation,
 } from '../lib/deductionIntelligence.ts';
 import { formatDateDDMMYYYY } from '../lib/dateFilters.ts';
 import {
@@ -68,6 +70,9 @@ interface FloatingQuickActionsProps {
   onAddTransfer: (
     transfer: Omit<AccountTransfer, 'id' | 'createdAt'>
   ) => Promise<void>;
+  onAddTransfers?: (
+    transfers: Omit<AccountTransfer, 'id' | 'createdAt'>[]
+  ) => Promise<void>;
   onSaveSettings?: (settings: UserSettings) => Promise<void>;
   onOpenDeductionAgent: () => void;
   onNavigateToExpandedForm: (
@@ -87,6 +92,7 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
   onAddIncome,
   onAddExpenses,
   onAddTransfer,
+  onAddTransfers,
   onSaveSettings,
   onOpenDeductionAgent,
   onNavigateToExpandedForm,
@@ -98,6 +104,20 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
   const menuContainerRef = useRef<HTMLDivElement>(null);
 
   const todayStr = new Date().toISOString().split('T')[0];
+
+  const [fxSnapshot, setFxSnapshot] = useState<MarketFxSnapshot>(() =>
+    getInitialFxSnapshot(currency)
+  );
+
+  useEffect(() => {
+    let active = true;
+    fetchMarketExchangeRates(currency).then((snap) => {
+      if (active) setFxSnapshot(snap);
+    });
+    return () => {
+      active = false;
+    };
+  }, [currency]);
 
   const operatingAccounts = useMemo(
     () => accounts.filter((a) => !isSavingsVaultAccount(a, settings)),
@@ -139,6 +159,24 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
   const [transferDate, setTransferDate] = useState(todayStr);
   const [transferDesc, setTransferDesc] = useState('');
   const [isSubmittingTransfer, setIsSubmittingTransfer] = useState(false);
+  const [transferToSavingsVaults, setTransferToSavingsVaults] = useState(false);
+  const [applyTransferVaultDebits, setApplyTransferVaultDebits] = useState(true);
+  const [excludedTransferDistVaultIds, setExcludedTransferDistVaultIds] = useState<string[]>([]);
+  const [excludedTransferDebitVaultIds, setExcludedTransferDebitVaultIds] = useState<string[]>([]);
+  const [transferDebitEdits, setTransferDebitEdits] = useState<
+    Record<
+      string,
+      {
+        enabledCustom?: boolean;
+        recipient?: string;
+        category?: string;
+        subcategory?: string;
+        amountStr?: string;
+        notes?: string;
+      }
+    >
+  >({});
+  const [editingTransferVaultDebitId, setEditingTransferVaultDebitId] = useState<string | null>(null);
 
   const availableDestAccounts = useMemo(
     () => accounts.filter((a) => a.id !== transferSourceId),
@@ -156,19 +194,241 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
     return availableDestAccounts[0]?.id || '';
   }, [transferDestId, transferSourceId, availableDestAccounts]);
 
+  const transferSourceAcc = useMemo(
+    () => accounts.find((a) => a.id === transferSourceId),
+    [accounts, transferSourceId]
+  );
+  const transferSourceCurr = getAccountCurrency(transferSourceAcc, currency);
+  const numericTransferAmt = roundTo2Decimals(parseFloat(transferAmount) || 0);
+
+  const transferVaultShares = useMemo(
+    () =>
+      buildManualTransferSavingsVaultPlan({
+        amountInSourceCurr: numericTransferAmt,
+        sourceAccountId: transferSourceId,
+        sourceCurrency: transferSourceCurr,
+        date: transferDate,
+        description: transferDesc,
+        expenses,
+        accounts,
+        settings,
+        fxSnapshot,
+      }),
+    [
+      numericTransferAmt,
+      transferSourceId,
+      transferSourceCurr,
+      transferDate,
+      transferDesc,
+      expenses,
+      accounts,
+      settings,
+      fxSnapshot,
+    ]
+  );
+
+  const selectedTransferShares = useMemo(
+    () =>
+      transferVaultShares.filter(
+        (s) => !excludedTransferDistVaultIds.includes(s.vaultAccountId)
+      ),
+    [transferVaultShares, excludedTransferDistVaultIds]
+  );
+
   const handleOpenTransferModal = () => {
     setIsMenuOpen(false);
     setTransferSourceId(defaultOperatingId);
     setTransferDate(todayStr);
     setTransferAmount('');
     setTransferDesc('');
+    setTransferToSavingsVaults(false);
+    setApplyTransferVaultDebits(true);
+    setExcludedTransferDistVaultIds([]);
+    setExcludedTransferDebitVaultIds([]);
+    setTransferDebitEdits({});
+    setEditingTransferVaultDebitId(null);
     setActiveModal('transfer');
   };
 
   const handleSubmitTransfer = async (e: React.FormEvent) => {
     e.preventDefault();
     const rawAmt = roundTo2Decimals(parseFloat(transferAmount));
-    if (isNaN(rawAmt) || rawAmt <= 0 || !transferSourceId || !effectiveDestId) return;
+    if (isNaN(rawAmt) || rawAmt <= 0 || !transferSourceId) return;
+
+    if (transferToSavingsVaults) {
+      if (selectedTransferShares.length === 0) return;
+      setIsSubmittingTransfer(true);
+      try {
+        const debitOverrides: Record<
+          string,
+          {
+            recipient?: string;
+            category?: string;
+            subcategory?: string;
+            debitAmountInVaultCurr?: number;
+            notes?: string;
+          }
+        > = {};
+
+        const finalExcludedDebitIds = new Set<string>(excludedTransferDebitVaultIds);
+
+        for (const share of selectedTransferShares) {
+          const edit = transferDebitEdits[share.vaultAccountId];
+          const hasDebitPlan = Boolean(share.debitPlan || edit?.enabledCustom);
+          if (!hasDebitPlan) {
+            finalExcludedDebitIds.add(share.vaultAccountId);
+            continue;
+          }
+          if (edit) {
+            const parsedEditAmt =
+              edit.amountStr !== undefined ? parseFloat(edit.amountStr) : undefined;
+            debitOverrides[share.vaultAccountId] = {
+              recipient: edit.recipient,
+              category: edit.category,
+              subcategory: edit.subcategory,
+              debitAmountInVaultCurr:
+                parsedEditAmt !== undefined && !isNaN(parsedEditAmt)
+                  ? roundTo2Decimals(Math.max(0, parsedEditAmt))
+                  : undefined,
+              notes: edit.notes,
+            };
+          }
+        }
+
+        const backendResult = await requestBackendManualTransferAutomation({
+          sourceAccountId: transferSourceId,
+          sourceCurrency: transferSourceCurr,
+          amount: rawAmt,
+          date: transferDate,
+          description: transferDesc.trim(),
+          baseCurrency: currency,
+          accounts,
+          settings,
+          expenses,
+          distributeToSavingsVaults: true,
+          applyVaultDebits: applyTransferVaultDebits,
+          excludedDistributionVaultIds: excludedTransferDistVaultIds,
+          excludedDebitVaultIds: Array.from(finalExcludedDebitIds),
+          debitOverrides,
+        });
+
+        let transfersToSave = backendResult?.transfers;
+        let debitsToSave = backendResult?.vaultDebits;
+
+        if (!transfersToSave || transfersToSave.length === 0) {
+          // Deterministic client fallback if offline
+          const cleanDesc = transferDesc.trim();
+          const batchKey = `manual_vault_${Date.now()}`;
+          transfersToSave = selectedTransferShares.map((share) => ({
+            date: transferDate,
+            sourceAccountId: transferSourceId,
+            destinationAccountId: share.vaultAccountId,
+            sourceCurrency: transferSourceCurr,
+            sourceAmount: share.sourceAmount,
+            destinationCurrency: share.vaultCurrency,
+            destinationAmount: share.destinationAmount,
+            exchangeRate: share.exchangeRateToDest,
+            amount: share.baseAmount,
+            transferType: 'general' as const,
+            description: cleanDesc
+              ? `${cleanDesc} · ${share.vaultAccountName} (${share.vaultPercentage}%)`
+              : `Savings Vault Distribution · ${share.vaultAccountName} (${share.vaultPercentage}%)`,
+          }));
+
+          debitsToSave = [];
+          if (applyTransferVaultDebits) {
+            for (const share of selectedTransferShares) {
+              if (finalExcludedDebitIds.has(share.vaultAccountId)) continue;
+              const edit = transferDebitEdits[share.vaultAccountId];
+              const basePlan = share.debitPlan;
+              if (!basePlan && !edit?.enabledCustom) continue;
+
+              const rec =
+                edit?.recipient !== undefined
+                  ? edit.recipient
+                  : basePlan?.recipient || share.vaultAccountName;
+              const cat =
+                edit?.category !== undefined
+                  ? edit.category
+                  : basePlan?.category || 'Savings Allocation';
+              const sub =
+                edit?.subcategory !== undefined
+                  ? edit.subcategory
+                  : basePlan?.subcategory;
+              const notesVal =
+                edit?.notes !== undefined ? edit.notes : basePlan?.notes;
+              const rawDebitAmt =
+                edit?.amountStr !== undefined
+                  ? roundTo2Decimals(Math.max(0, parseFloat(edit.amountStr) || 0))
+                  : share.destinationAmount;
+              if (rawDebitAmt <= 0) continue;
+
+              const toBase =
+                share.vaultCurrency === currency
+                  ? { convertedAmount: rawDebitAmt, exchangeRate2dp: 1 }
+                  : convertCurrency2dp(
+                      rawDebitAmt,
+                      share.vaultCurrency,
+                      currency,
+                      fxSnapshot
+                    );
+
+              const syntheticPlan: PlannedSavingsVaultDebit = {
+                vaultAccountId: share.vaultAccountId,
+                vaultAccountName: share.vaultAccountName,
+                vaultBucketId: share.bucketId,
+                vaultPercentage: share.vaultPercentage,
+                vaultCurrency: share.vaultCurrency,
+                recipient: rec,
+                category: cat,
+                subcategory: sub,
+                subcategoryColor: basePlan?.subcategoryColor,
+                description: sub || rec || cat,
+                notes: notesVal,
+                shareAmountInIncomeCurr: share.sourceAmount,
+                debitAmountInVaultCurr: rawDebitAmt,
+                debitAmountInBaseCurr: toBase.convertedAmount,
+                exchangeRateToBase: toBase.exchangeRate2dp,
+                pastMatchCount: basePlan?.pastMatchCount || 0,
+              };
+              debitsToSave.push(
+                plannedVaultDebitToExpensePayload(syntheticPlan, {
+                  date: transferDate,
+                  batchId: batchKey,
+                })
+              );
+            }
+          }
+        }
+
+        if (onAddTransfers) {
+          await onAddTransfers(
+            transfersToSave.map((t) => ({
+              ...t,
+              userId: settings.userId,
+            }))
+          );
+        } else {
+          for (const t of transfersToSave) {
+            await onAddTransfer({
+              ...t,
+              userId: settings.userId,
+            });
+          }
+        }
+
+        if (applyTransferVaultDebits && debitsToSave && debitsToSave.length > 0) {
+          await onAddExpenses(debitsToSave);
+        }
+
+        setActiveModal(null);
+      } finally {
+        setIsSubmittingTransfer(false);
+      }
+      return;
+    }
+
+    if (!effectiveDestId) return;
     setIsSubmittingTransfer(true);
     try {
       const sourceAcc = accounts.find((a) => a.id === transferSourceId);
@@ -280,25 +540,12 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
   const [customIncOriginText, setCustomIncOriginText] = useState('');
   const [incGross, setIncGross] = useState('');
   const [incCurrency, setIncCurrency] = useState(currency);
-  const [fxSnapshot, setFxSnapshot] = useState<MarketFxSnapshot>(() =>
-    getInitialFxSnapshot(currency)
-  );
   const [incAccountId, setIncAccountId] = useState(defaultOperatingId);
   const [incNetTransferAccountId, setIncNetTransferAccountId] = useState(
     settings.defaultNetIncomeAccountId || ''
   );
   const [incDeductions, setIncDeductions] = useState<IncomeDeductionItem[]>([]);
   const [isSubmittingInc, setIsSubmittingInc] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    fetchMarketExchangeRates(currency).then((snap) => {
-      if (active) setFxSnapshot(snap);
-    });
-    return () => {
-      active = false;
-    };
-  }, [currency]);
 
   const rawIncGross = roundTo2Decimals(parseFloat(incGross) || 0);
   const incFxRate = getExchangeRate(incCurrency, currency, fxSnapshot).rate2dp;
@@ -1076,14 +1323,20 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                       <label className="block text-xs font-medium text-slate-700 mb-1">
                         To Account
                       </label>
-                      <WrapSelect
-                        value={effectiveDestId}
-                        onChange={(val) => setTransferDestId(val)}
-                        options={availableDestAccounts.map((a) => ({
-                          value: a.id,
-                          label: `${a.name} (${getAccountCurrency(a, currency)})`,
-                        }))}
-                      />
+                      {transferToSavingsVaults ? (
+                        <div className="w-full rounded-lg border border-emerald-300 bg-emerald-50/70 px-3 py-2 text-xs font-semibold text-emerald-800 truncate">
+                          Savings Vaults ({selectedTransferShares.length})
+                        </div>
+                      ) : (
+                        <WrapSelect
+                          value={effectiveDestId}
+                          onChange={(val) => setTransferDestId(val)}
+                          options={availableDestAccounts.map((a) => ({
+                            value: a.id,
+                            label: `${a.name} (${getAccountCurrency(a, currency)})`,
+                          }))}
+                        />
+                      )}
                     </div>
                   </div>
 
@@ -1117,7 +1370,301 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                     </div>
                   </div>
 
-                  {rawAmt > 0 && (sourceCurr !== destCurr || sourceCurr !== currency) && (
+                  {/* Checkbox directly beneath Amount asking if transfer is to Savings Vaults */}
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3 space-y-2.5">
+                    <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={transferToSavingsVaults}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setTransferToSavingsVaults(checked);
+                          if (checked) {
+                            setExcludedTransferDistVaultIds([]);
+                            setExcludedTransferDebitVaultIds([]);
+                          }
+                        }}
+                        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 shrink-0"
+                      />
+                      <div className="min-w-0">
+                        <span className="block text-xs font-semibold text-slate-900">
+                          Transfer to Savings Vaults
+                        </span>
+                        <span className="block text-[11px] text-slate-500">
+                          Distribute across each vault rate and apply vault debits
+                        </span>
+                      </div>
+                    </label>
+
+                    {transferToSavingsVaults && transferVaultShares.length > 0 && (
+                      <div className="space-y-2 pt-2 border-t border-slate-200/80">
+                        <div className="flex items-center justify-between text-[11px] font-medium text-slate-600">
+                          <span>Vault Rate Distribution ({selectedTransferShares.length}/{transferVaultShares.length})</span>
+                          <span className="font-mono font-semibold text-slate-900 tabular-nums">
+                            {formatAmount(
+                              roundTo2Decimals(
+                                selectedTransferShares.reduce((s, x) => s + x.sourceAmount, 0)
+                              ),
+                              sourceCurr
+                            )}
+                          </span>
+                        </div>
+
+                        <div className="space-y-1.5 max-h-52 overflow-y-auto pr-0.5">
+                          {transferVaultShares.map((share) => {
+                            const isDistIncluded = !excludedTransferDistVaultIds.includes(
+                              share.vaultAccountId
+                            );
+                            const edit = transferDebitEdits[share.vaultAccountId];
+                            const hasDebitOption = Boolean(
+                              share.debitPlan || edit?.enabledCustom
+                            );
+                            const isDebitIncluded =
+                              isDistIncluded &&
+                              applyTransferVaultDebits &&
+                              hasDebitOption &&
+                              !excludedTransferDebitVaultIds.includes(share.vaultAccountId);
+                            const isEditing =
+                              editingTransferVaultDebitId === share.vaultAccountId;
+
+                            const effRecipient =
+                              edit?.recipient !== undefined
+                                ? edit.recipient
+                                : share.debitPlan?.recipient || share.vaultAccountName;
+                            const effCategory =
+                              edit?.category !== undefined
+                                ? edit.category
+                                : share.debitPlan?.category || 'Savings Allocation';
+                            const effSubcategory =
+                              edit?.subcategory !== undefined
+                                ? edit.subcategory
+                                : share.debitPlan?.subcategory || '';
+                            const effNotes =
+                              edit?.notes !== undefined
+                                ? edit.notes
+                                : share.debitPlan?.notes || '';
+                            const effDebitAmt =
+                              edit?.amountStr !== undefined
+                                ? parseFloat(edit.amountStr) || 0
+                                : share.destinationAmount;
+
+                            return (
+                              <div
+                                key={share.vaultAccountId}
+                                className={`rounded-lg border px-2.5 py-2 text-[11px] space-y-1.5 ${
+                                  isDistIncluded
+                                    ? 'border-slate-200 bg-white'
+                                    : 'border-slate-200/60 bg-slate-100/60 opacity-65'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <label className="flex items-center gap-2 min-w-0 cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      checked={isDistIncluded}
+                                      onChange={(e) => {
+                                        const checked = e.target.checked;
+                                        setExcludedTransferDistVaultIds((prev) =>
+                                          checked
+                                            ? prev.filter((id) => id !== share.vaultAccountId)
+                                            : [...prev, share.vaultAccountId]
+                                        );
+                                      }}
+                                      className="h-3.5 w-3.5 rounded border-slate-300 text-slate-900 shrink-0"
+                                    />
+                                    <span className="font-semibold text-slate-900 truncate">
+                                      {share.vaultAccountName}
+                                    </span>
+                                    <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-600 shrink-0">
+                                      {share.vaultPercentage}%
+                                    </span>
+                                  </label>
+                                  <span className="font-mono font-semibold text-emerald-700 tabular-nums shrink-0">
+                                    +{formatAmount(share.sourceAmount, sourceCurr)}
+                                    {share.vaultCurrency !== sourceCurr && (
+                                      <span className="text-slate-500 font-normal">
+                                        {' '}({formatAmount(share.destinationAmount, share.vaultCurrency)})
+                                      </span>
+                                    )}
+                                  </span>
+                                </div>
+
+                                {isDistIncluded && applyTransferVaultDebits && (
+                                  <div className="pl-5 pt-1 border-t border-slate-100 space-y-1.5">
+                                    {hasDebitOption ? (
+                                      <div className="flex items-center justify-between gap-2">
+                                        <label className="flex items-center gap-1.5 min-w-0 cursor-pointer">
+                                          <input
+                                            type="checkbox"
+                                            checked={isDebitIncluded}
+                                            onChange={(e) => {
+                                              const checked = e.target.checked;
+                                              setExcludedTransferDebitVaultIds((prev) =>
+                                                checked
+                                                  ? prev.filter((id) => id !== share.vaultAccountId)
+                                                  : [...prev, share.vaultAccountId]
+                                              );
+                                            }}
+                                            className="h-3 w-3 rounded border-slate-300 text-rose-600 shrink-0"
+                                          />
+                                          <span className="text-slate-700 truncate">
+                                            Debit: <strong className="text-slate-900">{effRecipient}</strong>
+                                            {effSubcategory || effCategory
+                                              ? ` · ${effSubcategory || effCategory}`
+                                              : ''}
+                                          </span>
+                                        </label>
+                                        <div className="flex items-center gap-1.5 shrink-0">
+                                          <span className="font-mono font-semibold text-rose-700 tabular-nums">
+                                            -{formatAmount(effDebitAmt, share.vaultCurrency)}
+                                          </span>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              setEditingTransferVaultDebitId(
+                                                isEditing ? null : share.vaultAccountId
+                                              )
+                                            }
+                                            className="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600 hover:bg-slate-100"
+                                          >
+                                            {isEditing ? 'Done' : 'Edit'}
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="flex items-center justify-between gap-2 text-[10px] text-slate-500">
+                                        <span>No prior vault debit matched</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setTransferDebitEdits((prev) => ({
+                                              ...prev,
+                                              [share.vaultAccountId]: {
+                                                enabledCustom: true,
+                                                recipient: share.vaultAccountName,
+                                                category: 'Savings Allocation',
+                                                subcategory: '',
+                                                amountStr: String(share.destinationAmount),
+                                                notes: '',
+                                              },
+                                            }));
+                                            setEditingTransferVaultDebitId(share.vaultAccountId);
+                                          }}
+                                          className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-100"
+                                        >
+                                          + Set Debit
+                                        </button>
+                                      </div>
+                                    )}
+
+                                    {isEditing && (
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 rounded border border-slate-200 bg-slate-50 p-2">
+                                        <input
+                                          type="text"
+                                          placeholder="To / Cause"
+                                          value={effRecipient}
+                                          onChange={(e) =>
+                                            setTransferDebitEdits((prev) => ({
+                                              ...prev,
+                                              [share.vaultAccountId]: {
+                                                ...prev[share.vaultAccountId],
+                                                recipient: e.target.value,
+                                              },
+                                            }))
+                                          }
+                                          className="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"
+                                        />
+                                        <input
+                                          type="number"
+                                          step="0.01"
+                                          min="0"
+                                          placeholder={`Amount (${share.vaultCurrency})`}
+                                          value={
+                                            edit?.amountStr !== undefined
+                                              ? edit.amountStr
+                                              : String(share.destinationAmount)
+                                          }
+                                          onChange={(e) =>
+                                            setTransferDebitEdits((prev) => ({
+                                              ...prev,
+                                              [share.vaultAccountId]: {
+                                                ...prev[share.vaultAccountId],
+                                                amountStr: e.target.value,
+                                              },
+                                            }))
+                                          }
+                                          className="rounded border border-slate-300 bg-white px-2 py-1 font-mono text-[11px] text-slate-900"
+                                        />
+                                        <input
+                                          type="text"
+                                          placeholder="Category"
+                                          value={effCategory}
+                                          onChange={(e) =>
+                                            setTransferDebitEdits((prev) => ({
+                                              ...prev,
+                                              [share.vaultAccountId]: {
+                                                ...prev[share.vaultAccountId],
+                                                category: e.target.value,
+                                              },
+                                            }))
+                                          }
+                                          className="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"
+                                        />
+                                        <input
+                                          type="text"
+                                          placeholder="Subcategory"
+                                          value={effSubcategory}
+                                          onChange={(e) =>
+                                            setTransferDebitEdits((prev) => ({
+                                              ...prev,
+                                              [share.vaultAccountId]: {
+                                                ...prev[share.vaultAccountId],
+                                                subcategory: e.target.value,
+                                              },
+                                            }))
+                                          }
+                                          className="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"
+                                        />
+                                        <input
+                                          type="text"
+                                          placeholder="Notes (optional)"
+                                          value={effNotes}
+                                          onChange={(e) =>
+                                            setTransferDebitEdits((prev) => ({
+                                              ...prev,
+                                              [share.vaultAccountId]: {
+                                                ...prev[share.vaultAccountId],
+                                                notes: e.target.value,
+                                              },
+                                            }))
+                                          }
+                                          className="sm:col-span-2 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"
+                                        />
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <label className="flex items-center gap-2 pt-1.5 border-t border-slate-200/80 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={applyTransferVaultDebits}
+                            onChange={(e) => setApplyTransferVaultDebits(e.target.checked)}
+                            className="h-3.5 w-3.5 rounded border-slate-300 text-slate-900 shrink-0"
+                          />
+                          <span className="text-[11px] font-semibold text-slate-800">
+                            Apply automated vault debit for each vault
+                          </span>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+
+                  {!transferToSavingsVaults && rawAmt > 0 && (sourceCurr !== destCurr || sourceCurr !== currency) && (
                     <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
                       <span className="font-mono text-slate-600 tabular-nums">
                         Auto Rate: 1 {sourceCurr} = {format2PointFloat(destConv.exchangeRate2dp)} {destCurr}
@@ -1154,10 +1701,17 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmittingTransfer}
+                  disabled={
+                    isSubmittingTransfer ||
+                    (transferToSavingsVaults && selectedTransferShares.length === 0)
+                  }
                   className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-extrabold text-white hover:bg-slate-800 disabled:opacity-50"
                 >
-                  {isSubmittingTransfer ? 'Transferring...' : 'Record Transfer'}
+                  {isSubmittingTransfer
+                    ? 'Processing...'
+                    : transferToSavingsVaults
+                    ? 'Transfer & Automate Vaults'
+                    : 'Record Transfer'}
                 </button>
               </div>
             </form>

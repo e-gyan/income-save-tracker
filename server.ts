@@ -1894,6 +1894,300 @@ app.post('/api/savings/vault-debit-plan', (req: Request, res: Response) => {
 });
 
 /**
+ * Backend Automated Manual Transfer to Savings Vaults Endpoint (`POST /api/transfers/automate-savings-vaults`)
+ * Distributes a manual transfer amount across each configured Savings Vault by rate (2dp FX-aware)
+ * and builds corresponding automated vault-debit expenses for each distributed Savings Vault.
+ */
+app.post('/api/transfers/automate-savings-vaults', (req: Request, res: Response) => {
+  try {
+    const {
+      sourceAccountId = '',
+      sourceCurrency = 'GHS',
+      amount = 0,
+      date = new Date().toISOString().slice(0, 10),
+      description = '',
+      baseCurrency = 'GHS',
+      accounts = [],
+      savingsBuckets = [],
+      expenses = [],
+      distributeToSavingsVaults = true,
+      applyVaultDebits = true,
+      excludedDistributionVaultIds = [],
+      excludedDebitVaultIds = [],
+      debitOverrides = {},
+      previewOnly = false,
+    } = req.body || {};
+
+    const cleanAmount = round2dp(Math.max(0, Number(amount) || 0));
+    const upperBase = String(baseCurrency || 'GHS').trim().toUpperCase();
+    const upperSrcCurr = String(sourceCurrency || upperBase).trim().toUpperCase();
+    const normalizedDate = normalizeDateString(date);
+    const cachedFx = fxCache.get(upperBase);
+    const activeRates = cachedFx?.rates || buildFallbackRatesForBase(upperBase);
+
+    if (!distributeToSavingsVaults || cleanAmount <= 0 || !sourceAccountId) {
+      return res.json({
+        success: true,
+        previewOnly: Boolean(previewOnly),
+        shares: [],
+        transfers: [],
+        vaultDebits: [],
+        totalDistributedSourceAmount: 0,
+        totalDistributedBaseAmount: 0,
+        transferBatchId: `manual_vault_${Date.now()}`,
+      });
+    }
+
+    const fallbackPillars = [
+      { id: 'bucket_long_term', name: 'Long-Term Investment Vault', percentage: 30, accountId: 'acc_sav_long_term' },
+      { id: 'bucket_short_term', name: 'Short-Term Reserve Vault', percentage: 15, accountId: 'acc_sav_short_term' },
+      { id: 'bucket_risky', name: 'High-Yield / Risky Vault', percentage: 5, accountId: 'acc_sav_risky' },
+      { id: 'bucket_emergency', name: 'Emergency Security Vault', percentage: 20, accountId: 'acc_sav_emergency' },
+      { id: 'bucket_life_care', name: 'Life-Care & Growth Vault', percentage: 10, accountId: 'acc_sav_life_care' },
+      { id: 'bucket_project_building', name: 'Project & Buildings Vault', percentage: 15, accountId: 'acc_sav_project' },
+      { id: 'bucket_partnership', name: 'Partnership & Giving Vault', percentage: 5, accountId: 'acc_sav_partnership' },
+    ];
+
+    const accountsList: any[] = Array.isArray(accounts) ? accounts : [];
+    const bucketsInput: any[] =
+      Array.isArray(savingsBuckets) && savingsBuckets.length > 0
+        ? savingsBuckets
+        : fallbackPillars;
+
+    const excludedDistSet = new Set<string>(
+      Array.isArray(excludedDistributionVaultIds)
+        ? excludedDistributionVaultIds.map((id: any) => String(id))
+        : []
+    );
+    const excludedDebitSet = new Set<string>(
+      Array.isArray(excludedDebitVaultIds)
+        ? excludedDebitVaultIds.map((id: any) => String(id))
+        : []
+    );
+
+    const resolvedPillars = bucketsInput
+      .map((b: any, idx: number) => {
+        const bId = String(b?.id || b?.bucketId || `bucket_${idx}`);
+        const accMatch =
+          accountsList.find((a: any) => a?.id === b?.accountId) ||
+          accountsList.find((a: any) => a?.linkedSavingsBucketId === bId);
+        const accId = String(accMatch?.id || b?.accountId || `acc_sav_${bId}`);
+        return {
+          bucketId: bId,
+          name: String(accMatch?.name || b?.name || 'Savings Vault').trim(),
+          percentage: Math.max(0, Number(b?.percentage) || 0),
+          accountId: accId,
+          account: accMatch,
+        };
+      })
+      .filter((p) => p.accountId !== sourceAccountId && p.percentage > 0);
+
+    const totalRateSum = resolvedPillars.reduce((sum, p) => sum + p.percentage, 0);
+    const lastActiveIdx = resolvedPillars.length - 1;
+    let runningSum = 0;
+
+    const pastDebits = (Array.isArray(expenses) ? expenses : []).filter(
+      (e: any) =>
+        e &&
+        e.accountId &&
+        e.vaultAction !== 'credit' &&
+        !String(e.id || '').startsWith('exp_ded_') &&
+        !String(e.id || '').startsWith('exp_cut_') &&
+        !String(e.id || '').startsWith('inc_ded_exp_')
+    );
+
+    const transferBatchId = `manual_vault_${Date.now()}`;
+    const cleanDesc = String(description || '').trim();
+    const shares: any[] = [];
+    const transfers: any[] = [];
+    const vaultDebits: any[] = [];
+
+    resolvedPillars.forEach((pillar, index) => {
+      let shareSourceAmt = 0;
+      if (Math.abs(totalRateSum - 100) < 0.01 && index === lastActiveIdx) {
+        shareSourceAmt = round2dp(Math.max(0, cleanAmount - runningSum));
+      } else {
+        shareSourceAmt = round2dp((cleanAmount * pillar.percentage) / 100);
+        runningSum = round2dp(runningSum + shareSourceAmt);
+      }
+
+      if (shareSourceAmt <= 0 || excludedDistSet.has(pillar.accountId)) {
+        return;
+      }
+
+      const vaultCurr = String(
+        pillar.account?.currency || upperBase
+      )
+        .trim()
+        .toUpperCase();
+
+      const toVault = convertServer2dp(
+        shareSourceAmt,
+        upperSrcCurr,
+        vaultCurr,
+        activeRates,
+        upperBase
+      );
+      const toBase = convertServer2dp(
+        shareSourceAmt,
+        upperSrcCurr,
+        upperBase,
+        activeRates,
+        upperBase
+      );
+
+      shares.push({
+        bucketId: pillar.bucketId,
+        vaultAccountId: pillar.accountId,
+        vaultAccountName: pillar.name,
+        percentage: pillar.percentage,
+        sourceCurrency: upperSrcCurr,
+        sourceAmount: shareSourceAmt,
+        vaultCurrency: vaultCurr,
+        destinationAmount: toVault.convertedAmount,
+        baseAmount: toBase.convertedAmount,
+        exchangeRate: toVault.exchangeRate2dp,
+      });
+
+      transfers.push({
+        date: normalizedDate,
+        sourceAccountId,
+        destinationAccountId: pillar.accountId,
+        sourceCurrency: upperSrcCurr,
+        sourceAmount: shareSourceAmt,
+        destinationCurrency: vaultCurr,
+        destinationAmount: toVault.convertedAmount,
+        exchangeRate: toVault.exchangeRate2dp,
+        amount: toBase.convertedAmount,
+        transferType: 'general',
+        description: cleanDesc
+          ? `${cleanDesc} · ${pillar.name} (${pillar.percentage}%)`
+          : `Savings Vault Distribution · ${pillar.name} (${pillar.percentage}%)`,
+      });
+
+      if (applyVaultDebits && !excludedDebitSet.has(pillar.accountId)) {
+        const vaultHistory = pastDebits
+          .filter((e: any) => String(e.accountId) === pillar.accountId)
+          .sort((a: any, b: any) => {
+            const cmp = String(b.date || '').localeCompare(String(a.date || ''));
+            if (cmp !== 0) return cmp;
+            return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+          });
+
+        const override =
+          debitOverrides && typeof debitOverrides === 'object'
+            ? debitOverrides[pillar.accountId]
+            : undefined;
+
+        if (vaultHistory.length > 0 || override) {
+          // Weight frequency & recency for past vault debits
+          const groups = new Map<string, { sample: any; score: number; count: number }>();
+          vaultHistory.forEach((exp: any, idx: number) => {
+            const rec = String(exp.recipient || exp.description || '').trim();
+            const cat = String(exp.category || 'Savings Allocation').trim();
+            const sub = String(exp.subcategory || '').trim();
+            const sig = `${rec.toLowerCase()}||${cat.toLowerCase()}||${sub.toLowerCase()}`;
+            const recencyBoost = Math.max(1, vaultHistory.length - idx);
+            const prev = groups.get(sig);
+            if (prev) {
+              prev.count += 1;
+              prev.score += 10 + recencyBoost;
+            } else {
+              groups.set(sig, { sample: exp, score: 10 + recencyBoost, count: 1 });
+            }
+          });
+          const best = Array.from(groups.values()).sort((a, b) => b.score - a.score)[0];
+          const sample = best?.sample || {};
+
+          const resolvedRecipient =
+            override?.recipient !== undefined
+              ? String(override.recipient).trim()
+              : String(
+                  sample.recipient ||
+                    sample.description ||
+                    sample.subcategory ||
+                    pillar.name
+                ).trim();
+          const resolvedCategory =
+            override?.category !== undefined
+              ? String(override.category).trim() || 'Savings Allocation'
+              : String(sample.category || 'Savings Allocation').trim();
+          const resolvedSub =
+            override?.subcategory !== undefined
+              ? String(override.subcategory).trim() || undefined
+              : String(sample.subcategory || '').trim() || undefined;
+          const resolvedNotes =
+            override?.notes !== undefined
+              ? String(override.notes).trim()
+              : String(sample.notes || '').trim();
+
+          const debitVaultAmt =
+            override?.debitAmountInVaultCurr !== undefined
+              ? round2dp(Math.max(0, Number(override.debitAmountInVaultCurr) || 0))
+              : toVault.convertedAmount;
+
+          if (debitVaultAmt > 0) {
+            const debitToBase =
+              vaultCurr === upperBase
+                ? { convertedAmount: debitVaultAmt, exchangeRate2dp: 1.0 }
+                : convertServer2dp(
+                    debitVaultAmt,
+                    vaultCurr,
+                    upperBase,
+                    activeRates,
+                    upperBase
+                  );
+
+            const autoTag = `Auto-debited from ${pillar.name} (Manual transfer ${pillar.percentage}%)`;
+            vaultDebits.push({
+              date: normalizedDate,
+              batchId: transferBatchId,
+              accountId: pillar.accountId,
+              vaultAction: 'debit',
+              recipient: resolvedRecipient || pillar.name,
+              category: resolvedCategory,
+              subcategory: resolvedSub,
+              subcategoryColor: sample.subcategoryColor || undefined,
+              description:
+                resolvedSub || resolvedRecipient || resolvedCategory,
+              notes: resolvedNotes ? `${resolvedNotes} · ${autoTag}` : autoTag,
+              currency: vaultCurr,
+              originalAmount: debitVaultAmt,
+              exchangeRate: debitToBase.exchangeRate2dp,
+              amount: debitToBase.convertedAmount,
+              pastMatchCount: vaultHistory.length,
+            });
+          }
+        }
+      }
+    });
+
+    const totalDistributedSourceAmount = round2dp(
+      transfers.reduce((sum, t) => sum + (Number(t.sourceAmount) || 0), 0)
+    );
+    const totalDistributedBaseAmount = round2dp(
+      transfers.reduce((sum, t) => sum + (Number(t.amount) || 0), 0)
+    );
+
+    return res.json({
+      success: true,
+      previewOnly: Boolean(previewOnly),
+      shares,
+      transfers,
+      vaultDebits,
+      totalDistributedSourceAmount,
+      totalDistributedBaseAmount,
+      transferBatchId,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Unable to process manual transfer vault automation.',
+    });
+  }
+});
+
+/**
  * Backend Expense Transaction Update Endpoint (`POST /api/expenses/update`)
  * Normalizes an edited expense transaction across all boards with currency conversion and vault debit handling.
  */
