@@ -32,6 +32,8 @@ import {
   learnSavingsVaultDebitAccount,
   buildAutomatedSavingsVaultDebitPlan,
   plannedVaultDebitToExpensePayload,
+  learnTopFrequentExpenses,
+  FrequentExpenseSuggestion,
 } from '../lib/deductionIntelligence.ts';
 import { formatDateDDMMYYYY } from '../lib/dateFilters.ts';
 import {
@@ -321,7 +323,7 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
         grossAmount: numericIncGross,
         targetCurrency: incCurrency,
         fxSnapshot,
-      }),
+      }).filter((s) => s.isAlreadyDefinedCut),
     [
       incomes,
       expenses,
@@ -647,6 +649,28 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
       }),
     [expenses, accounts, settings, expRecipient, expCategory, expSubcategory]
   );
+
+  const topFrequentExpenses = useMemo(
+    () =>
+      learnTopFrequentExpenses({
+        expenses,
+        accounts,
+        settings,
+        currency,
+        limit: 5,
+      }),
+    [expenses, accounts, settings, currency]
+  );
+
+  const handleApplyFrequentExpense = (sug: FrequentExpenseSuggestion) => {
+    setExpAccountId(sug.accountId || defaultOperatingId);
+    setExpCurrency(sug.currency || currency);
+    setExpCategory(sug.category || expenseCategories[0]?.name || 'Utilities');
+    setExpSubcategory(sug.subcategory || '');
+    setExpRecipient(sug.recipient || sug.label);
+    setExpAmount(sug.typicalAmount > 0 ? String(sug.typicalAmount) : '');
+    setExpNotes(sug.notes || '');
+  };
 
   // Auto-select learned Savings Vault debit account when matching past vault-debit expenses
   useEffect(() => {
@@ -1333,7 +1357,7 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                 <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-semibold text-slate-800">
-                      Defined & Suggested Deductions (Tap to Toggle)
+                      Defined Deductions (Tap to Toggle)
                     </span>
                     <span className="text-[11px] font-mono text-slate-500">
                       {incDeductions.length} selected
@@ -1716,6 +1740,32 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                 <span className="rounded bg-emerald-600 px-1.5 py-0.5 font-mono text-[10px] font-bold text-white shrink-0">
                   DEBIT
                 </span>
+              </div>
+            )}
+
+            {topFrequentExpenses.length > 0 && (
+              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-2.5 space-y-1.5">
+                <div className="text-[11px] font-semibold text-slate-700">
+                  Suggested from Your History (Top {topFrequentExpenses.length})
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {topFrequentExpenses.map((sug) => (
+                    <button
+                      key={sug.id}
+                      type="button"
+                      onClick={() => handleApplyFrequentExpense(sug)}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-left transition-colors hover:border-slate-400 hover:bg-slate-50 cursor-pointer"
+                    >
+                      <div className="text-[11px] font-semibold text-slate-900">
+                        + {sug.label}
+                      </div>
+                      <div className="font-mono text-[10px] text-slate-500 tabular-nums">
+                        {sug.subcategory || sug.category} ·{' '}
+                        {formatAmount(sug.typicalAmount, sug.currency)} · {sug.count}×
+                      </div>
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 

@@ -1073,4 +1073,132 @@ export function plannedVaultDebitToExpensePayload(
   };
 }
 
+export interface FrequentExpenseSuggestion {
+  id: string;
+  label: string;
+  recipient: string;
+  category: string;
+  subcategory: string;
+  accountId: string;
+  currency: string;
+  typicalAmount: number;
+  notes?: string;
+  count: number;
+  lastDate: string;
+  isVaultDebit: boolean;
+}
+
+/**
+ * Extracts the top recurring standalone/vault-debit expenses from recorded history,
+ * ranked by occurrence frequency descending and then by most recent date,
+ * enabling one-tap expense entry while recording expenses.
+ */
+export function learnTopFrequentExpenses(params: {
+  expenses: FlexibleExpense[];
+  accounts: FinancialAccount[];
+  settings: UserSettings;
+  currency: string;
+  limit?: number;
+}): FrequentExpenseSuggestion[] {
+  const { expenses, accounts, settings, currency, limit = 5 } = params;
+  const baseCurr = (settings.currency || currency || 'GHS').trim().toUpperCase();
+  const defaultAcc =
+    accounts.find((a) => a.id === settings.defaultAccountId) ||
+    accounts.find((a) => a.isDefaultDeposit) ||
+    accounts[0];
+
+  const eligible = (expenses || []).filter(
+    (e) =>
+      !e.id.startsWith('exp_ded_') &&
+      !e.id.startsWith('exp_cut_') &&
+      !e.id.startsWith('inc_ded_exp_') &&
+      e.vaultAction !== 'credit'
+  );
+
+  if (eligible.length === 0) return [];
+
+  // Sort most recent first so the representative sample carries latest account, amount & notes
+  const sortedByRecency = [...eligible].sort((a, b) => {
+    const dateCmp = (b.date || '').localeCompare(a.date || '');
+    if (dateCmp !== 0) return dateCmp;
+    return (b.createdAt || '').localeCompare(a.createdAt || '');
+  });
+
+  interface FrequencyGroup {
+    signature: string;
+    latest: FlexibleExpense;
+    count: number;
+    lastDate: string;
+  }
+
+  const groups = new Map<string, FrequencyGroup>();
+
+  for (const exp of sortedByRecency) {
+    const rec = (exp.recipient || '').trim();
+    const desc = (exp.description || '').trim();
+    const cat = (exp.category || '').trim();
+    const sub = (exp.subcategory || '').trim();
+    const causeName = rec || (desc && desc.toLowerCase() !== sub.toLowerCase() ? desc : '') || sub || cat;
+    if (!causeName && !cat) continue;
+
+    const sig = `${causeName.toLowerCase()}||${cat.toLowerCase()}||${sub.toLowerCase()}`;
+    const existing = groups.get(sig);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      groups.set(sig, {
+        signature: sig,
+        latest: exp,
+        count: 1,
+        lastDate: exp.date || '',
+      });
+    }
+  }
+
+  return Array.from(groups.values())
+    .sort((a, b) => {
+      if (b.count !== a.count) return b.count - a.count;
+      const dateCmp = (b.lastDate || '').localeCompare(a.lastDate || '');
+      if (dateCmp !== 0) return dateCmp;
+      return (b.latest.createdAt || '').localeCompare(a.latest.createdAt || '');
+    })
+    .slice(0, Math.max(1, limit))
+    .map((group) => {
+      const sample = group.latest;
+      const resolvedAccountId =
+        resolveValidAccountId(sample.accountId, accounts, settings) ||
+        defaultAcc?.id ||
+        '';
+      const matchedAcc = accounts.find((a) => a.id === resolvedAccountId) || defaultAcc;
+      const accCurr = getAccountCurrency(matchedAcc, baseCurr);
+      const expCurr = (sample.currency || accCurr || baseCurr).trim().toUpperCase();
+      const rawAmt = Number(sample.originalAmount ?? sample.amount) || 0;
+      const rec = (sample.recipient || '').trim();
+      const cat = (sample.category || 'Uncategorized').trim();
+      const sub = (sample.subcategory || '').trim();
+      const desc = (sample.description || '').trim();
+      const label =
+        rec ||
+        (desc && desc.toLowerCase() !== cat.toLowerCase() ? desc : '') ||
+        sub ||
+        cat;
+
+      return {
+        id: `freq_exp_${group.signature.replace(/[^a-z0-9]/gi, '_')}`,
+        label,
+        recipient: rec || (desc && desc !== sub && desc !== cat ? desc : ''),
+        category: cat,
+        subcategory: sub,
+        accountId: resolvedAccountId,
+        currency: expCurr,
+        typicalAmount: roundTo2Decimals(rawAmt),
+        notes: (sample.notes || '').trim() || undefined,
+        count: group.count,
+        lastDate: group.lastDate,
+        isVaultDebit: matchedAcc ? isSavingsVaultAccount(matchedAcc, settings) : false,
+      };
+    });
+}
+
+
 

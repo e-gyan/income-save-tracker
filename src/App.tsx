@@ -79,7 +79,7 @@ import { Header } from './components/Header.tsx';
 import {
   Navigation,
   BottomMenuBar,
-  NAV_ITEMS,
+  BOTTOM_NAV_ITEMS,
   ActiveTab,
 } from './components/Navigation.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
@@ -1544,7 +1544,7 @@ export default function App() {
   const swipeAbortedRef = useRef(false);
 
   const activeNavIndex = useMemo(
-    () => Math.max(0, NAV_ITEMS.findIndex((item) => item.id === activeTab)),
+    () => BOTTOM_NAV_ITEMS.findIndex((item) => item.id === activeTab),
     [activeTab]
   );
 
@@ -1641,14 +1641,14 @@ export default function App() {
     swipeStartYRef.current = null;
     swipeAbortedRef.current = false;
 
-    // Require an intentional, predominantly horizontal swipe and clamp strictly at start/end boundaries
+    // Require an intentional, predominantly horizontal swipe and clamp strictly at BOTTOM_NAV_ITEMS boundaries
     if (Math.abs(dx) >= 75 && Math.abs(dy) < 48 && Math.abs(dx) > Math.abs(dy) * 1.8) {
-      if (dx < 0 && activeNavIndex < NAV_ITEMS.length - 1) {
-        // Slide left -> next menu option (impossible past last option)
-        setActiveTab(NAV_ITEMS[activeNavIndex + 1].id);
+      if (activeNavIndex >= 0 && dx < 0 && activeNavIndex < BOTTOM_NAV_ITEMS.length - 1) {
+        // Slide left -> next bottom menu option (skips Sidebar-only Budgets/Settings)
+        setActiveTab(BOTTOM_NAV_ITEMS[activeNavIndex + 1].id);
       } else if (dx > 0 && activeNavIndex > 0) {
-        // Slide right -> previous menu option (impossible before first option)
-        setActiveTab(NAV_ITEMS[activeNavIndex - 1].id);
+        // Slide right -> previous bottom menu option (skips Sidebar-only Budgets/Settings)
+        setActiveTab(BOTTOM_NAV_ITEMS[activeNavIndex - 1].id);
       }
     }
   };

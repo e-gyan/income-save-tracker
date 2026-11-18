@@ -46,7 +46,11 @@ import {
   groupRecordsByPeriod,
   RecordGroupPeriod,
 } from '../lib/dateFilters.ts';
-import { learnSavingsVaultDebitAccount } from '../lib/deductionIntelligence.ts';
+import {
+  learnSavingsVaultDebitAccount,
+  learnTopFrequentExpenses,
+  FrequentExpenseSuggestion,
+} from '../lib/deductionIntelligence.ts';
 import { RecordCard, ExpenseDetailPopupModal } from './RecordCard.tsx';
 
 interface ExpenseDraftRow {
@@ -83,14 +87,6 @@ interface FlexibleExpensesViewProps {
   onNavigateToTab?: (tab: ActiveTab) => void;
   expandFormTrigger?: number;
 }
-
-const CAUSE_QUICK_PRESETS = [
-  'Treasury Bond',
-  'Mutual Funds',
-  'Buying of Lands',
-  'Fixed Deposit',
-  'Equity / ETF',
-];
 
 export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
   expenses,
@@ -284,6 +280,48 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
   const handleApplyBatchDate = (newDate: string) => {
     setBatchDate(newDate);
     setRows((prev) => prev.map((r) => ({ ...r, date: newDate })));
+  };
+
+  const topFrequentExpenses = useMemo(
+    () =>
+      learnTopFrequentExpenses({
+        expenses,
+        accounts,
+        settings,
+        currency,
+        limit: 5,
+      }),
+    [expenses, accounts, settings, currency]
+  );
+
+  const handleTapFrequentExpense = (sug: FrequentExpenseSuggestion) => {
+    setRows((prev) => {
+      const lastRow = prev[prev.length - 1];
+      const isLastRowBlank =
+        Boolean(lastRow) &&
+        !lastRow.recipient.trim() &&
+        !lastRow.amount.trim() &&
+        !lastRow.notes.trim();
+
+      const nextRow: ExpenseDraftRow = {
+        rowId: isLastRowBlank
+          ? lastRow.rowId
+          : `row_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        date: lastRow?.date || batchDate || todayStr,
+        accountId: sug.accountId || defaultAcc?.id || '',
+        recipient: sug.recipient || sug.label,
+        category: sug.category || categoryPreferences[0]?.name || '',
+        subcategory: sug.subcategory || '',
+        currency: sug.currency || currency,
+        amount: sug.typicalAmount > 0 ? String(sug.typicalAmount) : '',
+        notes: sug.notes || '',
+      };
+
+      if (isLastRowBlank) {
+        return prev.map((r, idx) => (idx === prev.length - 1 ? nextRow : r));
+      }
+      return [...prev, nextRow];
+    });
   };
 
   const validDraftRows = useMemo(
@@ -623,38 +661,51 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
 
         {!isFormCollapsed && (
           <form onSubmit={handleSubmitBatch} className="space-y-4">
-            {/* Instance Toolbar: Default Date & Quick Cause Chips */}
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50/70 p-3">
-              <div className="flex items-center gap-2">
-                <label className="text-xs font-medium text-slate-700">
-                  Instance Date
-                </label>
-                <input
-                  type="date"
-                  value={batchDate}
-                  onChange={(e) => handleApplyBatchDate(e.target.value)}
-                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 font-mono text-xs text-slate-900 focus:outline-none"
-                />
+            {/* Instance Toolbar: Default Date & Suggested Frequent Expenses */}
+            <div className="space-y-2.5 rounded-lg border border-slate-100 bg-slate-50/70 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-medium text-slate-700">
+                    Instance Date
+                  </label>
+                  <input
+                    type="date"
+                    value={batchDate}
+                    onChange={(e) => handleApplyBatchDate(e.target.value)}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 font-mono text-xs text-slate-900 focus:outline-none"
+                  />
+                </div>
+                {topFrequentExpenses.length > 0 && (
+                  <span className="text-[11px] font-medium text-slate-500">
+                    Suggested from Your History · Tap to add
+                  </span>
+                )}
               </div>
 
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-[11px] text-slate-500 mr-1">Quick Cause:</span>
-                {CAUSE_QUICK_PRESETS.map((preset) => (
-                  <button
-                    key={preset}
-                    type="button"
-                    onClick={() => {
-                      const targetRow = rows[rows.length - 1];
-                      if (targetRow) {
-                        handleUpdateRow(targetRow.rowId, { recipient: preset });
-                      }
-                    }}
-                    className="rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
-                  >
-                    {preset}
-                  </button>
-                ))}
-              </div>
+              {topFrequentExpenses.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {topFrequentExpenses.map((sug) => (
+                    <button
+                      key={sug.id}
+                      type="button"
+                      onClick={() => handleTapFrequentExpense(sug)}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-left transition-colors hover:border-slate-400 hover:bg-slate-50 cursor-pointer"
+                    >
+                      <div className="text-[11px] font-semibold text-slate-900">
+                        + {sug.label}
+                      </div>
+                      <div className="font-mono text-[10px] text-slate-500 tabular-nums">
+                        {sug.subcategory || sug.category} ·{' '}
+                        {formatAmount(sug.typicalAmount, sug.currency)} · {sug.count}×
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-[11px] text-slate-500">
+                  Suggested from Your History: record expenses to unlock top 5 frequent shortcuts.
+                </div>
+              )}
             </div>
 
             {categoryPreferences.length === 0 && (

@@ -228,7 +228,7 @@ export const Navigation: React.FC<NavigationProps> = ({
 };
 
 export const BOTTOM_NAV_ITEMS: NavItem[] = NAV_ITEMS.filter(
-  (item) => item.id !== 'settings'
+  (item) => item.id !== 'settings' && item.id !== 'budgets'
 );
 
 interface BottomMenuBarProps {
@@ -243,9 +243,10 @@ export const BottomMenuBar: React.FC<BottomMenuBarProps> = ({
   const touchStartXRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
 
-  const activeIndex = NAV_ITEMS.findIndex((item) => item.id === activeTab);
+  const activeIndex = BOTTOM_NAV_ITEMS.findIndex((item) => item.id === activeTab);
   const canSlidePrev = activeIndex > 0;
-  const canSlideNext = activeIndex >= 0 && activeIndex < NAV_ITEMS.length - 1;
+  const canSlideNext =
+    activeIndex >= 0 && activeIndex < BOTTOM_NAV_ITEMS.length - 1;
 
   const handleBarTouchStart = (e: React.TouchEvent<HTMLElement>) => {
     if (e.touches.length !== 1) return;
@@ -268,9 +269,9 @@ export const BottomMenuBar: React.FC<BottomMenuBarProps> = ({
 
     if (Math.abs(dx) >= 55 && Math.abs(dx) > Math.abs(dy) * 1.6) {
       if (dx < 0 && canSlideNext) {
-        onSelectTab(NAV_ITEMS[activeIndex + 1].id);
+        onSelectTab(BOTTOM_NAV_ITEMS[activeIndex + 1].id);
       } else if (dx > 0 && canSlidePrev) {
-        onSelectTab(NAV_ITEMS[activeIndex - 1].id);
+        onSelectTab(BOTTOM_NAV_ITEMS[activeIndex - 1].id);
       }
     }
   };
@@ -282,11 +283,11 @@ export const BottomMenuBar: React.FC<BottomMenuBarProps> = ({
       onTouchEnd={handleBarTouchEnd}
       className="shrink-0 z-40 w-full border-t border-slate-200/90 bg-white/95 backdrop-blur-md shadow-[0_-4px_20px_rgba(15,23,42,0.06)] select-none overflow-hidden"
     >
-      <div className="mx-auto max-w-7xl px-2 sm:px-6">
+      <div className="mx-auto max-w-7xl px-1.5 sm:px-6">
         <nav
           role="tablist"
           aria-label="Menu Options"
-          className="grid grid-cols-6 gap-1.5 sm:gap-3 py-1.5 sm:py-2 w-full overflow-hidden"
+          className="grid grid-cols-5 gap-1 sm:gap-2.5 py-1.5 sm:py-2 w-full overflow-hidden"
         >
           {BOTTOM_NAV_ITEMS.map((item) => {
             const isActive = activeTab === item.id;
@@ -300,13 +301,16 @@ export const BottomMenuBar: React.FC<BottomMenuBarProps> = ({
                 aria-label={item.label}
                 title={item.label}
                 onClick={() => onSelectTab(item.id)}
-                className={`flex h-12 sm:h-14 w-full items-center justify-center rounded-xl transition-colors cursor-pointer ${
+                className={`flex h-14 sm:h-16 w-full min-w-0 flex-col items-center justify-center gap-0.5 rounded-xl px-1 transition-colors cursor-pointer ${
                   isActive
                     ? 'bg-slate-900 text-white shadow-xs'
                     : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
               >
-                {renderNavIcon(item.id, 'h-7 w-7 sm:h-8 sm:w-8 shrink-0')}
+                {renderNavIcon(item.id, 'h-6 w-6 sm:h-7 sm:w-7 shrink-0')}
+                <span className="max-w-full truncate text-[10px] sm:text-xs font-semibold leading-tight tracking-tight whitespace-nowrap">
+                  {item.shortLabel}
+                </span>
               </button>
             );
           })}

@@ -47,8 +47,6 @@ import {
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { WrapSelect } from './WrapSelect.tsx';
 import {
-  learnDeductionSuggestions,
-  suggestionToIncomeDeductionItem,
   buildAutomatedSavingsVaultDebitPlan,
   plannedVaultDebitToExpensePayload,
 } from '../lib/deductionIntelligence.ts';
@@ -571,20 +569,8 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
       activeIncomeCurrency,
       fxSnapshot
     );
-    const learnedSuggestions = learnDeductionSuggestions({
-      incomes,
-      expenses,
-      settings,
-      activeDate: date,
-      activeSource: isAddingNewSource ? newSourceDraft : clientOrSource,
-      activeOrigin: isAddingNewOrigin ? newOriginDraft : notes,
-      grossAmount: grossNum,
-      targetCurrency: activeIncomeCurrency,
-      fxSnapshot,
-    });
-
     setDraftDeductions((prev) => {
-      // Update any existing draft items (including suggested-from-history items)
+      // Update any existing draft items using Settings-defined cuts
       const updatedExisting = prev.map((existing) => {
         if (existing.isCustomRateOverride) {
           return {
@@ -603,21 +589,6 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
         );
         if (matchedDef) {
           return matchedDef;
-        }
-        const matchedSug = learnedSuggestions.find(
-          (s) =>
-            s.name.trim().toLowerCase() === existing.name.trim().toLowerCase()
-        );
-        if (matchedSug && existing.type === 'fixed') {
-          return {
-            ...existing,
-            value: matchedSug.value,
-            amount: computeDeductionAmount(
-              grossNum,
-              existing.type,
-              matchedSug.value
-            ),
-          };
         }
         return existing;
       });
@@ -2014,79 +1985,6 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                     )}
                   </div>
                 </div>
-
-                {/* Learned Suggestions Across Your Data */}
-                {(() => {
-                  const learnedList = learnDeductionSuggestions({
-                    incomes,
-                    expenses,
-                    settings,
-                    activeDate: date,
-                    activeSource: isAddingNewSource ? newSourceDraft : clientOrSource,
-                    activeOrigin: isAddingNewOrigin ? newOriginDraft : notes,
-                    grossAmount: numericDraftGross,
-                    targetCurrency: activeIncomeCurrency,
-                    fxSnapshot,
-                  }).filter((s) => !s.isAlreadyDefinedCut);
-
-                  if (learnedList.length === 0) return null;
-
-                  return (
-                    <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-2.5 space-y-1.5">
-                      <div className="text-[11px] font-semibold text-slate-700">
-                        Suggested from Your History (Tap to Select)
-                      </div>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {learnedList.map((sug) => {
-                          const isSelected = computedDraftDeductions.some(
-                            (d) =>
-                              d.name.trim().toLowerCase() ===
-                              sug.name.trim().toLowerCase()
-                          );
-                          return (
-                            <button
-                              key={sug.id}
-                              type="button"
-                              onClick={() => {
-                                if (isSelected) {
-                                  setDraftDeductions((prev) =>
-                                    prev.filter(
-                                      (d) =>
-                                        d.name.trim().toLowerCase() !==
-                                        sug.name.trim().toLowerCase()
-                                    )
-                                  );
-                                } else {
-                                  setDraftDeductions((prev) => [
-                                    ...prev,
-                                    suggestionToIncomeDeductionItem(
-                                      sug,
-                                      numericDraftGross,
-                                      date
-                                    ),
-                                  ]);
-                                }
-                              }}
-                              title={sug.reason}
-                              className={`rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                                isSelected
-                                  ? 'border-slate-900 bg-slate-900 text-white'
-                                  : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:text-slate-900'
-                              }`}
-                            >
-                              {isSelected ? '✓ ' : '+ '}
-                              {sug.name} (
-                              {sug.type === 'percentage'
-                                ? `${sug.value}%`
-                                : formatAmount(sug.value, activeIncomeCurrency)}
-                              )
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })()}
 
                 {definedCuts.length === 0 ? (
                   <div className="rounded-lg border border-dashed border-slate-200 py-3.5 px-3 text-center space-y-1.5">
