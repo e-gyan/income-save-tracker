@@ -644,13 +644,25 @@ export function computeDeductionAmount(
   return Math.round(((gross * cleanVal) / 100) * 100) / 100;
 }
 
-export const APP_VERSION = '4.2.0';
+export const APP_VERSION = '4.9.0';
 
 export const VERSION_RELEASE_LOG: {
   version: string;
   date: string;
   summary: string;
 }[] = [
+  {
+    version: '4.9.0',
+    date: '2026-11-19',
+    summary:
+      'Added backend-driven category and subcategory editing (POST /api/categories/edit) that immediately reflects new names in Settings and automatically replaces old category/subcategory references across all expenses, income deductions, deduction rules, and budgets.',
+  },
+  {
+    version: '4.8.0',
+    date: '2026-11-19',
+    summary:
+      'Restored the clean original deduction rule interface while locking exact user-selected Expense Categories and Subcategories (including None) through the backend across the app.',
+  },
   {
     version: '4.2.0',
     date: '2026-11-14',
@@ -1225,7 +1237,14 @@ export function getEffectiveExpenseCategoryPreferences(
     }
   }
 
-  // Ensure "Giving and Speaking" -> "Givings" is always present
+  // Seed "Giving and Speaking" -> "Givings" only for fresh/uninitialized preferences
+  // so renaming or removing it in Settings never re-injects the old name.
+  const hasSavedUserPrefs =
+    Array.isArray(settings.expenseCategoryPreferences) &&
+    settings.expenseCategoryPreferences.length > 0;
+  const hasGivingEntryById = prefs.some(
+    (p) => p.id === 'exp_cat_giving_speaking'
+  );
   const givingSpeakingIdx = prefs.findIndex(
     (p) =>
       normalizeText(p.name) === 'giving and speaking' ||
@@ -1233,14 +1252,14 @@ export function getEffectiveExpenseCategoryPreferences(
         normalizeText(p.name).includes('speaking'))
   );
 
-  if (givingSpeakingIdx === -1) {
+  if (!hasSavedUserPrefs && !hasGivingEntryById && givingSpeakingIdx === -1) {
     prefs.push({
       id: 'exp_cat_giving_speaking',
       name: 'Giving and Speaking',
       subcategories: ['Givings'],
       subcategoryColors: { Givings: '#059669' },
     });
-  } else {
+  } else if (!hasSavedUserPrefs && givingSpeakingIdx !== -1) {
     const existing = prefs[givingSpeakingIdx];
     const hasGivings = existing.subcategories.some(
       (s) => stemPhrase(s) === 'giving'
@@ -1296,8 +1315,57 @@ export function resolveDeductionExpenseMapping(
   const matchedRule = definedCuts.find(
     (c) =>
       (deduction.id && deduction.id.includes(c.id)) ||
-      normalizeText(c.name) === normName
+      (normName && normalizeText(c.name) === normName)
   );
+
+  // 0. Priority 1: Strictly honor explicit user-configured category & subcategory
+  // on the deduction object first, or on its matched defined rule in Settings.
+  const directCat = (deduction.expenseCategory || '').trim();
+  const hasDirectCat =
+    Boolean(directCat) && normalizeText(directCat) !== 'uncategorized';
+
+  const ruleCat = (matchedRule?.expenseCategory || '').trim();
+  const hasRuleCat =
+    Boolean(ruleCat) && normalizeText(ruleCat) !== 'uncategorized';
+
+  if (hasDirectCat || hasRuleCat) {
+    const chosenCat = hasDirectCat ? directCat : ruleCat;
+    const matchedPref = prefs.find(
+      (p) => normalizeText(p.name) === normalizeText(chosenCat)
+    );
+    const canonicalCat = matchedPref ? matchedPref.name : chosenCat;
+
+    let rawSub = '';
+    if (hasDirectCat) {
+      if (deduction.expenseSubcategory !== undefined) {
+        rawSub = deduction.expenseSubcategory.trim();
+      } else if (
+        hasRuleCat &&
+        normalizeText(ruleCat) === normalizeText(chosenCat) &&
+        matchedRule?.expenseSubcategory !== undefined
+      ) {
+        rawSub = matchedRule.expenseSubcategory.trim();
+      }
+    } else if (matchedRule?.expenseSubcategory !== undefined) {
+      rawSub = matchedRule.expenseSubcategory.trim();
+    }
+
+    if (!rawSub) {
+      return {
+        category: canonicalCat,
+        subcategory: '',
+      };
+    }
+
+    const exactSub = matchedPref?.subcategories.find(
+      (s) => normalizeText(s) === normalizeText(rawSub)
+    );
+
+    return {
+      category: canonicalCat,
+      subcategory: exactSub || rawSub,
+    };
+  }
 
   const givingSpeakingPref =
     prefs.find(
@@ -1315,7 +1383,7 @@ export function resolveDeductionExpenseMapping(
     givingSpeakingPref.subcategories.find((s) => stemPhrase(s) === 'giving') ||
     'Givings';
 
-  // 1. Explicit rule: "Others to support" -> Category: "Giving and Speaking", Subcategory: "Givings"
+  // 1. Automatic inference rule (when user did not specify category): "Others to support" -> "Giving and Speaking" -> "Givings"
   const isOthersToSupport =
     normName === 'others to support' ||
     normName === 'other to support' ||
@@ -1549,16 +1617,16 @@ export function resolveDeductionExpenseMapping(
     }
   }
 
-  // 5. Explicit user-configured category/subcategory on the deduction item or rule
+  // 5. Remaining safety check if an explicit category was supplied via fallback shape
   const explicitCat = (
     deduction.expenseCategory ||
     matchedRule?.expenseCategory ||
     ''
   ).trim();
   const explicitSub = (
-    deduction.expenseSubcategory ||
-    matchedRule?.expenseSubcategory ||
-    ''
+    deduction.expenseSubcategory !== undefined
+      ? deduction.expenseSubcategory
+      : matchedRule?.expenseSubcategory ?? ''
   ).trim();
 
   if (explicitCat && normalizeText(explicitCat) !== 'uncategorized') {
@@ -1566,12 +1634,11 @@ export function resolveDeductionExpenseMapping(
       (p) => normalizeText(p.name) === normalizeText(explicitCat)
     );
     if (matchedPref) {
-      const matchedSub =
-        matchedPref.subcategories.find(
-          (s) =>
-            normalizeText(s) === normalizeText(explicitSub) ||
-            (explicitSub && stemPhrase(s) === stemPhrase(explicitSub))
-        ) || explicitSub;
+      const matchedSub = explicitSub
+        ? matchedPref.subcategories.find(
+            (s) => normalizeText(s) === normalizeText(explicitSub)
+          ) || explicitSub
+        : '';
       return {
         category: matchedPref.name,
         subcategory: matchedSub,

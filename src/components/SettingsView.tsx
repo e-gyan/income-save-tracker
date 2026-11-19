@@ -63,6 +63,23 @@ interface SettingsViewProps {
     fromCategory: string,
     toCategory: string
   ) => Promise<void>;
+  onEditCategoryOrSubcategory?: (payload: {
+    categoryId?: string;
+    oldCategoryName: string;
+    newCategoryName?: string;
+    oldSubcategoryName?: string;
+    newSubcategoryName?: string;
+    subcategoryRenames?: { oldName: string; newName: string }[];
+  }) => Promise<{
+    settings: UserSettings;
+    summary: {
+      expensesUpdated: number;
+      incomesUpdated: number;
+      budgetsUpdated: number;
+      deductionRulesUpdated: number;
+      totalRecordsUpdated: number;
+    };
+  } | void>;
 }
 
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'GHS', 'NGN', 'KES', 'ZAR', 'CAD', 'AUD'];
@@ -76,6 +93,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   isSaving,
   onImportRecords,
   onMoveSubcategory,
+  onEditCategoryOrSubcategory,
 }) => {
   const [currency, setCurrency] = useState(settings.currency || 'USD');
   const [totalsCurrencyMode, setTotalsCurrencyMode] =
@@ -164,10 +182,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   } | null>(null);
   const [editingCatId, setEditingCatId] = useState<string | null>(null);
   const [editingCatName, setEditingCatName] = useState('');
+  const [editingCatSubDrafts, setEditingCatSubDrafts] = useState<Record<string, string>>({});
   const [confirmDeleteCatId, setConfirmDeleteCatId] = useState<string | null>(null);
   const [editingSubKey, setEditingSubKey] = useState<string | null>(null);
   const [editingSubName, setEditingSubName] = useState('');
   const [confirmDeleteSubKey, setConfirmDeleteSubKey] = useState<string | null>(null);
+  const [isSavingCategoryEdit, setIsSavingCategoryEdit] = useState(false);
+  const [categoryEditNotice, setCategoryEditNotice] = useState<string | null>(null);
 
   // Move Subcategory State
   const [moveSubSourceKey, setMoveSubSourceKey] = useState('');
@@ -195,6 +216,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   );
   const [newCutExpenseCategory, setNewCutExpenseCategory] = useState('');
   const [newCutExpenseSubcategory, setNewCutExpenseSubcategory] = useState('');
+  const [hasSelectedNewCutSubcategory, setHasSelectedNewCutSubcategory] = useState(false);
 
   // Inline Edit Deduction Rule State
   const [editingCutId, setEditingCutId] = useState<string | null>(null);
@@ -263,7 +285,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setAskNetIncomeTransfer(settings.askNetIncomeTransfer !== false);
     setDefaultNetIncomeAccountId(settings.defaultNetIncomeAccountId || '');
     setAutoDebitSavingsVaults(Boolean(settings.autoDebitSavingsVaults));
-  }, [settings]);
+  }, [settings, expenses]);
 
   const effectiveSavingsPillars = useMemo(
     () =>
@@ -282,20 +304,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     [effectiveSavingsPillars]
   );
 
-  // Auto-resolve expense category & subcategory as user types newCutName
+  // Update deduction name without overwriting user's selected category/subcategory
   const handleNewCutNameChange = (val: string) => {
     setNewCutName(val);
     const lower = val.trim().toLowerCase();
     if (lower === 'savings' || lower.includes('saving')) {
       setNewCutRouteMode('savings_split');
-    } else if (val.trim()) {
-      const resolved = resolveDeductionExpenseMapping(
-        { name: val },
-        { ...settings, expenseCategoryPreferences: expensePrefs },
-        expenses
-      );
-      setNewCutExpenseCategory(resolved.category);
-      setNewCutExpenseSubcategory(resolved.subcategory);
     }
   };
 
@@ -661,19 +675,118 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     });
   };
 
+  const showCategoryEditNotice = (message: string) => {
+    setCategoryEditNotice(message);
+    setTimeout(() => {
+      setCategoryEditNotice((prev) => (prev === message ? null : prev));
+    }, 4500);
+  };
+
   const handleSaveRenameCategory = async (catId: string) => {
     const trimmed = editingCatName.trim();
-    if (!trimmed) return;
-    const nextPrefs = expensePrefs.map((c) =>
-      c.id === catId ? { ...c, name: trimmed } : c
-    );
-    setExpensePrefs(nextPrefs);
-    setEditingCatId(null);
-    setEditingCatName('');
-    await persistUpdates({
-      expenseCategoryPreferences: nextPrefs,
-      expenseCategories: nextPrefs.map((c) => c.name),
-    });
+    if (!trimmed || isSavingCategoryEdit) return;
+    const targetCat = expensePrefs.find((c) => c.id === catId);
+    const oldCatName = targetCat?.name || '';
+    const subRenames: { oldName: string; newName: string }[] = [];
+    for (const oldSub of targetCat?.subcategories || []) {
+      const draftVal = (editingCatSubDrafts[oldSub] ?? oldSub).trim();
+      if (draftVal && draftVal !== oldSub) {
+        subRenames.push({ oldName: oldSub, newName: draftVal });
+      }
+    }
+
+    const catChanged = Boolean(oldCatName) && trimmed !== oldCatName;
+    if (!catChanged && subRenames.length === 0) {
+      setEditingCatId(null);
+      setEditingCatName('');
+      setEditingCatSubDrafts({});
+      return;
+    }
+
+    setIsSavingCategoryEdit(true);
+    try {
+      if (onEditCategoryOrSubcategory) {
+        const result = await onEditCategoryOrSubcategory({
+          categoryId: catId,
+          oldCategoryName: oldCatName,
+          newCategoryName: trimmed,
+          subcategoryRenames: subRenames,
+        });
+        if (result?.settings) {
+          setExpensePrefs(
+            result.settings.expenseCategoryPreferences || expensePrefs
+          );
+          setCustomCuts(
+            (result.settings.customCuts || []).filter(
+              (c) => !LEGACY_SEEDED_CUT_IDS.has(c.id)
+            )
+          );
+        }
+        const total = result?.summary?.totalRecordsUpdated || 0;
+        const recordText =
+          total > 0
+            ? ` and updated ${total} ${total === 1 ? 'record' : 'records'}`
+            : '';
+        if (catChanged && subRenames.length > 0) {
+          showCategoryEditNotice(
+            `Updated "${oldCatName}" → "${trimmed}" and ${subRenames.length} ${subRenames.length === 1 ? 'subcategory' : 'subcategories'}${recordText}.`
+          );
+        } else if (catChanged) {
+          showCategoryEditNotice(
+            `Updated "${oldCatName}" → "${trimmed}"${recordText}.`
+          );
+        } else {
+          showCategoryEditNotice(
+            `Updated ${subRenames.length} ${subRenames.length === 1 ? 'subcategory' : 'subcategories'} in "${trimmed}"${recordText}.`
+          );
+        }
+        setSavedNotice(true);
+        setTimeout(() => setSavedNotice(false), 1800);
+      } else {
+        const nextPrefs = expensePrefs.map((c) => {
+          if (c.id !== catId) return c;
+          const renameMap = new Map(
+            subRenames.map((r) => [r.oldName.toLowerCase(), r.newName])
+          );
+          const nextSubs = Array.from(
+            new Set(
+              c.subcategories.map(
+                (s) => renameMap.get(s.toLowerCase()) || s
+              )
+            )
+          );
+          return { ...c, name: trimmed, subcategories: nextSubs };
+        });
+        const nextCuts = oldCatName
+          ? customCuts.map((cut) =>
+              (cut.expenseCategory || '').trim().toLowerCase() ===
+              oldCatName.trim().toLowerCase()
+                ? { ...cut, expenseCategory: trimmed }
+                : cut
+            )
+          : customCuts;
+        setExpensePrefs(nextPrefs);
+        setCustomCuts(nextCuts);
+        await persistUpdates(
+          {
+            expenseCategoryPreferences: nextPrefs,
+            expenseCategories: nextPrefs.map((c) => c.name),
+            customCuts: nextCuts,
+          },
+          {
+            type: 'rename_category',
+            categoryId: catId,
+            oldName: oldCatName,
+            newName: trimmed,
+          }
+        );
+      }
+      setEditingCatId(null);
+      setEditingCatName('');
+      setEditingCatSubDrafts({});
+    } finally {
+      setIsSavingCategoryEdit(false);
+    }
   };
 
   const handleDeleteCategory = async (catId: string) => {
@@ -736,37 +849,88 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const handleSaveRenameSubcategory = async (catId: string, oldSubName: string) => {
     const trimmed = editingSubName.trim();
-    if (!trimmed) {
+    if (!trimmed || trimmed === oldSubName || isSavingCategoryEdit) {
       setEditingSubKey(null);
       setEditingSubName('');
       return;
     }
-    const nextPrefs = expensePrefs.map((c) => {
-      if (c.id !== catId) return c;
-      const nextSubs = c.subcategories.map((s) => (s === oldSubName ? trimmed : s));
-      const nextColors = { ...(c.subcategoryColors || {}) };
-      if (nextColors[oldSubName] && oldSubName !== trimmed) {
-        nextColors[trimmed] = nextColors[oldSubName];
-        delete nextColors[oldSubName];
+    const targetCatName = expensePrefs.find((c) => c.id === catId)?.name || '';
+    setIsSavingCategoryEdit(true);
+    try {
+      if (onEditCategoryOrSubcategory) {
+        const result = await onEditCategoryOrSubcategory({
+          categoryId: catId,
+          oldCategoryName: targetCatName,
+          newCategoryName: targetCatName,
+          oldSubcategoryName: oldSubName,
+          newSubcategoryName: trimmed,
+        });
+        if (result?.settings) {
+          setExpensePrefs(
+            result.settings.expenseCategoryPreferences || expensePrefs
+          );
+          setCustomCuts(
+            (result.settings.customCuts || []).filter(
+              (c) => !LEGACY_SEEDED_CUT_IDS.has(c.id)
+            )
+          );
+        }
+        const total = result?.summary?.totalRecordsUpdated || 0;
+        const recordText =
+          total > 0
+            ? ` across ${total} ${total === 1 ? 'record' : 'records'}`
+            : '';
+        showCategoryEditNotice(
+          `Updated "${oldSubName}" → "${trimmed}"${recordText}.`
+        );
+        setSavedNotice(true);
+        setTimeout(() => setSavedNotice(false), 1800);
+      } else {
+        const nextPrefs = expensePrefs.map((c) => {
+          if (c.id !== catId) return c;
+          const nextSubs = c.subcategories.map((s) =>
+            s === oldSubName ? trimmed : s
+          );
+          const nextColors = { ...(c.subcategoryColors || {}) };
+          if (nextColors[oldSubName] && oldSubName !== trimmed) {
+            nextColors[trimmed] = nextColors[oldSubName];
+            delete nextColors[oldSubName];
+          }
+          return {
+            ...c,
+            subcategories: Array.from(new Set(nextSubs)),
+            subcategoryColors: nextColors,
+          };
+        });
+        const nextCuts = customCuts.map((cut) => {
+          const sameCat =
+            !targetCatName ||
+            (cut.expenseCategory || '').trim().toLowerCase() ===
+              targetCatName.trim().toLowerCase();
+          const sameSub =
+            (cut.expenseSubcategory || '').trim().toLowerCase() ===
+            oldSubName.trim().toLowerCase();
+          return sameCat && sameSub
+            ? { ...cut, expenseSubcategory: trimmed }
+            : cut;
+        });
+        setExpensePrefs(nextPrefs);
+        setCustomCuts(nextCuts);
+        await persistUpdates(
+          { expenseCategoryPreferences: nextPrefs, customCuts: nextCuts },
+          {
+            type: 'rename_subcategory',
+            categoryId: catId,
+            oldName: oldSubName,
+            newName: trimmed,
+          }
+        );
       }
-      return {
-        ...c,
-        subcategories: Array.from(new Set(nextSubs)),
-        subcategoryColors: nextColors,
-      };
-    });
-    setExpensePrefs(nextPrefs);
-    setEditingSubKey(null);
-    setEditingSubName('');
-    await persistUpdates(
-      { expenseCategoryPreferences: nextPrefs },
-      {
-        type: 'rename_subcategory',
-        categoryId: catId,
-        oldName: oldSubName,
-        newName: trimmed,
-      }
-    );
+      setEditingSubKey(null);
+      setEditingSubName('');
+    } finally {
+      setIsSavingCategoryEdit(false);
+    }
   };
 
   const handleRemoveSubcategory = async (catId: string, subName: string) => {
@@ -1072,6 +1236,72 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     await persistUpdates({ savingsBuckets: DEFAULT_SAVINGS_BUCKETS });
   };
 
+  // Helper: invoke backend /api/settings/deductions/define with exact user-selected fields
+  const syncDefinedDeductionWithBackend = async (params: {
+    mode: 'create' | 'edit';
+    cutId?: string;
+    name: string;
+    type: 'percentage' | 'fixed';
+    amount: number;
+    quarterlyRates?: { Q1: number; Q2: number; Q3: number; Q4: number };
+    routeMode: 'expense' | 'savings_split';
+    expenseCategory: string;
+    expenseSubcategory: string;
+    enabled: boolean;
+    baseSettings: UserSettings;
+  }): Promise<UserSettings | null> => {
+    try {
+      const resp = await fetch('/api/settings/deductions/define', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: params.mode,
+          cutId: params.cutId,
+          name: params.name,
+          type: params.type,
+          amount: params.amount,
+          quarterlyRates: params.quarterlyRates,
+          routeMode: params.routeMode,
+          expenseCategory: params.expenseCategory,
+          expenseSubcategory: params.expenseSubcategory,
+          enabled: params.enabled,
+          settings: params.baseSettings,
+        }),
+      });
+      const data = await resp.json().catch(() => null);
+      if (resp.ok && data?.success && data?.settings) {
+        return data.settings as UserSettings;
+      }
+    } catch {
+      // Offline fallback handled smoothly by caller
+    }
+    return null;
+  };
+
+  const selectedNewPref =
+    effectiveExpensePrefs.find(
+      (p) =>
+        newCutExpenseCategory.trim() &&
+        p.name.trim().toLowerCase() === newCutExpenseCategory.trim().toLowerCase()
+    ) || effectiveExpensePrefs[0];
+
+  const effectiveNewCutCategory =
+    newCutExpenseCategory.trim() || selectedNewPref?.name || '';
+
+  const effectiveNewCutSubcategory = hasSelectedNewCutSubcategory
+    ? newCutExpenseSubcategory
+    : newCutExpenseSubcategory || selectedNewPref?.subcategories[0] || '';
+
+  const selectedEditPref =
+    effectiveExpensePrefs.find(
+      (p) =>
+        editCutExpenseCategory.trim() &&
+        p.name.trim().toLowerCase() === editCutExpenseCategory.trim().toLowerCase()
+    ) || effectiveExpensePrefs[0];
+
+  const effectiveEditCutCategory =
+    editCutExpenseCategory.trim() || selectedEditPref?.name || '';
+
   // Deduction Rule Handlers
   const handleAddCut = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1098,32 +1328,77 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       if (isNaN(baseAmount) || baseAmount <= 0) return;
     }
 
-    const resolved = !isSavings
-      ? resolveDeductionExpenseMapping(
-          {
-            name: newCutName.trim(),
-            expenseCategory: newCutExpenseCategory,
-            expenseSubcategory: newCutExpenseSubcategory,
-          },
-          { ...settings, expenseCategoryPreferences: expensePrefs },
-          expenses
-        )
-      : undefined;
+    const chosenCategory = effectiveNewCutCategory.trim();
+    const chosenSubcategory = effectiveNewCutSubcategory.trim();
 
-    const newCut: CustomDeduction = {
-      id: `cut_${Date.now()}`,
+    const baseSnapshotSettings: UserSettings = {
+      ...settings,
+      currency,
+      totalsCurrencyMode,
+      themeMode,
+      colorTheme,
+      accountingFigureColorsEnabled: accountingFiguresEnabled,
+      positiveFigureColor,
+      negativeFigureColor,
+      customCuts,
+      savingsBuckets,
+      expenseCategoryPreferences: expensePrefs,
+      incomeSources,
+      incomeOrigins,
+      accountTypes,
+      vaultCustodianAccounts: vaultCustodians,
+      askNetIncomeTransfer,
+      defaultNetIncomeAccountId,
+      autoDebitSavingsVaults,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const backendSettings = await syncDefinedDeductionWithBackend({
+      mode: 'create',
       name: newCutName.trim(),
       type: newCutType,
       amount: baseAmount,
       quarterlyRates: quarterlyRatesObj,
+      routeMode: isSavings ? 'savings_split' : 'expense',
+      expenseCategory: isSavings ? '' : chosenCategory,
+      expenseSubcategory: isSavings ? '' : chosenSubcategory,
       enabled: true,
-      isSavingsSplit: isSavings,
-      expenseCategory: resolved?.category,
-      expenseSubcategory: resolved?.subcategory,
-    };
+      baseSettings: baseSnapshotSettings,
+    });
 
-    const nextCuts = [...customCuts, newCut];
-    setCustomCuts(nextCuts);
+    if (backendSettings) {
+      const updatedCuts = (backendSettings.customCuts || []).filter(
+        (c) => !LEGACY_SEEDED_CUT_IDS.has(c.id)
+      );
+      const updatedPrefs = getEffectiveExpenseCategoryPreferences(
+        backendSettings,
+        expenses
+      );
+      setCustomCuts(updatedCuts);
+      setExpensePrefs(updatedPrefs);
+      await onSaveSettings(backendSettings);
+    } else {
+      const newCut: CustomDeduction = {
+        id: `cut_${Date.now()}`,
+        name: newCutName.trim(),
+        type: newCutType,
+        amount: baseAmount,
+        quarterlyRates: quarterlyRatesObj,
+        enabled: true,
+        isSavingsSplit: isSavings,
+        ...(isSavings
+          ? {}
+          : {
+              expenseCategory: chosenCategory || 'General',
+              expenseSubcategory: chosenSubcategory,
+            }),
+      };
+
+      const nextCuts = [...customCuts, newCut];
+      setCustomCuts(nextCuts);
+      await persistUpdates({ customCuts: nextCuts });
+    }
+
     setNewCutName('');
     setNewCutAmount('');
     setNewCutQ1('10');
@@ -1133,7 +1408,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setNewCutRouteMode('expense');
     setNewCutExpenseCategory('');
     setNewCutExpenseSubcategory('');
-    await persistUpdates({ customCuts: nextCuts });
+    setHasSelectedNewCutSubcategory(false);
+    setSavedNotice(true);
+    setTimeout(() => setSavedNotice(false), 1800);
   };
 
   const handleStartEditCut = (cut: CustomDeduction) => {
@@ -1151,18 +1428,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setEditCutQ3(String(cut.quarterlyRates?.Q3 ?? cut.amount ?? 20));
     setEditCutQ4(String(cut.quarterlyRates?.Q4 ?? cut.amount ?? 25));
 
-    const resolved = !isSav
-      ? resolveDeductionExpenseMapping(
-          cut,
-          {
-            ...settings,
-            expenseCategoryPreferences: expensePrefs,
-          },
-          expenses
-        )
-      : { category: '', subcategory: '' };
-    setEditCutExpenseCategory(resolved.category);
-    setEditCutExpenseSubcategory(resolved.subcategory);
+    if (isSav) {
+      setEditCutExpenseCategory('');
+      setEditCutExpenseSubcategory('');
+    } else if (cut.expenseCategory && cut.expenseCategory.trim()) {
+      setEditCutExpenseCategory(cut.expenseCategory.trim());
+      setEditCutExpenseSubcategory((cut.expenseSubcategory ?? '').trim());
+    } else {
+      const resolved = resolveDeductionExpenseMapping(
+        cut,
+        {
+          ...settings,
+          expenseCategoryPreferences: expensePrefs,
+        },
+        expenses
+      );
+      setEditCutExpenseCategory(resolved.category);
+      setEditCutExpenseSubcategory(resolved.subcategory);
+    }
   };
 
   const handleSaveEditCut = async (cutId: string) => {
@@ -1189,36 +1472,80 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       if (isNaN(baseAmount) || baseAmount <= 0) return;
     }
 
-    const resolved = !isSavings
-      ? resolveDeductionExpenseMapping(
-          {
-            name: editCutName.trim(),
-            expenseCategory: editCutExpenseCategory,
-            expenseSubcategory: editCutExpenseSubcategory,
-          },
-          { ...settings, expenseCategoryPreferences: expensePrefs },
-          expenses
-        )
-      : undefined;
+    const chosenCategory = effectiveEditCutCategory.trim();
+    const chosenSubcategory = editCutExpenseSubcategory.trim();
+    const existingCut = customCuts.find((c) => c.id === cutId);
 
-    const nextCuts = customCuts.map((c) =>
-      c.id === cutId
-        ? {
-            ...c,
-            name: editCutName.trim(),
-            type: editCutType,
-            amount: baseAmount,
-            quarterlyRates: quarterlyRatesObj,
-            isSavingsSplit: isSavings,
-            destinationAccountId: undefined,
-            expenseCategory: resolved?.category,
-            expenseSubcategory: resolved?.subcategory,
-          }
-        : c
-    );
-    setCustomCuts(nextCuts);
+    const baseSnapshotSettings: UserSettings = {
+      ...settings,
+      currency,
+      totalsCurrencyMode,
+      themeMode,
+      colorTheme,
+      accountingFigureColorsEnabled: accountingFiguresEnabled,
+      positiveFigureColor,
+      negativeFigureColor,
+      customCuts,
+      savingsBuckets,
+      expenseCategoryPreferences: expensePrefs,
+      incomeSources,
+      incomeOrigins,
+      accountTypes,
+      vaultCustodianAccounts: vaultCustodians,
+      askNetIncomeTransfer,
+      defaultNetIncomeAccountId,
+      autoDebitSavingsVaults,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const backendSettings = await syncDefinedDeductionWithBackend({
+      mode: 'edit',
+      cutId,
+      name: editCutName.trim(),
+      type: editCutType,
+      amount: baseAmount,
+      quarterlyRates: quarterlyRatesObj,
+      routeMode: isSavings ? 'savings_split' : 'expense',
+      expenseCategory: isSavings ? '' : chosenCategory,
+      expenseSubcategory: isSavings ? '' : chosenSubcategory,
+      enabled: existingCut?.enabled !== false,
+      baseSettings: baseSnapshotSettings,
+    });
+
+    if (backendSettings) {
+      const updatedCuts = (backendSettings.customCuts || []).filter(
+        (c) => !LEGACY_SEEDED_CUT_IDS.has(c.id)
+      );
+      const updatedPrefs = getEffectiveExpenseCategoryPreferences(
+        backendSettings,
+        expenses
+      );
+      setCustomCuts(updatedCuts);
+      setExpensePrefs(updatedPrefs);
+      await onSaveSettings(backendSettings);
+    } else {
+      const nextCuts = customCuts.map((c) =>
+        c.id === cutId
+          ? {
+              ...c,
+              name: editCutName.trim(),
+              type: editCutType,
+              amount: baseAmount,
+              quarterlyRates: quarterlyRatesObj,
+              isSavingsSplit: isSavings,
+              destinationAccountId: undefined,
+              expenseCategory: isSavings ? undefined : chosenCategory || 'General',
+              expenseSubcategory: isSavings ? undefined : chosenSubcategory,
+            }
+          : c
+      );
+      setCustomCuts(nextCuts);
+      await persistUpdates({ customCuts: nextCuts });
+    }
+
     setEditingCutId(null);
-    await persistUpdates({ customCuts: nextCuts });
+    setSavedNotice(true);
+    setTimeout(() => setSavedNotice(false), 1800);
   };
 
   const handleToggleCut = async (cutId: string) => {
@@ -1237,14 +1564,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   const activeColorConfig = getColorThemeConfig(colorTheme);
-
-  const selectedNewPref =
-    effectiveExpensePrefs.find((p) => p.name === newCutExpenseCategory) ||
-    effectiveExpensePrefs[0];
-
-  const selectedEditPref =
-    effectiveExpensePrefs.find((p) => p.name === editCutExpenseCategory) ||
-    effectiveExpensePrefs[0];
 
   return (
     <div className="space-y-6">
@@ -1607,6 +1926,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </button>
             </form>
 
+            {categoryEditNotice && (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800">
+                {categoryEditNotice}
+              </div>
+            )}
+
             {expensePrefs.length === 0 ? (
               <div className="rounded-lg border border-dashed border-slate-200 p-6 text-center text-xs text-slate-500">
                 No custom expense categories defined yet. Add your categories above.
@@ -1624,29 +1949,84 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     >
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                         {isEditingCat ? (
-                          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-1.5 w-full">
-                            <input
-                              type="text"
-                              value={editingCatName}
-                              onChange={(e) => setEditingCatName(e.target.value)}
-                              className="w-full sm:flex-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 sm:py-1 text-xs text-slate-900"
-                            />
-                            <div className="flex items-center gap-1.5 justify-end">
-                              <button
-                                type="button"
-                                onClick={() => handleSaveRenameCategory(cat.id)}
-                                className="rounded-md bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-white"
-                              >
-                                Save
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setEditingCatId(null)}
-                                className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600"
-                              >
-                                Cancel
-                              </button>
+                          <div className="w-full space-y-2.5">
+                            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-1.5 w-full">
+                              <input
+                                type="text"
+                                value={editingCatName}
+                                onChange={(e) => setEditingCatName(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    handleSaveRenameCategory(cat.id);
+                                  } else if (e.key === 'Escape') {
+                                    setEditingCatId(null);
+                                    setEditingCatName('');
+                                    setEditingCatSubDrafts({});
+                                  }
+                                }}
+                                placeholder="Category name"
+                                className="w-full sm:flex-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 sm:py-1 text-xs font-medium text-slate-900 focus:border-slate-900 focus:outline-none"
+                                autoFocus
+                              />
+                              <div className="flex items-center gap-1.5 justify-end shrink-0">
+                                <button
+                                  type="button"
+                                  disabled={isSavingCategoryEdit || !editingCatName.trim()}
+                                  onClick={() => handleSaveRenameCategory(cat.id)}
+                                  className="rounded-md bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-white disabled:opacity-50"
+                                >
+                                  {isSavingCategoryEdit ? 'Saving...' : 'Save'}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isSavingCategoryEdit}
+                                  onClick={() => {
+                                    setEditingCatId(null);
+                                    setEditingCatName('');
+                                    setEditingCatSubDrafts({});
+                                  }}
+                                  className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
                             </div>
+
+                            {cat.subcategories.length > 0 && (
+                              <div className="space-y-1.5 rounded-md border border-slate-200/80 bg-white/80 p-2.5">
+                                <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                  Subcategories
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                  {cat.subcategories.map((sub) => (
+                                    <input
+                                      key={sub}
+                                      type="text"
+                                      value={editingCatSubDrafts[sub] ?? sub}
+                                      onChange={(e) =>
+                                        setEditingCatSubDrafts((prev) => ({
+                                          ...prev,
+                                          [sub]: e.target.value,
+                                        }))
+                                      }
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                          e.preventDefault();
+                                          handleSaveRenameCategory(cat.id);
+                                        } else if (e.key === 'Escape') {
+                                          setEditingCatId(null);
+                                          setEditingCatName('');
+                                          setEditingCatSubDrafts({});
+                                        }
+                                      }}
+                                      placeholder={sub}
+                                      className="w-full rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
+                                    />
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <div className="flex flex-wrap items-center gap-2 min-w-0">
@@ -1686,12 +2066,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                                 <button
                                   type="button"
                                   onClick={() => {
+                                    setEditingSubKey(null);
+                                    setEditingSubName('');
                                     setEditingCatId(cat.id);
                                     setEditingCatName(cat.name);
+                                    const initialDrafts: Record<string, string> = {};
+                                    cat.subcategories.forEach((s) => {
+                                      initialDrafts[s] = s;
+                                    });
+                                    setEditingCatSubDrafts(initialDrafts);
                                   }}
                                   className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100"
                                 >
-                                  Rename
+                                  Edit
                                 </button>
                                 <button
                                   type="button"
@@ -1706,7 +2093,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         )}
                       </div>
 
-                      {cat.subcategories.length > 0 && (
+                      {!isEditingCat && cat.subcategories.length > 0 && (
                         <div className="space-y-2">
                           <div className="flex flex-wrap gap-1.5">
                             {cat.subcategories.map((sub) => {
@@ -1743,18 +2130,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                                           setEditingSubName('');
                                         }
                                       }}
-                                      className="w-28 rounded border border-slate-200 px-1.5 py-0.5 text-[11px] text-slate-900 focus:border-slate-900 focus:outline-none"
+                                      className="w-32 rounded border border-slate-200 px-1.5 py-0.5 text-[11px] text-slate-900 focus:border-slate-900 focus:outline-none"
                                       autoFocus
                                     />
                                     <button
                                       type="button"
+                                      disabled={isSavingCategoryEdit || !editingSubName.trim()}
                                       onClick={() => handleSaveRenameSubcategory(cat.id, sub)}
-                                      className="rounded bg-slate-900 px-1.5 py-0.5 text-[10px] font-semibold text-white"
+                                      className="rounded bg-slate-900 px-1.5 py-0.5 text-[10px] font-semibold text-white disabled:opacity-50"
                                     >
-                                      Save
+                                      {isSavingCategoryEdit ? 'Saving...' : 'Save'}
                                     </button>
                                     <button
                                       type="button"
+                                      disabled={isSavingCategoryEdit}
                                       onClick={() => {
                                         setEditingSubKey(null);
                                         setEditingSubName('');
@@ -3232,15 +3621,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         Expense Category
                       </label>
                       <WrapSelect
-                        value={newCutExpenseCategory || selectedNewPref?.name || ''}
+                        value={effectiveNewCutCategory}
                         onChange={(cat) => {
                           setNewCutExpenseCategory(cat);
                           const pref = effectiveExpensePrefs.find(
-                            (p) => p.name === cat
+                            (p) =>
+                              p.name.trim().toLowerCase() ===
+                              cat.trim().toLowerCase()
                           );
                           setNewCutExpenseSubcategory(
                             pref?.subcategories[0] || ''
                           );
+                          setHasSelectedNewCutSubcategory(false);
                         }}
                         options={effectiveExpensePrefs.map((pref) => ({
                           value: pref.name,
@@ -3255,12 +3647,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       </label>
                       {(selectedNewPref?.subcategories || []).length > 0 ? (
                         <WrapSelect
-                          value={
-                            newCutExpenseSubcategory ||
-                            selectedNewPref?.subcategories[0] ||
-                            ''
-                          }
-                          onChange={(val) => setNewCutExpenseSubcategory(val)}
+                          value={effectiveNewCutSubcategory}
+                          onChange={(val) => {
+                            setHasSelectedNewCutSubcategory(true);
+                            setNewCutExpenseSubcategory(val);
+                          }}
                           options={[
                             ...(selectedNewPref?.subcategories || []).map(
                               (sub) => ({
@@ -3275,9 +3666,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         <input
                           type="text"
                           value={newCutExpenseSubcategory}
-                          onChange={(e) =>
-                            setNewCutExpenseSubcategory(e.target.value)
-                          }
+                          onChange={(e) => {
+                            setHasSelectedNewCutSubcategory(true);
+                            setNewCutExpenseSubcategory(e.target.value);
+                          }}
                           placeholder="Subcategory"
                           className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
                         />
@@ -3486,11 +3878,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                                       Expense Category
                                     </label>
                                     <WrapSelect
-                                      value={editCutExpenseCategory}
+                                      value={effectiveEditCutCategory}
                                       onChange={(cat) => {
                                         setEditCutExpenseCategory(cat);
                                         const pref = effectiveExpensePrefs.find(
-                                          (p) => p.name === cat
+                                          (p) =>
+                                            p.name.trim().toLowerCase() ===
+                                            cat.trim().toLowerCase()
                                         );
                                         setEditCutExpenseSubcategory(
                                           pref?.subcategories[0] || ''
@@ -3604,14 +3998,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                                     </span>
                                   ) : (
                                     (() => {
-                                      const subLabel =
-                                        resolvedExp?.subcategory ||
+                                      const catText =
                                         resolvedExp?.category ||
+                                        cut.expenseCategory ||
                                         'General';
+                                      const subText =
+                                        resolvedExp?.subcategory || '';
+                                      const subLabel = subText
+                                        ? `${catText} → ${subText}`
+                                        : catText;
                                       const subColor =
                                         resolveIntuitiveSubcategoryColor(
-                                          resolvedExp?.subcategory,
-                                          resolvedExp?.category,
+                                          subText,
+                                          catText,
                                           {
                                             expenseCategoryPreferences:
                                               expensePrefs,

@@ -1317,14 +1317,237 @@ app.post('/api/fx/convert-intelligence', (req: Request, res: Response) => {
   }
 });
 
+function normalizeCategoryPrefsBackend(
+  rawPrefs: any[] = [],
+  legacyCategories: any[] = []
+): any[] {
+  const result: any[] = [];
+  const byLowerName = new Map<string, any>();
+
+  const ensureCat = (
+    name: string,
+    idHint?: string,
+    colorHint?: string
+  ): any => {
+    const clean = String(name || '').trim();
+    const key = clean.toLowerCase();
+    if (!clean || key === 'uncategorized') return null;
+    if (byLowerName.has(key)) return byLowerName.get(key);
+    const entry = {
+      id: String(
+        idHint ||
+          `exp_cat_${key.replace(/[^a-z0-9]+/g, '_')}_${result.length}`
+      ),
+      name: clean,
+      ...(colorHint ? { color: String(colorHint).trim() } : {}),
+      subcategories: [] as string[],
+      subcategoryColors: {} as Record<string, string>,
+    };
+    byLowerName.set(key, entry);
+    result.push(entry);
+    return entry;
+  };
+
+  for (const raw of Array.isArray(rawPrefs) ? rawPrefs : []) {
+    const cat = ensureCat(raw?.name, raw?.id, raw?.color);
+    if (!cat) continue;
+    const rawSubs: any[] = Array.isArray(raw?.subcategories)
+      ? raw.subcategories
+      : [];
+    const seenSubs = new Set(
+      cat.subcategories.map((s: string) => s.trim().toLowerCase())
+    );
+    const rawColors: Record<string, string> =
+      raw?.subcategoryColors && typeof raw.subcategoryColors === 'object'
+        ? raw.subcategoryColors
+        : {};
+
+    for (const subItem of rawSubs) {
+      const cleanSub = String(subItem || '').trim();
+      if (!cleanSub) continue;
+      const subKey = cleanSub.toLowerCase();
+      if (!seenSubs.has(subKey)) {
+        seenSubs.add(subKey);
+        cat.subcategories.push(cleanSub);
+      }
+      const matchedColorEntry = Object.entries(rawColors).find(
+        ([k, v]) =>
+          k.trim().toLowerCase() === subKey &&
+          typeof v === 'string' &&
+          v.trim().startsWith('#')
+      );
+      if (matchedColorEntry && !cat.subcategoryColors[cleanSub]) {
+        cat.subcategoryColors[cleanSub] = matchedColorEntry[1].trim();
+      }
+    }
+  }
+
+  for (const legacy of Array.isArray(legacyCategories) ? legacyCategories : []) {
+    ensureCat(String(legacy || ''));
+  }
+
+  return result;
+}
+
+function upsertCategoryAndSubcategoryBackend(
+  prefs: any[],
+  categoryName: string,
+  subcategoryName?: string
+): { prefs: any[]; category: string; subcategory: string } {
+  const cleanCat = String(categoryName || '').trim();
+  const cleanSub = String(subcategoryName || '').trim();
+  if (!cleanCat || cleanCat.toLowerCase() === 'uncategorized') {
+    return { prefs, category: '', subcategory: '' };
+  }
+
+  const nextPrefs = prefs.map((p) => ({
+    ...p,
+    subcategories: Array.isArray(p.subcategories) ? [...p.subcategories] : [],
+    subcategoryColors: { ...(p.subcategoryColors || {}) },
+  }));
+
+  let targetCat = nextPrefs.find(
+    (p) => String(p.name || '').trim().toLowerCase() === cleanCat.toLowerCase()
+  );
+  if (!targetCat) {
+    targetCat = {
+      id: `exp_cat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name: cleanCat,
+      subcategories: [],
+      subcategoryColors: {},
+    };
+    nextPrefs.push(targetCat);
+  }
+
+  let resolvedSub = '';
+  if (cleanSub) {
+    const existingSub = targetCat.subcategories.find(
+      (s: string) => s.trim().toLowerCase() === cleanSub.toLowerCase()
+    );
+    if (existingSub) {
+      resolvedSub = existingSub;
+    } else {
+      targetCat.subcategories.push(cleanSub);
+      resolvedSub = cleanSub;
+    }
+  }
+
+  return {
+    prefs: nextPrefs,
+    category: targetCat.name,
+    subcategory: resolvedSub,
+  };
+}
+
+function normalizeDefinedDeductionsBackend(
+  rawCuts: any[] = [],
+  prefs: any[] = []
+): { cuts: any[]; prefs: any[] } {
+  let workingPrefs = [...prefs];
+  const normalizedCuts: any[] = [];
+
+  for (let i = 0; i < (Array.isArray(rawCuts) ? rawCuts.length : 0); i++) {
+    const c = rawCuts[i];
+    if (!c || !String(c.name || '').trim()) continue;
+    const cleanName = String(c.name).trim();
+    const lowerName = cleanName.toLowerCase();
+    const isSavings =
+      Boolean(c.isSavingsSplit) ||
+      lowerName === 'savings' ||
+      lowerName.includes('saving');
+    const cleanType = c.type === 'fixed' ? 'fixed' : 'percentage';
+
+    if (isSavings) {
+      const q1 = Math.max(
+        0.01,
+        round2dp(Number(c.quarterlyRates?.Q1 ?? c.amount ?? 10) || 10)
+      );
+      const q2 = Math.max(
+        0.01,
+        round2dp(Number(c.quarterlyRates?.Q2 ?? q1) || q1)
+      );
+      const q3 = Math.max(
+        0.01,
+        round2dp(Number(c.quarterlyRates?.Q3 ?? q2) || q2)
+      );
+      const q4 = Math.max(
+        0.01,
+        round2dp(Number(c.quarterlyRates?.Q4 ?? q3) || q3)
+      );
+      normalizedCuts.push({
+        ...c,
+        id: String(c.id || `cut_${Date.now()}_${i}`),
+        name: cleanName,
+        type: cleanType,
+        amount: q1,
+        quarterlyRates: { Q1: q1, Q2: q2, Q3: q3, Q4: q4 },
+        enabled: c.enabled !== false,
+        isSavingsSplit: true,
+        expenseCategory: undefined,
+        expenseSubcategory: undefined,
+      });
+      continue;
+    }
+
+    const baseAmount = Math.max(0.01, round2dp(Number(c.amount) || 0));
+    const explicitCat = String(c.expenseCategory || '').trim();
+    const explicitSub =
+      c.expenseSubcategory !== undefined
+        ? String(c.expenseSubcategory || '').trim()
+        : undefined;
+
+    let resolvedCategory = explicitCat;
+    let resolvedSubcategory = explicitSub !== undefined ? explicitSub : '';
+
+    if (explicitCat && explicitCat.toLowerCase() !== 'uncategorized') {
+      // Strictly preserve what the user defined/selected without overriding it
+      const upserted = upsertCategoryAndSubcategoryBackend(
+        workingPrefs,
+        explicitCat,
+        resolvedSubcategory
+      );
+      workingPrefs = upserted.prefs;
+      resolvedCategory = upserted.category;
+      resolvedSubcategory = resolvedSubcategory ? upserted.subcategory : '';
+    }
+
+    normalizedCuts.push({
+      ...c,
+      id: String(c.id || `cut_${Date.now()}_${i}`),
+      name: cleanName,
+      type: cleanType,
+      amount: baseAmount,
+      quarterlyRates: undefined,
+      enabled: c.enabled !== false,
+      isSavingsSplit: false,
+      destinationAccountId: undefined,
+      ...(resolvedCategory
+        ? {
+            expenseCategory: resolvedCategory,
+            expenseSubcategory: resolvedSubcategory,
+          }
+        : {}),
+    });
+  }
+
+  return { cuts: normalizedCuts, prefs: workingPrefs };
+}
+
 /**
  * Backend Settings Textbox & Preference Modification Endpoint (`POST /api/settings/modify`)
  * Normalizes and validates user edits to Savings Vaults, Expense Categories/Subcategories,
- * Income Sources, Origins, Account Types, and Defined Deductions.
+ * Income Sources, Origins, Account Types, and Defined Deductions while strictly preserving
+ * user-defined category and subcategory assignments.
  */
 app.post('/api/settings/modify', (req: Request, res: Response) => {
   try {
-    const { settings = {}, patch = {}, renameSubcategory = null } = req.body || {};
+    const {
+      settings = {},
+      patch = {},
+      modification = null,
+      renameSubcategory = null,
+      renameCategory = null,
+    } = req.body || {};
     const merged = { ...settings, ...patch };
 
     // Normalize Savings Buckets (preserve clean names & valid 0..100 percentages)
@@ -1347,21 +1570,38 @@ app.post('/api/settings/modify', (req: Request, res: Response) => {
       });
     }
 
-    // Handle optional inline subcategory rename with color preservation
+    // Normalize Category Preferences before handling renames
+    merged.expenseCategoryPreferences = normalizeCategoryPrefsBackend(
+      merged.expenseCategoryPreferences || [],
+      merged.expenseCategories || []
+    );
+
+    // Resolve rename subcategory request from either `modification` or `renameSubcategory`
+    const effectiveRenameSub =
+      modification?.type === 'rename_subcategory'
+        ? {
+            catId: modification.categoryId || modification.catId,
+            oldName: modification.oldName,
+            newName: modification.newName,
+          }
+        : renameSubcategory;
+
     if (
-      renameSubcategory &&
-      renameSubcategory.catId &&
-      renameSubcategory.oldName &&
-      renameSubcategory.newName &&
+      effectiveRenameSub &&
+      effectiveRenameSub.catId &&
+      effectiveRenameSub.oldName &&
+      effectiveRenameSub.newName &&
       Array.isArray(merged.expenseCategoryPreferences)
     ) {
-      const targetCatId = String(renameSubcategory.catId);
-      const oldSub = String(renameSubcategory.oldName).trim();
-      const newSub = String(renameSubcategory.newName).trim();
+      const targetCatId = String(effectiveRenameSub.catId);
+      const oldSub = String(effectiveRenameSub.oldName).trim();
+      const newSub = String(effectiveRenameSub.newName).trim();
+      let targetCatName = '';
       if (oldSub && newSub) {
         merged.expenseCategoryPreferences = merged.expenseCategoryPreferences.map(
           (cat: any) => {
             if (String(cat?.id) !== targetCatId) return cat;
+            targetCatName = String(cat.name || '').trim();
             const subs: string[] = Array.isArray(cat.subcategories)
               ? cat.subcategories
               : [];
@@ -1369,9 +1609,14 @@ app.post('/api/settings/modify', (req: Request, res: Response) => {
               String(s).trim().toLowerCase() === oldSub.toLowerCase() ? newSub : s
             );
             const nextColors = { ...(cat.subcategoryColors || {}) };
-            if (nextColors[oldSub] && !nextColors[newSub]) {
-              nextColors[newSub] = nextColors[oldSub];
-              delete nextColors[oldSub];
+            const oldColorKey = Object.keys(nextColors).find(
+              (k) => k.trim().toLowerCase() === oldSub.toLowerCase()
+            );
+            if (oldColorKey && oldColorKey !== newSub) {
+              if (!nextColors[newSub]) {
+                nextColors[newSub] = nextColors[oldColorKey];
+              }
+              delete nextColors[oldColorKey];
             }
             return {
               ...cat,
@@ -1380,8 +1625,72 @@ app.post('/api/settings/modify', (req: Request, res: Response) => {
             };
           }
         );
+
+        // Keep defined deductions aligned with renamed subcategory
+        if (Array.isArray(merged.customCuts)) {
+          merged.customCuts = merged.customCuts.map((c: any) => {
+            const matchesCat =
+              !targetCatName ||
+              String(c?.expenseCategory || '').trim().toLowerCase() ===
+                targetCatName.toLowerCase();
+            const matchesSub =
+              String(c?.expenseSubcategory || '').trim().toLowerCase() ===
+              oldSub.toLowerCase();
+            return matchesCat && matchesSub
+              ? { ...c, expenseSubcategory: newSub }
+              : c;
+          });
+        }
       }
     }
+
+    // Resolve rename category request from either `modification` or `renameCategory`
+    const effectiveRenameCat =
+      modification?.type === 'rename_category'
+        ? {
+            oldName: modification.oldName,
+            newName: modification.newName,
+          }
+        : renameCategory;
+
+    if (
+      effectiveRenameCat &&
+      effectiveRenameCat.oldName &&
+      effectiveRenameCat.newName
+    ) {
+      const oldCat = String(effectiveRenameCat.oldName).trim();
+      const newCat = String(effectiveRenameCat.newName).trim();
+      if (oldCat && newCat && oldCat.toLowerCase() !== newCat.toLowerCase()) {
+        merged.expenseCategoryPreferences = merged.expenseCategoryPreferences.map(
+          (cat: any) =>
+            String(cat?.name || '').trim().toLowerCase() === oldCat.toLowerCase()
+              ? { ...cat, name: newCat }
+              : cat
+        );
+        if (Array.isArray(merged.customCuts)) {
+          merged.customCuts = merged.customCuts.map((c: any) =>
+            String(c?.expenseCategory || '').trim().toLowerCase() ===
+            oldCat.toLowerCase()
+              ? { ...c, expenseCategory: newCat }
+              : c
+          );
+        }
+      }
+    }
+
+    // Validate Defined Deductions & sync custom categories/subcategories strictly without overriding user selections
+    if (Array.isArray(merged.customCuts)) {
+      const synced = normalizeDefinedDeductionsBackend(
+        merged.customCuts,
+        merged.expenseCategoryPreferences
+      );
+      merged.customCuts = synced.cuts;
+      merged.expenseCategoryPreferences = synced.prefs;
+    }
+
+    merged.expenseCategories = (merged.expenseCategoryPreferences || []).map(
+      (c: any) => c.name
+    );
 
     // Normalize string list preferences (incomeSources, incomeOrigins, accountTypes)
     for (const key of ['incomeSources', 'incomeOrigins', 'accountTypes'] as const) {
@@ -1409,6 +1718,166 @@ app.post('/api/settings/modify', (req: Request, res: Response) => {
     return res.status(500).json({
       success: false,
       error: err?.message || 'Failed to modify settings.',
+    });
+  }
+});
+
+/**
+ * Backend Defined Deduction Creation & Edit Endpoint (`POST /api/settings/deductions/define`)
+ * Strictly validates and locks the exact Expense Category and Subcategory defined or edited
+ * by the user (including intentionally empty/'None' subcategories and inline new categories/subcategories),
+ * eliminating any loophole where automatic suggestions replace user selections.
+ */
+app.post('/api/settings/deductions/define', (req: Request, res: Response) => {
+  try {
+    const {
+      mode = 'create',
+      cutId = '',
+      name = '',
+      type = 'percentage',
+      amount = 0,
+      quarterlyRates = null,
+      routeMode = 'expense',
+      expenseCategory = '',
+      expenseSubcategory = '',
+      newCategoryName = '',
+      newSubcategoryName = '',
+      enabled = true,
+      settings = {},
+    } = req.body || {};
+
+    const cleanName = String(name || '').trim();
+    if (!cleanName) {
+      return res.status(400).json({
+        success: false,
+        error: 'Deduction name is required.',
+      });
+    }
+
+    const lowerName = cleanName.toLowerCase();
+    const isSavings =
+      routeMode === 'savings_split' ||
+      lowerName === 'savings' ||
+      lowerName.includes('saving');
+    const cleanType: 'percentage' | 'fixed' =
+      type === 'fixed' ? 'fixed' : 'percentage';
+
+    let prefs = normalizeCategoryPrefsBackend(
+      settings.expenseCategoryPreferences || [],
+      settings.expenseCategories || []
+    );
+
+    let definedCut: any;
+    if (isSavings) {
+      const q1 = Math.max(
+        0.01,
+        round2dp(Number(quarterlyRates?.Q1 ?? amount ?? 10) || 10)
+      );
+      const q2 = Math.max(
+        0.01,
+        round2dp(Number(quarterlyRates?.Q2 ?? q1) || q1)
+      );
+      const q3 = Math.max(
+        0.01,
+        round2dp(Number(quarterlyRates?.Q3 ?? q2) || q2)
+      );
+      const q4 = Math.max(
+        0.01,
+        round2dp(Number(quarterlyRates?.Q4 ?? q3) || q3)
+      );
+
+      definedCut = {
+        id:
+          mode === 'edit' && cutId
+            ? String(cutId)
+            : `cut_${Date.now()}`,
+        name: cleanName,
+        type: cleanType,
+        amount: q1,
+        quarterlyRates: { Q1: q1, Q2: q2, Q3: q3, Q4: q4 },
+        enabled: enabled !== false,
+        isSavingsSplit: true,
+      };
+    } else {
+      const cleanAmt = round2dp(Number(amount) || 0);
+      if (!Number.isFinite(cleanAmt) || cleanAmt <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Deduction rate or amount must be greater than zero.',
+        });
+      }
+
+      const rawChosenCat = String(
+        newCategoryName || expenseCategory || ''
+      ).trim();
+      const rawChosenSub = String(
+        newSubcategoryName !== undefined && String(newSubcategoryName).trim()
+          ? newSubcategoryName
+          : expenseSubcategory ?? ''
+      ).trim();
+
+      let lockedCategory = rawChosenCat;
+      let lockedSubcategory = rawChosenSub;
+
+      if (lockedCategory && lockedCategory.toLowerCase() !== 'uncategorized') {
+        const upserted = upsertCategoryAndSubcategoryBackend(
+          prefs,
+          lockedCategory,
+          lockedSubcategory
+        );
+        prefs = upserted.prefs;
+        lockedCategory = upserted.category;
+        // Preserve explicit '' ('None') without forcing any fallback subcategory
+        lockedSubcategory = lockedSubcategory ? upserted.subcategory : '';
+      } else {
+        // Fallback only when no category was selected at all and at least one category exists
+        lockedCategory = prefs[0]?.name || 'General';
+        lockedSubcategory = '';
+      }
+
+      definedCut = {
+        id:
+          mode === 'edit' && cutId
+            ? String(cutId)
+            : `cut_${Date.now()}`,
+        name: cleanName,
+        type: cleanType,
+        amount: cleanAmt,
+        enabled: enabled !== false,
+        isSavingsSplit: false,
+        expenseCategory: lockedCategory,
+        expenseSubcategory: lockedSubcategory,
+      };
+    }
+
+    const existingCuts: any[] = Array.isArray(settings.customCuts)
+      ? settings.customCuts
+      : [];
+    const nextCuts =
+      mode === 'edit' && cutId
+        ? existingCuts.map((c) =>
+            c?.id === cutId ? { ...c, ...definedCut, id: c.id } : c
+          )
+        : [...existingCuts, definedCut];
+
+    const synced = normalizeDefinedDeductionsBackend(nextCuts, prefs);
+    const nextSettings = {
+      ...settings,
+      customCuts: synced.cuts,
+      expenseCategoryPreferences: synced.prefs,
+      expenseCategories: synced.prefs.map((p: any) => p.name),
+      updatedAt: new Date().toISOString(),
+    };
+
+    return res.json({
+      success: true,
+      cut: definedCut,
+      settings: nextSettings,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Failed to define deduction rule.',
     });
   }
 });
@@ -2481,6 +2950,438 @@ app.post('/api/categories/move-subcategory', (req: Request, res: Response) => {
     return res.status(500).json({
       success: false,
       error: err?.message || 'Moving subcategory failed.',
+    });
+  }
+});
+
+/**
+ * Backend Category & Subcategory Edit & Full Data Cascade Endpoint (`POST /api/categories/edit`)
+ * Atomically modifies a category name and/or one or more of its subcategory names on the backend,
+ * then cascades the replacement across Settings, Defined Deduction Rules, Flexible Expenses,
+ * Income Allocated Deductions, and Budgets so users never have to fix existing records manually.
+ */
+app.post('/api/categories/edit', (req: Request, res: Response) => {
+  try {
+    const {
+      categoryId = '',
+      oldCategoryName = '',
+      newCategoryName = '',
+      oldSubcategoryName = '',
+      newSubcategoryName = '',
+      subcategoryRenames = [],
+      settings = {},
+      expenses = [],
+      incomes = [],
+      budgets = [],
+    } = req.body || {};
+
+    const cleanCatId = String(categoryId || '').trim();
+    const cleanOldCat = String(oldCategoryName || '').trim();
+    const cleanNewCatInput = String(newCategoryName || '').trim();
+
+    let workingPrefs = normalizeCategoryPrefsBackend(
+      settings.expenseCategoryPreferences || [],
+      settings.expenseCategories || []
+    );
+
+    const targetIdx = workingPrefs.findIndex(
+      (p: any) =>
+        (cleanCatId && String(p?.id || '') === cleanCatId) ||
+        (cleanOldCat &&
+          String(p?.name || '').trim().toLowerCase() === cleanOldCat.toLowerCase())
+    );
+
+    const resolvedOldCat =
+      cleanOldCat ||
+      (targetIdx >= 0 ? String(workingPrefs[targetIdx]?.name || '').trim() : '');
+    const resolvedNewCat = cleanNewCatInput || resolvedOldCat;
+
+    if (!resolvedOldCat && !resolvedNewCat) {
+      return res.status(400).json({
+        success: false,
+        error: 'Category name is required.',
+      });
+    }
+
+    const oldCatKey = resolvedOldCat.toLowerCase();
+    const newCatKey = resolvedNewCat.toLowerCase();
+    const categoryChanged =
+      Boolean(resolvedOldCat) &&
+      Boolean(resolvedNewCat) &&
+      resolvedOldCat !== resolvedNewCat;
+
+    // Normalize list of subcategory renames (supports single rename or batch renames)
+    const rawRenames: Array<{ oldName: string; newName: string }> = [];
+    if (oldSubcategoryName && newSubcategoryName) {
+      rawRenames.push({
+        oldName: String(oldSubcategoryName).trim(),
+        newName: String(newSubcategoryName).trim(),
+      });
+    }
+    if (Array.isArray(subcategoryRenames)) {
+      for (const item of subcategoryRenames) {
+        if (!item || typeof item !== 'object') continue;
+        const o = String((item as any).oldName || '').trim();
+        const n = String((item as any).newName || '').trim();
+        if (o && n && o !== n) {
+          if (
+            !rawRenames.some(
+              (r) => r.oldName.toLowerCase() === o.toLowerCase()
+            )
+          ) {
+            rawRenames.push({ oldName: o, newName: n });
+          }
+        }
+      }
+    }
+    const activeSubRenames = rawRenames.filter(
+      (r) => r.oldName && r.newName && r.oldName !== r.newName
+    );
+    const subRenameLookup = new Map<string, string>();
+    for (const r of activeSubRenames) {
+      subRenameLookup.set(r.oldName.toLowerCase(), r.newName);
+    }
+
+    // Track whether any OTHER category also uses a renamed subcategory name
+    const subNamesInOtherCategories = new Set<string>();
+    workingPrefs.forEach((p: any, idx: number) => {
+      if (idx === targetIdx) return;
+      if (
+        String(p?.name || '').trim().toLowerCase() === oldCatKey
+      ) {
+        return;
+      }
+      for (const s of p.subcategories || []) {
+        const clean = String(s || '').trim().toLowerCase();
+        if (clean) subNamesInOtherCategories.add(clean);
+      }
+    });
+
+    // Helper: deduplicate string array case-insensitively while preserving order
+    const dedupePreserveOrder = (list: string[]): string[] => {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const item of list) {
+        const clean = String(item || '').trim();
+        if (!clean) continue;
+        const key = clean.toLowerCase();
+        if (!seen.has(key)) {
+          seen.add(key);
+          out.push(clean);
+        }
+      }
+      return out;
+    };
+
+    // 1. Update expenseCategoryPreferences (with seamless merge if renamed into an existing category)
+    const renamedSubColorMap = new Map<string, string>();
+    const updatedTargetPref =
+      targetIdx >= 0
+        ? (() => {
+            const target = workingPrefs[targetIdx];
+            const nextSubs = dedupePreserveOrder(
+              (target.subcategories || []).map((s: string) => {
+                const mapped = subRenameLookup.get(String(s || '').trim().toLowerCase());
+                return mapped || s;
+              })
+            );
+            const nextColors: Record<string, string> = {};
+            const oldColors = target.subcategoryColors || {};
+            for (const [k, v] of Object.entries(oldColors)) {
+              if (!v) continue;
+              const mapped = subRenameLookup.get(String(k).trim().toLowerCase());
+              const finalKey = mapped || k;
+              if (!nextColors[finalKey]) {
+                nextColors[finalKey] = String(v);
+              }
+              if (mapped) {
+                renamedSubColorMap.set(mapped.toLowerCase(), String(v));
+              }
+            }
+            return {
+              ...target,
+              name: resolvedNewCat,
+              subcategories: nextSubs,
+              subcategoryColors: nextColors,
+            };
+          })()
+        : {
+            id: cleanCatId || `exp_cat_${Date.now()}`,
+            name: resolvedNewCat,
+            subcategories: dedupePreserveOrder(activeSubRenames.map((r) => r.newName)),
+            subcategoryColors: {} as Record<string, string>,
+          };
+
+    const nextPrefs: any[] = [];
+    let mergedIntoExisting = false;
+
+    for (let idx = 0; idx < workingPrefs.length; idx++) {
+      if (idx === targetIdx) continue;
+      const pref = workingPrefs[idx];
+      const pKey = String(pref?.name || '').trim().toLowerCase();
+      if (pKey === newCatKey && categoryChanged) {
+        // Merge target category into existing category with the new name
+        mergedIntoExisting = true;
+        const mergedSubs = dedupePreserveOrder([
+          ...(pref.subcategories || []),
+          ...(updatedTargetPref.subcategories || []),
+        ]);
+        const mergedColors = {
+          ...(updatedTargetPref.subcategoryColors || {}),
+          ...(pref.subcategoryColors || {}),
+        };
+        nextPrefs.push({
+          ...pref,
+          name: resolvedNewCat,
+          subcategories: mergedSubs,
+          subcategoryColors: mergedColors,
+        });
+      } else {
+        nextPrefs.push(pref);
+      }
+    }
+
+    if (!mergedIntoExisting) {
+      if (targetIdx >= 0) {
+        nextPrefs.splice(Math.min(targetIdx, nextPrefs.length), 0, updatedTargetPref);
+      } else {
+        nextPrefs.push(updatedTargetPref);
+      }
+    }
+
+    // 2. Update Defined Deductions (`settings.customCuts`)
+    let deductionRulesUpdated = 0;
+    const rawCuts: any[] = Array.isArray(settings.customCuts)
+      ? settings.customCuts
+      : [];
+    const nextCuts = rawCuts.map((cut: any) => {
+      if (!cut || typeof cut !== 'object') return cut;
+      const curCat = String(cut.expenseCategory || '').trim();
+      const curSub = String(cut.expenseSubcategory || '').trim();
+      const curCatKey = curCat.toLowerCase();
+      const curSubKey = curSub.toLowerCase();
+
+      const matchesCat = Boolean(oldCatKey) && curCatKey === oldCatKey;
+      const mappedSub = subRenameLookup.get(curSubKey);
+      const subMatchesScope =
+        Boolean(mappedSub) &&
+        (matchesCat ||
+          curCatKey === newCatKey ||
+          !curCatKey ||
+          !subNamesInOtherCategories.has(curSubKey));
+
+      if (!matchesCat && !subMatchesScope) return cut;
+
+      const updatedCat = matchesCat ? resolvedNewCat : curCat || resolvedNewCat;
+      const updatedSub = subMatchesScope && mappedSub ? mappedSub : curSub;
+      if (updatedCat !== curCat || updatedSub !== curSub) {
+        deductionRulesUpdated++;
+        return {
+          ...cut,
+          expenseCategory: updatedCat,
+          expenseSubcategory: updatedSub,
+        };
+      }
+      return cut;
+    });
+
+    const nowIso = new Date().toISOString();
+    const updatedSettings = {
+      ...settings,
+      expenseCategoryPreferences: nextPrefs,
+      expenseCategories: nextPrefs.map((p: any) => p.name),
+      customCuts: nextCuts,
+      updatedAt: nowIso,
+    };
+
+    // 3. Cascade updates across all Flexible Expenses
+    const changedExpenses: any[] = [];
+    const updatedExpenses = (Array.isArray(expenses) ? expenses : []).map(
+      (exp: any) => {
+        if (!exp || typeof exp !== 'object') return exp;
+        const curCat = String(exp.category || '').trim();
+        const curSub = String(exp.subcategory || '').trim();
+        const curDesc = String(exp.description || '').trim();
+        const curCatKey = curCat.toLowerCase();
+        const curSubKey = curSub.toLowerCase();
+
+        const matchesCat = Boolean(oldCatKey) && curCatKey === oldCatKey;
+        const mappedSub = subRenameLookup.get(curSubKey);
+        const subMatchesScope =
+          Boolean(mappedSub) &&
+          (matchesCat ||
+            curCatKey === newCatKey ||
+            !curCatKey ||
+            curCatKey === 'uncategorized' ||
+            !subNamesInOtherCategories.has(curSubKey));
+
+        if (!matchesCat && !subMatchesScope) return exp;
+
+        const nextCat = matchesCat
+          ? resolvedNewCat
+          : curCat || resolvedNewCat;
+        const nextSub = subMatchesScope && mappedSub ? mappedSub : curSub;
+        const nextDesc =
+          subMatchesScope &&
+          mappedSub &&
+          curDesc &&
+          curDesc.toLowerCase() === curSubKey
+            ? mappedSub
+            : exp.description;
+        const nextColor =
+          subMatchesScope && mappedSub
+            ? renamedSubColorMap.get(mappedSub.toLowerCase()) ||
+              exp.subcategoryColor
+            : exp.subcategoryColor;
+
+        if (
+          nextCat !== curCat ||
+          nextSub !== curSub ||
+          nextDesc !== exp.description ||
+          nextColor !== exp.subcategoryColor
+        ) {
+          const updatedExp = {
+            ...exp,
+            category: nextCat,
+            subcategory: nextSub || exp.subcategory,
+            description: nextDesc,
+            subcategoryColor: nextColor,
+          };
+          changedExpenses.push(updatedExp);
+          return updatedExp;
+        }
+        return exp;
+      }
+    );
+
+    // 4. Cascade updates across all Income Allocated Deductions
+    const changedIncomes: any[] = [];
+    const updatedIncomes = (Array.isArray(incomes) ? incomes : []).map(
+      (inc: any) => {
+        if (!inc || !Array.isArray(inc.allocatedDeductions)) return inc;
+        let incChanged = false;
+        const nextDeds = inc.allocatedDeductions.map((d: any) => {
+          if (!d || typeof d !== 'object') return d;
+          const curCat = String(d.expenseCategory || '').trim();
+          const curSub = String(d.expenseSubcategory || '').trim();
+          const curCatKey = curCat.toLowerCase();
+          const curSubKey = curSub.toLowerCase();
+
+          const matchesCat = Boolean(oldCatKey) && curCatKey === oldCatKey;
+          const mappedSub = subRenameLookup.get(curSubKey);
+          const subMatchesScope =
+            Boolean(mappedSub) &&
+            (matchesCat ||
+              curCatKey === newCatKey ||
+              !curCatKey ||
+              !subNamesInOtherCategories.has(curSubKey));
+
+          if (!matchesCat && !subMatchesScope) return d;
+
+          const nextCat = matchesCat ? resolvedNewCat : curCat || resolvedNewCat;
+          const nextSub = subMatchesScope && mappedSub ? mappedSub : curSub;
+          if (nextCat !== curCat || nextSub !== curSub) {
+            incChanged = true;
+            return {
+              ...d,
+              expenseCategory: nextCat,
+              expenseSubcategory: nextSub,
+            };
+          }
+          return d;
+        });
+
+        if (incChanged) {
+          const updatedInc = {
+            ...inc,
+            allocatedDeductions: nextDeds,
+            updatedAt: nowIso,
+          };
+          changedIncomes.push(updatedInc);
+          return updatedInc;
+        }
+        return inc;
+      }
+    );
+
+    // 5. Cascade updates across all Budgets
+    const changedBudgets: any[] = [];
+    const updatedBudgets = (Array.isArray(budgets) ? budgets : []).map(
+      (b: any) => {
+        if (!b || typeof b !== 'object') return b;
+        let bChanged = false;
+
+        const origSubs: string[] = Array.isArray(b.subcategories)
+          ? b.subcategories
+          : [];
+        const nextSubs = dedupePreserveOrder(
+          origSubs.map((s) => {
+            const mapped = subRenameLookup.get(String(s || '').trim().toLowerCase());
+            if (mapped && mapped !== s) {
+              bChanged = true;
+              return mapped;
+            }
+            return s;
+          })
+        );
+
+        const origCats: string[] = Array.isArray(b.categories)
+          ? b.categories
+          : [];
+        const nextCats = dedupePreserveOrder(
+          origCats.map((c) => {
+            if (
+              categoryChanged &&
+              String(c || '').trim().toLowerCase() === oldCatKey
+            ) {
+              bChanged = true;
+              return resolvedNewCat;
+            }
+            return c;
+          })
+        );
+
+        if (bChanged) {
+          const updatedBudget = {
+            ...b,
+            subcategories: nextSubs,
+            categories: nextCats.length > 0 ? nextCats : b.categories,
+            updatedAt: nowIso,
+          };
+          changedBudgets.push(updatedBudget);
+          return updatedBudget;
+        }
+        return b;
+      }
+    );
+
+    const totalRecordsUpdated =
+      changedExpenses.length +
+      changedIncomes.length +
+      changedBudgets.length +
+      deductionRulesUpdated;
+
+    return res.json({
+      success: true,
+      settings: updatedSettings,
+      expenses: updatedExpenses,
+      incomes: updatedIncomes,
+      budgets: updatedBudgets,
+      changedExpenses,
+      changedIncomes,
+      changedBudgets,
+      summary: {
+        expensesUpdated: changedExpenses.length,
+        incomesUpdated: changedIncomes.length,
+        budgetsUpdated: changedBudgets.length,
+        deductionRulesUpdated,
+        totalRecordsUpdated,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Editing category or subcategory failed.',
     });
   }
 });

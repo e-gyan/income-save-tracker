@@ -1036,6 +1036,402 @@ export default function App() {
     })();
   };
 
+  const handleEditCategoryOrSubcategory = async (payload: {
+    categoryId?: string;
+    oldCategoryName: string;
+    newCategoryName?: string;
+    oldSubcategoryName?: string;
+    newSubcategoryName?: string;
+    subcategoryRenames?: { oldName: string; newName: string }[];
+  }) => {
+    const cleanOldCat = (payload.oldCategoryName || '').trim();
+    const cleanNewCat = (payload.newCategoryName || cleanOldCat).trim();
+    const currentEffectivePrefs = getEffectiveExpenseCategoryPreferences(
+      settings,
+      expenses
+    );
+    const snapshotSettings: UserSettings = {
+      ...settings,
+      expenseCategoryPreferences: currentEffectivePrefs,
+      expenseCategories: currentEffectivePrefs.map((p) => p.name),
+    };
+
+    let updatedSettings: UserSettings | null = null;
+    let nextExpenses: FlexibleExpense[] | null = null;
+    let nextIncomes: IncomeReceipt[] | null = null;
+    let nextBudgets: FinancialBudget[] | null = null;
+    let changedExpenses: FlexibleExpense[] = [];
+    let changedIncomes: IncomeReceipt[] = [];
+    let changedBudgets: FinancialBudget[] = [];
+    let summary = {
+      expensesUpdated: 0,
+      incomesUpdated: 0,
+      budgetsUpdated: 0,
+      deductionRulesUpdated: 0,
+      totalRecordsUpdated: 0,
+    };
+
+    // 1. Primary path: Authoritative backend edit & full record cascade
+    try {
+      const resp = await fetch('/api/categories/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          categoryId: payload.categoryId,
+          oldCategoryName: cleanOldCat,
+          newCategoryName: cleanNewCat,
+          oldSubcategoryName: payload.oldSubcategoryName,
+          newSubcategoryName: payload.newSubcategoryName,
+          subcategoryRenames: payload.subcategoryRenames,
+          settings: snapshotSettings,
+          expenses,
+          incomes,
+          budgets,
+        }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data?.success && data?.settings) {
+          updatedSettings = data.settings as UserSettings;
+          nextExpenses = Array.isArray(data.expenses)
+            ? (data.expenses as FlexibleExpense[])
+            : expenses;
+          nextIncomes = Array.isArray(data.incomes)
+            ? (data.incomes as IncomeReceipt[])
+            : incomes;
+          nextBudgets = Array.isArray(data.budgets)
+            ? (data.budgets as FinancialBudget[])
+            : budgets;
+          changedExpenses = Array.isArray(data.changedExpenses)
+            ? (data.changedExpenses as FlexibleExpense[])
+            : [];
+          changedIncomes = Array.isArray(data.changedIncomes)
+            ? (data.changedIncomes as IncomeReceipt[])
+            : [];
+          changedBudgets = Array.isArray(data.changedBudgets)
+            ? (data.changedBudgets as FinancialBudget[])
+            : [];
+          if (data.summary) {
+            summary = data.summary;
+          }
+        }
+      }
+    } catch {
+      // Offline fallback executed below
+    }
+
+    // 2. Deterministic offline fallback when backend is unreachable
+    if (!updatedSettings || !nextExpenses || !nextIncomes || !nextBudgets) {
+      const nowIso = new Date().toISOString();
+      const oldCatKey = cleanOldCat.toLowerCase();
+      const newCatKey = cleanNewCat.toLowerCase();
+      const categoryChanged =
+        Boolean(cleanOldCat) && Boolean(cleanNewCat) && cleanOldCat !== cleanNewCat;
+
+      const renameList: { oldName: string; newName: string }[] = [];
+      if (payload.oldSubcategoryName && payload.newSubcategoryName) {
+        renameList.push({
+          oldName: payload.oldSubcategoryName.trim(),
+          newName: payload.newSubcategoryName.trim(),
+        });
+      }
+      for (const item of payload.subcategoryRenames || []) {
+        const o = (item.oldName || '').trim();
+        const n = (item.newName || '').trim();
+        if (o && n && o !== n && !renameList.some((r) => r.oldName.toLowerCase() === o.toLowerCase())) {
+          renameList.push({ oldName: o, newName: n });
+        }
+      }
+      const subRenameLookup = new Map<string, string>();
+      for (const r of renameList) {
+        if (r.oldName && r.newName && r.oldName !== r.newName) {
+          subRenameLookup.set(r.oldName.toLowerCase(), r.newName);
+        }
+      }
+
+      const dedupeList = (list: string[]) => {
+        const seen = new Set<string>();
+        const out: string[] = [];
+        for (const item of list) {
+          const clean = (item || '').trim();
+          if (!clean) continue;
+          const k = clean.toLowerCase();
+          if (!seen.has(k)) {
+            seen.add(k);
+            out.push(clean);
+          }
+        }
+        return out;
+      };
+
+      const targetIdx = currentEffectivePrefs.findIndex(
+        (p) =>
+          (payload.categoryId && p.id === payload.categoryId) ||
+          (cleanOldCat && p.name.trim().toLowerCase() === oldCatKey)
+      );
+
+      const subNamesInOtherCats = new Set<string>();
+      currentEffectivePrefs.forEach((p, idx) => {
+        if (idx === targetIdx || p.name.trim().toLowerCase() === oldCatKey) return;
+        for (const s of p.subcategories || []) {
+          const clean = (s || '').trim().toLowerCase();
+          if (clean) subNamesInOtherCats.add(clean);
+        }
+      });
+
+      const renamedColorMap = new Map<string, string>();
+      const nextPrefs = currentEffectivePrefs.map((pref, idx) => {
+        if (idx !== targetIdx) return pref;
+        const nextSubs = dedupeList(
+          (pref.subcategories || []).map(
+            (s) => subRenameLookup.get(s.trim().toLowerCase()) || s
+          )
+        );
+        const nextColors: Record<string, string> = {};
+        for (const [k, v] of Object.entries(pref.subcategoryColors || {})) {
+          const mapped = subRenameLookup.get(k.trim().toLowerCase());
+          const finalKey = mapped || k;
+          if (v && !nextColors[finalKey]) {
+            nextColors[finalKey] = v;
+          }
+          if (mapped && v) {
+            renamedColorMap.set(mapped.toLowerCase(), v);
+          }
+        }
+        return {
+          ...pref,
+          name: cleanNewCat,
+          subcategories: nextSubs,
+          subcategoryColors: nextColors,
+        };
+      });
+
+      let deductionRulesUpdated = 0;
+      const nextCuts = (settings.customCuts || []).map((cut) => {
+        const curCat = (cut.expenseCategory || '').trim();
+        const curSub = (cut.expenseSubcategory || '').trim();
+        const matchesCat = Boolean(oldCatKey) && curCat.toLowerCase() === oldCatKey;
+        const mappedSub = subRenameLookup.get(curSub.toLowerCase());
+        const subMatchesScope =
+          Boolean(mappedSub) &&
+          (matchesCat ||
+            curCat.toLowerCase() === newCatKey ||
+            !curCat ||
+            !subNamesInOtherCats.has(curSub.toLowerCase()));
+        if (!matchesCat && !subMatchesScope) return cut;
+        const updatedCat = matchesCat ? cleanNewCat : curCat || cleanNewCat;
+        const updatedSub = subMatchesScope && mappedSub ? mappedSub : curSub;
+        if (updatedCat !== curCat || updatedSub !== curSub) {
+          deductionRulesUpdated++;
+          return {
+            ...cut,
+            expenseCategory: updatedCat,
+            expenseSubcategory: updatedSub,
+          };
+        }
+        return cut;
+      });
+
+      updatedSettings = {
+        ...settings,
+        expenseCategoryPreferences: nextPrefs,
+        expenseCategories: nextPrefs.map((p) => p.name),
+        customCuts: nextCuts,
+        updatedAt: nowIso,
+      };
+
+      changedExpenses = [];
+      nextExpenses = expenses.map((exp) => {
+        const curCat = (exp.category || '').trim();
+        const curSub = (exp.subcategory || '').trim();
+        const curDesc = (exp.description || '').trim();
+        const matchesCat = Boolean(oldCatKey) && curCat.toLowerCase() === oldCatKey;
+        const mappedSub = subRenameLookup.get(curSub.toLowerCase());
+        const subMatchesScope =
+          Boolean(mappedSub) &&
+          (matchesCat ||
+            curCat.toLowerCase() === newCatKey ||
+            !curCat ||
+            curCat.toLowerCase() === 'uncategorized' ||
+            !subNamesInOtherCats.has(curSub.toLowerCase()));
+        if (!matchesCat && !subMatchesScope) return exp;
+        const nextCat = matchesCat ? cleanNewCat : curCat || cleanNewCat;
+        const nextSub = subMatchesScope && mappedSub ? mappedSub : curSub;
+        const nextDesc =
+          subMatchesScope &&
+          mappedSub &&
+          curDesc &&
+          curDesc.toLowerCase() === curSub.toLowerCase()
+            ? mappedSub
+            : exp.description;
+        const nextColor =
+          subMatchesScope && mappedSub
+            ? renamedColorMap.get(mappedSub.toLowerCase()) || exp.subcategoryColor
+            : exp.subcategoryColor;
+        if (
+          nextCat !== curCat ||
+          nextSub !== curSub ||
+          nextDesc !== exp.description ||
+          nextColor !== exp.subcategoryColor
+        ) {
+          const updatedExp: FlexibleExpense = {
+            ...exp,
+            category: nextCat,
+            subcategory: nextSub || exp.subcategory,
+            description: nextDesc,
+            subcategoryColor: nextColor,
+          };
+          changedExpenses.push(updatedExp);
+          return updatedExp;
+        }
+        return exp;
+      });
+
+      changedIncomes = [];
+      nextIncomes = incomes.map((inc) => {
+        if (!Array.isArray(inc.allocatedDeductions)) return inc;
+        let changed = false;
+        const nextDeds = inc.allocatedDeductions.map((d) => {
+          const curCat = (d.expenseCategory || '').trim();
+          const curSub = (d.expenseSubcategory || '').trim();
+          const matchesCat = Boolean(oldCatKey) && curCat.toLowerCase() === oldCatKey;
+          const mappedSub = subRenameLookup.get(curSub.toLowerCase());
+          const subMatchesScope =
+            Boolean(mappedSub) &&
+            (matchesCat ||
+              curCat.toLowerCase() === newCatKey ||
+              !curCat ||
+              !subNamesInOtherCats.has(curSub.toLowerCase()));
+          if (!matchesCat && !subMatchesScope) return d;
+          const nextCat = matchesCat ? cleanNewCat : curCat || cleanNewCat;
+          const nextSub = subMatchesScope && mappedSub ? mappedSub : curSub;
+          if (nextCat !== curCat || nextSub !== curSub) {
+            changed = true;
+            return {
+              ...d,
+              expenseCategory: nextCat,
+              expenseSubcategory: nextSub,
+            };
+          }
+          return d;
+        });
+        if (changed) {
+          const updatedInc: IncomeReceipt = {
+            ...inc,
+            allocatedDeductions: nextDeds,
+            updatedAt: nowIso,
+          };
+          changedIncomes.push(updatedInc);
+          return updatedInc;
+        }
+        return inc;
+      });
+
+      changedBudgets = [];
+      nextBudgets = budgets.map((b) => {
+        let bChanged = false;
+        const nextSubs = dedupeList(
+          (b.subcategories || []).map((s) => {
+            const mapped = subRenameLookup.get(s.trim().toLowerCase());
+            if (mapped && mapped !== s) {
+              bChanged = true;
+              return mapped;
+            }
+            return s;
+          })
+        );
+        const nextCats = dedupeList(
+          (b.categories || []).map((c) => {
+            if (categoryChanged && c.trim().toLowerCase() === oldCatKey) {
+              bChanged = true;
+              return cleanNewCat;
+            }
+            return c;
+          })
+        );
+        if (bChanged) {
+          const updatedBudget: FinancialBudget = {
+            ...b,
+            subcategories: nextSubs,
+            categories: nextCats.length > 0 ? nextCats : b.categories,
+            updatedAt: nowIso,
+          };
+          changedBudgets.push(updatedBudget);
+          return updatedBudget;
+        }
+        return b;
+      });
+
+      summary = {
+        expensesUpdated: changedExpenses.length,
+        incomesUpdated: changedIncomes.length,
+        budgetsUpdated: changedBudgets.length,
+        deductionRulesUpdated,
+        totalRecordsUpdated:
+          changedExpenses.length +
+          changedIncomes.length +
+          changedBudgets.length +
+          deductionRulesUpdated,
+      };
+    }
+
+    // 3. Atomically update React state and local storage so UI immediately reflects new names everywhere
+    setSettings(updatedSettings);
+    setExpenses(nextExpenses);
+    setIncomes(nextIncomes);
+    setBudgets(nextBudgets);
+
+    setLocalData('settings', updatedSettings, effectiveUserId);
+    setLocalData('expenses', nextExpenses, effectiveUserId);
+    setLocalData('incomes', nextIncomes, effectiveUserId);
+    setLocalData('budgets', nextBudgets, effectiveUserId);
+
+    // 4. Persist to Firestore & authenticated cloud snapshot
+    if (currentUser) {
+      const uid = currentUser.uid;
+      syncAuthenticatedCloudSnapshotToBackend(uid, {
+        settings: updatedSettings,
+        expenses: nextExpenses,
+        incomes: nextIncomes,
+        budgets: nextBudgets,
+      });
+      (async () => {
+        try {
+          await saveUserSettings(uid, updatedSettings!);
+          const chunkSize = 10;
+          for (let i = 0; i < changedExpenses.length; i += chunkSize) {
+            await Promise.all(
+              changedExpenses
+                .slice(i, i + chunkSize)
+                .map((exp) => saveFlexibleExpense(uid, exp))
+            );
+          }
+          for (let i = 0; i < changedIncomes.length; i += chunkSize) {
+            await Promise.all(
+              changedIncomes
+                .slice(i, i + chunkSize)
+                .map((inc) => saveIncomeReceipt(uid, inc))
+            );
+          }
+          for (let i = 0; i < changedBudgets.length; i += chunkSize) {
+            await Promise.all(
+              changedBudgets
+                .slice(i, i + chunkSize)
+                .map((bgt) => saveFinancialBudget(uid, bgt))
+            );
+          }
+        } catch (err) {
+          console.error('Category edit cascade persistence error:', err);
+        }
+      })();
+    }
+
+    return {
+      settings: updatedSettings,
+      summary,
+    };
+  };
+
   const handleDeleteExpense = async (expenseId: string) => {
     // Support deleting income deduction expense transactions (exp_ded_<incId>_<dedId>)
     if (expenseId.startsWith('exp_ded_')) {
@@ -1898,6 +2294,7 @@ export default function App() {
                 currentUser={currentUser}
                 onSaveSettings={handleSaveSettings}
                 onMoveSubcategory={handleMoveSubcategory}
+                onEditCategoryOrSubcategory={handleEditCategoryOrSubcategory}
                 isSaving={isSaving}
                 onAddSavingsStructure={handleAddSavingsStructure}
                 onImportRecords={handleImportRecords}
