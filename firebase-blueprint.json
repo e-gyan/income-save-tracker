@@ -66,6 +66,14 @@
           "type": "boolean",
           "description": "Whether to automate vault debit expenses from respective savings vaults after deducting saving rate"
         },
+        "biometricLockEnabled": {
+          "type": "boolean",
+          "description": "Whether device biometric lock is enabled before accessing app content"
+        },
+        "biometricLockOnResume": {
+          "type": "boolean",
+          "description": "Whether the PWA re-locks when returning from background"
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time",

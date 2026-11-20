@@ -253,6 +253,11 @@ export async function fetchUserSettings(userId: string): Promise<UserSettings> {
           data.autoDebitSavingsVaults !== undefined
             ? Boolean(data.autoDebitSavingsVaults)
             : DEFAULT_USER_SETTINGS.autoDebitSavingsVaults,
+        biometricLockEnabled: Boolean(data.biometricLockEnabled),
+        biometricLockOnResume:
+          data.biometricLockOnResume !== undefined
+            ? Boolean(data.biometricLockOnResume)
+            : true,
         updatedAt: data.updatedAt || new Date().toISOString(),
       };
       setLocalData('settings', result, userId);
@@ -382,6 +387,8 @@ export async function saveUserSettings(userId: string, settings: UserSettings): 
       askNetIncomeTransfer: settings.askNetIncomeTransfer !== false,
       defaultNetIncomeAccountId: String(settings.defaultNetIncomeAccountId || '').slice(0, 128),
       autoDebitSavingsVaults: Boolean(settings.autoDebitSavingsVaults),
+      biometricLockEnabled: Boolean(settings.biometricLockEnabled),
+      biometricLockOnResume: settings.biometricLockOnResume !== false,
       updatedAt: new Date().toISOString(),
     };
     if (settings.defaultAccountId) {

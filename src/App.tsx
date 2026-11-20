@@ -29,6 +29,8 @@ import {
   getEffectiveExpenseCategoryPreferences,
   getEffectiveIncomeDeductions,
   isSavingsVaultAccount,
+  isSavingsDeduction,
+  computeSavingsBreakdown,
   buildDefaultDeductionsForIncome,
   resolveIntuitiveSubcategoryColor,
 } from './lib/calculations.ts';
@@ -96,6 +98,12 @@ import { FloatingQuickActions } from './components/FloatingQuickActions.tsx';
 import { DeductionAgentModal } from './components/DeductionAgentModal.tsx';
 import { EditExpenseModal } from './components/EditExpenseModal.tsx';
 import { OfflineIndicator } from './components/PWAInstallButton.tsx';
+import { BiometricLockScreen } from './components/BiometricLockScreen.tsx';
+import {
+  shouldStartAppLocked,
+  getBiometricDeviceState,
+  saveBiometricDeviceState,
+} from './lib/biometricAuth.ts';
 import { TimeRangePreset, isDateInPreset } from './lib/dateFilters.ts';
 
 export default function App() {
@@ -115,6 +123,10 @@ export default function App() {
   const [expandIncomeTrigger, setExpandIncomeTrigger] = useState(0);
   const [expandExpenseTrigger, setExpandExpenseTrigger] = useState(0);
   const [openTransferTrigger, setOpenTransferTrigger] = useState(0);
+  const [isAppLocked, setIsAppLocked] = useState<boolean>(() =>
+    shouldStartAppLocked()
+  );
+  const hiddenSinceRef = useRef<number | null>(null);
 
   // Core Data States (Strictly attached to the signed-in account; hydrated synchronously on mount)
   const [settings, setSettings] = useState<UserSettings>(() => {
@@ -566,6 +578,272 @@ export default function App() {
     })();
   };
 
+  // Sync device biometric lock-on-resume preference and re-lock when returning to the PWA from background
+  useEffect(() => {
+    const devState = getBiometricDeviceState();
+    const desiredResume = settings.biometricLockOnResume !== false;
+    if (devState.lockOnResume !== desiredResume) {
+      saveBiometricDeviceState({ lockOnResume: desiredResume });
+    }
+  }, [settings.biometricLockOnResume]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenSinceRef.current = Date.now();
+        return;
+      }
+      if (document.visibilityState === 'visible') {
+        const devState = getBiometricDeviceState();
+        const lockActive = Boolean(
+          devState.enabled && (devState.credentialId || devState.passcodeHash)
+        );
+        const lockOnResume =
+          devState.lockOnResume && settings.biometricLockOnResume !== false;
+        const hiddenDurationMs = hiddenSinceRef.current
+          ? Date.now() - hiddenSinceRef.current
+          : 0;
+        hiddenSinceRef.current = null;
+        if (lockActive && lockOnResume && hiddenDurationMs >= 15000) {
+          setIsAppLocked(true);
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [settings.biometricLockOnResume]);
+
+  /**
+   * Backend-managed prospective savings vault percentage update.
+   * Freezes existing income records using the previous vault rates before applying the new
+   * percentages so changes take effect ONLY on new income records and never alter past history.
+   */
+  const handleUpdateSavingsVaultRates = async (
+    nextBuckets: SavingsBucket[],
+    nextCustodians?: Record<string, string>
+  ): Promise<{
+    settings: UserSettings;
+    summary: {
+      totalRatePercent: number;
+      preservedIncomesCount: number;
+      totalExistingIncomes: number;
+    };
+  }> => {
+    const resolvedCustodians =
+      nextCustodians !== undefined
+        ? nextCustodians
+        : settings.vaultCustodianAccounts || {};
+
+    let updatedSettings: UserSettings | null = null;
+    let updatedIncomes: IncomeReceipt[] = incomes;
+    let changedIncomes: IncomeReceipt[] = [];
+    let summary = {
+      totalRatePercent:
+        Math.round(
+          nextBuckets.reduce((s, b) => s + (Number(b.percentage) || 0), 0) * 100
+        ) / 100,
+      preservedIncomesCount: 0,
+      totalExistingIncomes: incomes.length,
+    };
+
+    try {
+      const resp = await fetch('/api/settings/vault-rates/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          previousSettings: settings,
+          nextBuckets,
+          vaultCustodianAccounts: resolvedCustodians,
+          incomes,
+          accounts,
+        }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data?.success && data?.settings) {
+          updatedSettings = data.settings as UserSettings;
+          updatedIncomes = Array.isArray(data.incomes)
+            ? (data.incomes as IncomeReceipt[])
+            : incomes;
+          changedIncomes = Array.isArray(data.changedIncomes)
+            ? (data.changedIncomes as IncomeReceipt[])
+            : [];
+          if (data.summary) {
+            summary = {
+              totalRatePercent: Number(data.summary.totalRatePercent) || 0,
+              preservedIncomesCount: Number(data.summary.preservedIncomesCount) || 0,
+              totalExistingIncomes: Number(data.summary.totalExistingIncomes) || incomes.length,
+            };
+          }
+        }
+      }
+    } catch {
+      // Offline PWA fallback executes identical prospective snapshot preservation locally
+    }
+
+    if (!updatedSettings) {
+      const localChanged: IncomeReceipt[] = [];
+      const localUpdatedIncomes = incomes.map((inc) => {
+        if (!Array.isArray(inc.allocatedDeductions)) return inc;
+        let modified = false;
+        const nextDeds = inc.allocatedDeductions.map((ded) => {
+          if (!isSavingsDeduction(ded)) return ded;
+          if (
+            Array.isArray(ded.savingsSplitSnapshot) &&
+            ded.savingsSplitSnapshot.length > 0
+          ) {
+            return ded;
+          }
+          modified = true;
+          return {
+            ...ded,
+            savingsSplitSnapshot: computeSavingsBreakdown(
+              ded.amount,
+              accounts,
+              settings
+            ),
+          };
+        });
+        if (!modified) return inc;
+        const frozen: IncomeReceipt = {
+          ...inc,
+          allocatedDeductions: nextDeds,
+          updatedAt: new Date().toISOString(),
+        };
+        localChanged.push(frozen);
+        return frozen;
+      });
+
+      updatedSettings = {
+        ...settings,
+        savingsBuckets: nextBuckets,
+        vaultCustodianAccounts: resolvedCustodians,
+        updatedAt: new Date().toISOString(),
+      };
+      updatedIncomes = localUpdatedIncomes;
+      changedIncomes = localChanged;
+      summary = {
+        totalRatePercent:
+          Math.round(
+            nextBuckets.reduce((s, b) => s + (Number(b.percentage) || 0), 0) * 100
+          ) / 100,
+        preservedIncomesCount: localChanged.length,
+        totalExistingIncomes: localUpdatedIncomes.length,
+      };
+    }
+
+    // Apply settings, preserved incomes, and synced vault accounts atomically
+    setSettings(updatedSettings);
+    setLocalData('settings', updatedSettings, effectiveUserId);
+
+    if (changedIncomes.length > 0) {
+      setIncomes(updatedIncomes);
+      setLocalData('incomes', updatedIncomes, effectiveUserId);
+    }
+
+    const effectivePillars = getEffectiveSavingsPillars(updatedSettings);
+    const activeVaultIds = new Set(effectivePillars.map((p) => p.accountId));
+    const rawOperatingList = accounts.filter(
+      (a) => !isSavingsVaultAccount(a, settings) && !activeVaultIds.has(a.id)
+    );
+    const operatingAccountsList =
+      rawOperatingList.length > 0
+        ? rawOperatingList
+        : [
+            {
+              ...DEFAULT_FINANCIAL_ACCOUNTS[0],
+              userId: effectiveUserId,
+            },
+          ];
+    const defaultOpId =
+      operatingAccountsList.find((a) => !a.isVirtual && a.isDefaultDeposit)?.id ||
+      operatingAccountsList.find((a) => !a.isVirtual)?.id ||
+      operatingAccountsList.find((a) => a.isDefaultDeposit)?.id ||
+      operatingAccountsList[0]?.id ||
+      'acc-main-op';
+
+    const syncedVaultAccounts: FinancialAccount[] = effectivePillars.map((pillar) => {
+      const existing = accounts.find((a) => a.id === pillar.accountId);
+      const custodianId =
+        updatedSettings!.vaultCustodianAccounts?.[pillar.accountId] ||
+        pillar.custodianAccountId ||
+        existing?.custodianAccountId ||
+        defaultOpId;
+      return existing
+        ? {
+            ...existing,
+            name: pillar.name,
+            type: 'Savings',
+            isVirtual: pillar.isVirtual,
+            linkedSavingsBucketId: pillar.bucketId,
+            custodianAccountId: custodianId,
+            description: `${pillar.percentage}% savings allocation vault`,
+            updatedAt: new Date().toISOString(),
+          }
+        : {
+            id: pillar.accountId,
+            userId: effectiveUserId,
+            name: pillar.name,
+            type: 'Savings',
+            institution: 'Savings Vault',
+            initialBalance: 0,
+            color: pillar.color,
+            description: `${pillar.percentage}% savings allocation vault`,
+            isDefaultDeposit: false,
+            isVirtual: pillar.isVirtual,
+            linkedSavingsBucketId: pillar.bucketId,
+            custodianAccountId: custodianId,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+    });
+
+    const deletedVaultAccounts = accounts.filter(
+      (a) => isSavingsVaultAccount(a, settings) && !activeVaultIds.has(a.id)
+    );
+    const nextAccounts = [...operatingAccountsList, ...syncedVaultAccounts];
+    setAccounts(nextAccounts);
+    setLocalData('accounts', nextAccounts, effectiveUserId);
+
+    const finalSettings = updatedSettings;
+    const finalIncomes = updatedIncomes;
+    const finalChangedIncomes = changedIncomes;
+
+    (async () => {
+      setIsSaving(true);
+      try {
+        if (currentUser) {
+          await saveUserSettings(currentUser.uid, finalSettings);
+          for (const va of syncedVaultAccounts) {
+            await saveFinancialAccount(currentUser.uid, va);
+          }
+          for (const delVa of deletedVaultAccounts) {
+            await deleteFinancialAccount(currentUser.uid, delVa.id);
+          }
+          for (let i = 0; i < finalChangedIncomes.length; i += 8) {
+            const chunk = finalChangedIncomes.slice(i, i + 8);
+            await Promise.all(
+              chunk.map((inc) => saveIncomeReceipt(currentUser.uid, inc))
+            );
+          }
+          syncAuthenticatedCloudSnapshotToBackend(currentUser.uid, {
+            settings: finalSettings,
+            accounts: nextAccounts,
+            incomes: finalIncomes,
+          });
+        }
+      } catch (err) {
+        console.error('Background vault rate update save error:', err);
+      } finally {
+        setIsSaving(false);
+      }
+    })();
+
+    return { settings: finalSettings, summary };
+  };
+
   const handleThemeModeChange = (mode: ThemeMode) => {
     setPersistedThemeMode(mode);
     handleSaveSettings({
@@ -634,8 +912,31 @@ export default function App() {
   const handleAddIncome = async (
     receiptData: Omit<IncomeReceipt, 'id' | 'createdAt' | 'updatedAt' | 'userId'>
   ): Promise<IncomeReceipt> => {
+    // Stamp active savings vault split percentages onto each savings deduction so
+    // future vault percentage changes in Settings never rewrite this income record.
+    const stampedDeductions = Array.isArray(receiptData.allocatedDeductions)
+      ? receiptData.allocatedDeductions.map((ded) => {
+          if (!isSavingsDeduction(ded)) return ded;
+          if (
+            Array.isArray(ded.savingsSplitSnapshot) &&
+            ded.savingsSplitSnapshot.length > 0
+          ) {
+            return ded;
+          }
+          return {
+            ...ded,
+            savingsSplitSnapshot: computeSavingsBreakdown(
+              ded.amount,
+              accounts,
+              settings
+            ),
+          };
+        })
+      : receiptData.allocatedDeductions;
+
     const newReceipt: IncomeReceipt = {
       ...receiptData,
+      allocatedDeductions: stampedDeductions,
       id: `inc_${Date.now()}`,
       userId: effectiveUserId,
       createdAt: new Date().toISOString(),
@@ -660,8 +961,31 @@ export default function App() {
   };
 
   const handleUpdateIncome = async (updatedReceipt: IncomeReceipt) => {
+    const normalizedReceipt: IncomeReceipt = {
+      ...updatedReceipt,
+      allocatedDeductions: Array.isArray(updatedReceipt.allocatedDeductions)
+        ? updatedReceipt.allocatedDeductions.map((ded) => {
+            if (!isSavingsDeduction(ded)) return ded;
+            if (
+              Array.isArray(ded.savingsSplitSnapshot) &&
+              ded.savingsSplitSnapshot.length > 0
+            ) {
+              return ded;
+            }
+            return {
+              ...ded,
+              savingsSplitSnapshot: computeSavingsBreakdown(
+                ded.amount,
+                accounts,
+                settings
+              ),
+            };
+          })
+        : updatedReceipt.allocatedDeductions,
+    };
+
     const nextIncomes = incomes.map((i) =>
-      i.id === updatedReceipt.id ? updatedReceipt : i
+      i.id === normalizedReceipt.id ? normalizedReceipt : i
     );
     setIncomes(nextIncomes);
     setLocalData('incomes', nextIncomes, effectiveUserId);
@@ -669,7 +993,7 @@ export default function App() {
     (async () => {
       try {
         if (currentUser) {
-          await saveIncomeReceipt(currentUser.uid, updatedReceipt);
+          await saveIncomeReceipt(currentUser.uid, normalizedReceipt);
         }
       } catch (err) {
         console.error('Background income update error:', err);
@@ -2106,6 +2430,17 @@ export default function App() {
     );
   }
 
+  if (isAppLocked) {
+    return (
+      <BiometricLockScreen
+        onUnlocked={() => setIsAppLocked(false)}
+        userDisplayName={
+          currentUser?.displayName || currentUser?.email || undefined
+        }
+      />
+    );
+  }
+
   return (
     <div className="h-screen w-full max-w-full overflow-hidden bg-slate-50 text-slate-900 flex flex-col font-sans">
       {/* Static Top Header & Collapsible Mobile Date Filter (Locked at Top of Viewport) */}
@@ -2293,6 +2628,8 @@ export default function App() {
                 expenses={expenses}
                 currentUser={currentUser}
                 onSaveSettings={handleSaveSettings}
+                onUpdateSavingsVaultRates={handleUpdateSavingsVaultRates}
+                onLockAppNow={() => setIsAppLocked(true)}
                 onMoveSubcategory={handleMoveSubcategory}
                 onEditCategoryOrSubcategory={handleEditCategoryOrSubcategory}
                 isSaving={isSaving}

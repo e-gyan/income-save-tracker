@@ -14,7 +14,7 @@ import {
   getIncomeDeductionExpenses,
   getSavingsSplitTransfers,
   isSavingsDeduction,
-  computeSavingsBreakdown,
+  computeSavingsBreakdownForDeduction,
   getEffectiveSavingsPillars,
   isSavingsVaultAccount,
   isAccountVirtual,
@@ -625,7 +625,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
       const deds = getEffectiveIncomeDeductions(inc, settings);
       for (const d of deds) {
         if (isSavingsDeduction(d)) {
-          const shares = computeSavingsBreakdown(d.amount, accounts, settings);
+          const shares = computeSavingsBreakdownForDeduction(d, d.amount, accounts, settings);
           for (const share of shares) {
             if (share.accountId === historyModalAccountId && share.amount > 0) {
               routed.push({

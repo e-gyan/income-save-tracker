@@ -2,6 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
+import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -3717,6 +3718,332 @@ app.post('/api/expenses/by-category', (req: Request, res: Response) => {
     return res.status(500).json({
       success: false,
       error: err?.message || 'Failed to aggregate expenses by category.',
+    });
+  }
+});
+
+/**
+ * Backend Prospective-Only Savings Vault Rate Update (`POST /api/settings/vault-rates/update`)
+ * Freezes existing income records' savings split math with the previous vault percentages
+ * before saving the new vault rates so changes apply strictly to new income records.
+ */
+const DEFAULT_SERVER_SAVINGS_PILLARS = [
+  { id: 'bucket-30-emg', accountId: 'acc-30-emg', name: 'Emergency Fund (30%)', percentage: 30, description: '30% savings share' },
+  { id: 'bucket-15-emg', accountId: 'acc-15-emg', name: 'Emergency Reserve (15%)', percentage: 15, description: '15% savings share' },
+  { id: 'bucket-5-ins', accountId: 'acc-5-ins', name: 'Insurance Fund (5%)', percentage: 5, description: '5% savings share' },
+  { id: 'bucket-20-inv', accountId: 'acc-20-inv', name: 'Investment Fund (20%)', percentage: 20, description: '20% savings share' },
+  { id: 'bucket-10-pers', accountId: 'acc-10-pers', name: 'Personal Fund (10%)', percentage: 10, description: '10% savings share' },
+  { id: 'bucket-15-seeds', accountId: 'acc-15-seeds', name: 'Seed Capital (15%)', percentage: 15, description: '15% savings share' },
+  { id: 'bucket-5-give', accountId: 'acc-5-give', name: 'Giving Fund (5%)', percentage: 5, description: '5% savings share' },
+];
+
+function getServerVaultCleanName(name: string): string {
+  return String(name || '')
+    .replace(/\s*\(\s*\d+(?:\.\d+)?%\s*\)\s*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isServerSavingsDeduction(d: any): boolean {
+  if (!d) return false;
+  if (d.isSavingsSplit) return true;
+  const n = String(d.name || '').toLowerCase();
+  const id = String(d.id || '').toLowerCase();
+  return n.includes('saving') || id.includes('saving');
+}
+
+function normalizeServerVaultBuckets(rawBuckets: any[]): any[] {
+  const source =
+    Array.isArray(rawBuckets) && rawBuckets.length > 0
+      ? rawBuckets
+      : DEFAULT_SERVER_SAVINGS_PILLARS;
+  return source.map((b: any, idx: number) => {
+    const fallback = DEFAULT_SERVER_SAVINGS_PILLARS[idx];
+    const baseName =
+      getServerVaultCleanName(b?.name || '') ||
+      (fallback ? getServerVaultCleanName(fallback.name) : `Savings Vault ${idx + 1}`);
+    const parsedPct = Number(b?.percentage);
+    const pct = Number.isFinite(parsedPct)
+      ? Math.max(0, Math.min(100, round2dp(parsedPct)))
+      : 0;
+    const bucketId = String(b?.id || fallback?.id || `bucket_${idx + 1}`).trim();
+    const accountId = String(
+      b?.accountId || fallback?.accountId || `acc_sav_${bucketId}`
+    ).trim();
+    return {
+      ...b,
+      id: bucketId,
+      accountId,
+      name: `${baseName} (${pct}%)`,
+      percentage: pct,
+      description: `${pct}% savings share`,
+    };
+  });
+}
+
+function computeServerSavingsShares(
+  deductedAmount: number,
+  buckets: any[],
+  accounts: any[]
+): any[] {
+  const normalized = normalizeServerVaultBuckets(buckets);
+  const total = Math.max(0, round2dp(Number(deductedAmount) || 0));
+  const totalRateSum = normalized.reduce(
+    (sum: number, p: any) => sum + (Number(p.percentage) || 0),
+    0
+  );
+  const lastActiveIdx = normalized.reduce(
+    (lastIdx: number, p: any, idx: number) =>
+      Number(p.percentage) > 0 ? idx : lastIdx,
+    normalized.length - 1
+  );
+
+  let runningSum = 0;
+  return normalized.map((p: any, index: number) => {
+    const baseName = getServerVaultCleanName(p.name).toLowerCase();
+    const acc = (Array.isArray(accounts) ? accounts : []).find(
+      (a: any) =>
+        a?.id === p.accountId ||
+        a?.linkedSavingsBucketId === p.id ||
+        getServerVaultCleanName(a?.name || '').toLowerCase() === baseName
+    );
+
+    let shareAmount = 0;
+    if (total > 0 && p.percentage > 0) {
+      if (Math.abs(totalRateSum - 100) < 0.01 && index === lastActiveIdx) {
+        shareAmount = Math.max(0, round2dp(total - runningSum));
+      } else {
+        shareAmount = round2dp((total * p.percentage) / 100);
+        runningSum = round2dp(runningSum + shareAmount);
+      }
+    }
+
+    return {
+      bucketId: p.id,
+      bucketName: p.name,
+      percentage: p.percentage,
+      amount: shareAmount,
+      accountId: acc?.id || p.accountId,
+      accountName: p.name,
+    };
+  });
+}
+
+app.post('/api/settings/vault-rates/update', (req: Request, res: Response) => {
+  try {
+    const {
+      previousSettings = {},
+      nextBuckets = [],
+      vaultCustodianAccounts,
+      incomes = [],
+      accounts = [],
+    } = req.body || {};
+
+    const previousBuckets = normalizeServerVaultBuckets(
+      Array.isArray(previousSettings?.savingsBuckets) &&
+        previousSettings.savingsBuckets.length > 0
+        ? previousSettings.savingsBuckets
+        : DEFAULT_SERVER_SAVINGS_PILLARS
+    );
+    const normalizedNextBuckets = normalizeServerVaultBuckets(nextBuckets);
+    const totalRatePercent = round2dp(
+      normalizedNextBuckets.reduce(
+        (sum: number, b: any) => sum + (Number(b.percentage) || 0),
+        0
+      )
+    );
+
+    const existingIncomes: any[] = Array.isArray(incomes) ? incomes : [];
+    const changedIncomes: any[] = [];
+
+    // Freeze any existing income record that does not yet carry a savingsSplitSnapshot
+    // using the PREVIOUS vault percentages so historical transactions remain unchanged.
+    const updatedIncomes = existingIncomes.map((inc: any) => {
+      if (!inc || !Array.isArray(inc.allocatedDeductions)) {
+        return inc;
+      }
+
+      let incomeModified = false;
+      const nextDeductions = inc.allocatedDeductions.map((ded: any) => {
+        if (!isServerSavingsDeduction(ded)) return ded;
+        if (
+          Array.isArray(ded.savingsSplitSnapshot) &&
+          ded.savingsSplitSnapshot.length > 0
+        ) {
+          return ded;
+        }
+        incomeModified = true;
+        return {
+          ...ded,
+          savingsSplitSnapshot: computeServerSavingsShares(
+            Number(ded.amount) || 0,
+            previousBuckets,
+            accounts
+          ),
+        };
+      });
+
+      if (!incomeModified) {
+        return inc;
+      }
+
+      const frozenIncome = {
+        ...inc,
+        allocatedDeductions: nextDeductions,
+        updatedAt: new Date().toISOString(),
+      };
+      changedIncomes.push(frozenIncome);
+      return frozenIncome;
+    });
+
+    const nextSettings = {
+      ...previousSettings,
+      savingsBuckets: normalizedNextBuckets,
+      vaultCustodianAccounts:
+        vaultCustodianAccounts !== undefined
+          ? vaultCustodianAccounts
+          : previousSettings?.vaultCustodianAccounts || {},
+      updatedAt: new Date().toISOString(),
+    };
+
+    return res.json({
+      success: true,
+      settings: nextSettings,
+      incomes: updatedIncomes,
+      changedIncomes,
+      summary: {
+        totalRatePercent,
+        preservedIncomesCount: changedIncomes.length,
+        totalExistingIncomes: updatedIncomes.length,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Failed to update savings vault rates.',
+    });
+  }
+});
+
+/**
+ * Biometric App Lock WebAuthn Challenge & Assertion Verification Endpoints
+ * Supports Android BiometricPrompt / Platform Authenticators in installed PWAs.
+ */
+interface BiometricChallengeEntry {
+  challenge: string;
+  purpose: string;
+  createdAt: number;
+}
+
+const biometricChallengeStore = new Map<string, BiometricChallengeEntry>();
+const BIOMETRIC_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+
+function pruneExpiredBiometricChallenges() {
+  const now = Date.now();
+  for (const [key, entry] of biometricChallengeStore.entries()) {
+    if (now - entry.createdAt > BIOMETRIC_CHALLENGE_TTL_MS) {
+      biometricChallengeStore.delete(key);
+    }
+  }
+}
+
+app.post('/api/security/biometric/challenge', (req: Request, res: Response) => {
+  try {
+    pruneExpiredBiometricChallenges();
+    const purpose = String(req.body?.purpose || 'verify').slice(0, 32);
+    const challenge = crypto.randomBytes(32).toString('base64url');
+    biometricChallengeStore.set(challenge, {
+      challenge,
+      purpose,
+      createdAt: Date.now(),
+    });
+    return res.json({
+      success: true,
+      challenge,
+      purpose,
+      expiresInMs: BIOMETRIC_CHALLENGE_TTL_MS,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Failed to issue biometric challenge.',
+    });
+  }
+});
+
+app.post('/api/security/biometric/verify', (req: Request, res: Response) => {
+  try {
+    pruneExpiredBiometricChallenges();
+    const {
+      credentialId,
+      expectedChallenge,
+      clientDataJSON,
+      authenticatorData,
+    } = req.body || {};
+
+    if (
+      typeof credentialId !== 'string' ||
+      !credentialId.trim() ||
+      typeof clientDataJSON !== 'string' ||
+      typeof authenticatorData !== 'string'
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: 'Incomplete biometric assertion payload.',
+      });
+    }
+
+    const decodedClientRaw = Buffer.from(clientDataJSON, 'base64url').toString('utf8');
+    const clientData = JSON.parse(decodedClientRaw);
+    const challengeVal = String(clientData?.challenge || '');
+
+    if (clientData?.type !== 'webauthn.get') {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid WebAuthn assertion type.',
+      });
+    }
+
+    if (expectedChallenge && challengeVal !== expectedChallenge) {
+      return res.status(400).json({
+        success: false,
+        error: 'Biometric challenge mismatch.',
+      });
+    }
+
+    // Consume server-issued challenge if present (also allows locally generated challenges when reconnecting from offline)
+    if (biometricChallengeStore.has(challengeVal)) {
+      biometricChallengeStore.delete(challengeVal);
+    }
+
+    const authBuf = Buffer.from(authenticatorData, 'base64url');
+    if (authBuf.length < 37) {
+      return res.status(400).json({
+        success: false,
+        error: 'Malformed authenticator data.',
+      });
+    }
+
+    const flags = authBuf[32];
+    const userPresent = (flags & 0x01) !== 0;
+    const userVerified = (flags & 0x04) !== 0;
+
+    if (!userPresent || !userVerified) {
+      return res.status(401).json({
+        success: false,
+        error: 'Biometric user verification flag not satisfied.',
+      });
+    }
+
+    return res.json({
+      success: true,
+      verified: true,
+      verifiedAt: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    return res.status(400).json({
+      success: false,
+      error: err?.message || 'Unable to verify biometric assertion.',
     });
   }
 });

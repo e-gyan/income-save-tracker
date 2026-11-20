@@ -38,6 +38,17 @@ import {
 } from '../lib/colorThemes.ts';
 import { User } from '../lib/firebase.ts';
 import { WrapSelect } from './WrapSelect.tsx';
+import {
+  BiometricSupportInfo,
+  BiometricDeviceState,
+  checkBiometricSupport,
+  getBiometricDeviceState,
+  saveBiometricDeviceState,
+  enrollPlatformBiometric,
+  setBackupPasscode,
+  clearBackupPasscode,
+  disableBiometricDeviceLock,
+} from '../lib/biometricAuth.ts';
 
 interface ParsedImportPayload {
   incomes: Omit<IncomeReceipt, 'id' | 'createdAt' | 'updatedAt' | 'userId'>[];
@@ -80,6 +91,18 @@ interface SettingsViewProps {
       totalRecordsUpdated: number;
     };
   } | void>;
+  onUpdateSavingsVaultRates?: (
+    nextBuckets: SavingsBucket[],
+    nextCustodians?: Record<string, string>
+  ) => Promise<{
+    settings: UserSettings;
+    summary: {
+      totalRatePercent: number;
+      preservedIncomesCount: number;
+      totalExistingIncomes: number;
+    };
+  }>;
+  onLockAppNow?: () => void;
 }
 
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'GHS', 'NGN', 'KES', 'ZAR', 'CAD', 'AUD'];
@@ -94,6 +117,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onImportRecords,
   onMoveSubcategory,
   onEditCategoryOrSubcategory,
+  onUpdateSavingsVaultRates,
+  onLockAppNow,
 }) => {
   const [currency, setCurrency] = useState(settings.currency || 'USD');
   const [totalsCurrencyMode, setTotalsCurrencyMode] =
@@ -153,7 +178,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [isNewRuleCollapsed, setIsNewRuleCollapsed] = useState(true);
   const [isRulesListCollapsed, setIsRulesListCollapsed] = useState(true);
   const [isImportCollapsed, setIsImportCollapsed] = useState(true);
+  const [isSecurityCollapsed, setIsSecurityCollapsed] = useState(true);
   const [isVersionLogCollapsed, setIsVersionLogCollapsed] = useState(true);
+
+  // Biometric App Lock (PWA / Android BiometricPrompt) State
+  const [biometricSupport, setBiometricSupport] =
+    useState<BiometricSupportInfo | null>(null);
+  const [biometricDevice, setBiometricDevice] = useState<BiometricDeviceState>(() =>
+    getBiometricDeviceState()
+  );
+  const [biometricLockOnResume, setBiometricLockOnResume] = useState<boolean>(
+    settings.biometricLockOnResume !== false
+  );
+  const [isEnrollingBiometric, setIsEnrollingBiometric] = useState(false);
+  const [biometricNotice, setBiometricNotice] = useState<string | null>(null);
+  const [biometricError, setBiometricError] = useState<string | null>(null);
+  const [showPinSetup, setShowPinSetup] = useState(false);
+  const [backupPinInput, setBackupPinInput] = useState('');
+  const [backupPinConfirm, setBackupPinConfirm] = useState('');
+  const [isSavingPin, setIsSavingPin] = useState(false);
 
   // Backend File Import State
   const [importFileName, setImportFileName] = useState('');
@@ -171,6 +214,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [confirmDeleteVaultId, setConfirmDeleteVaultId] = useState<string | null>(null);
   const [vaultDraftNames, setVaultDraftNames] = useState<Record<string, string>>({});
   const [vaultDraftRates, setVaultDraftRates] = useState<Record<string, string>>({});
+  const [vaultRatesNotice, setVaultRatesNotice] = useState<string | null>(null);
+  const [isSavingVaultRates, setIsSavingVaultRates] = useState(false);
 
   // Expense Category & Subcategory state
   const [newCategoryName, setNewCategoryName] = useState('');
@@ -249,6 +294,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     [settings, expensePrefs, expenses]
   );
 
+  useEffect(() => {
+    let active = true;
+    checkBiometricSupport().then((info) => {
+      if (active) setBiometricSupport(info);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   // Sync local state when settings change without overwriting active textbox drafts
   useEffect(() => {
     setCurrency(settings.currency || 'USD');
@@ -258,6 +313,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setAccountingFiguresEnabled(settings.accountingFigureColorsEnabled !== false);
     setPositiveFigureColor(settings.positiveFigureColor || '#059669');
     setNegativeFigureColor(settings.negativeFigureColor || '#e11d48');
+    setBiometricLockOnResume(settings.biometricLockOnResume !== false);
     if (!editingCutId) {
       setCustomCuts(
         (settings.customCuts || []).filter((c) => !LEGACY_SEEDED_CUT_IDS.has(c.id))
@@ -1137,6 +1193,50 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setSavingsBuckets(nextBuckets);
   };
 
+  const showVaultRatesNotice = (message: string) => {
+    setVaultRatesNotice(message);
+    setTimeout(() => {
+      setVaultRatesNotice((prev) => (prev === message ? null : prev));
+    }, 4500);
+  };
+
+  const persistVaultRateUpdate = async (
+    nextBuckets: SavingsBucket[],
+    nextCustodians?: Record<string, string>
+  ) => {
+    setIsSavingVaultRates(true);
+    try {
+      if (onUpdateSavingsVaultRates) {
+        const result = await onUpdateSavingsVaultRates(nextBuckets, nextCustodians);
+        if (result?.settings?.savingsBuckets) {
+          setSavingsBuckets(result.settings.savingsBuckets);
+        }
+        const preserved = result?.summary?.preservedIncomesCount || 0;
+        const msg =
+          preserved > 0
+            ? `Vault rates updated for new incomes. ${preserved} existing ${
+                preserved === 1 ? 'record' : 'records'
+              } locked at prior rates.`
+            : 'Vault rates updated. New percentages apply only to new income records.';
+        showVaultRatesNotice(msg);
+        setSavedNotice(true);
+        setTimeout(() => setSavedNotice(false), 1800);
+      } else {
+        await persistUpdates({
+          savingsBuckets: nextBuckets,
+          ...(nextCustodians !== undefined
+            ? { vaultCustodianAccounts: nextCustodians }
+            : {}),
+        });
+        showVaultRatesNotice(
+          'Vault rates updated. New percentages apply only to new income records.'
+        );
+      }
+    } finally {
+      setIsSavingVaultRates(false);
+    }
+  };
+
   const handleAddVault = async (e: React.FormEvent) => {
     e.preventDefault();
     const baseName = getVaultCleanName(newVaultName);
@@ -1179,10 +1279,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setNewVaultRate('');
     setNewVaultIsVirtual(true);
     setNewVaultCustodianId('');
-    await persistUpdates({
-      savingsBuckets: nextBuckets,
-      vaultCustodianAccounts: nextCustodians,
-    });
+    await persistVaultRateUpdate(nextBuckets, nextCustodians);
   };
 
   const handleDeleteVault = async (bucketId: string, accountId: string) => {
@@ -1194,10 +1291,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setSavingsBuckets(nextBuckets);
     setVaultCustodians(nextCustodians);
     setConfirmDeleteVaultId(null);
-    await persistUpdates({
-      savingsBuckets: nextBuckets,
-      vaultCustodianAccounts: nextCustodians,
-    });
+    await persistVaultRateUpdate(nextBuckets, nextCustodians);
   };
 
   const handleSaveVaultRates = async () => {
@@ -1223,17 +1317,193 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         description: `${pct}% savings share`,
       };
     });
+
+    const currentSaved =
+      settings.savingsBuckets && settings.savingsBuckets.length > 0
+        ? settings.savingsBuckets
+        : DEFAULT_SAVINGS_BUCKETS;
+    const isUnchanged =
+      normalizedBuckets.length === currentSaved.length &&
+      normalizedBuckets.every(
+        (b, idx) =>
+          b.id === currentSaved[idx]?.id &&
+          b.name === currentSaved[idx]?.name &&
+          Number(b.percentage) === Number(currentSaved[idx]?.percentage)
+      );
+
     setSavingsBuckets(normalizedBuckets);
     setVaultDraftNames({});
     setVaultDraftRates({});
-    await persistUpdates({ savingsBuckets: normalizedBuckets });
+    if (isUnchanged) return;
+
+    await persistVaultRateUpdate(normalizedBuckets);
   };
 
   const handleResetDefaultVaultRates = async () => {
     setSavingsBuckets(DEFAULT_SAVINGS_BUCKETS);
     setVaultDraftNames({});
     setVaultDraftRates({});
-    await persistUpdates({ savingsBuckets: DEFAULT_SAVINGS_BUCKETS });
+    await persistVaultRateUpdate(DEFAULT_SAVINGS_BUCKETS);
+  };
+
+  // Biometric App Lock Handlers (PWA / Android BiometricPrompt)
+  const isBiometricLockActive = Boolean(
+    biometricDevice.enabled &&
+      (biometricDevice.credentialId || biometricDevice.passcodeHash)
+  );
+
+  const handleToggleBiometricLock = async () => {
+    setBiometricError(null);
+    setBiometricNotice(null);
+
+    if (isBiometricLockActive) {
+      disableBiometricDeviceLock();
+      setBiometricDevice(getBiometricDeviceState());
+      await persistUpdates({ biometricLockEnabled: false });
+      setBiometricNotice('Biometric app lock turned off for this device.');
+      return;
+    }
+
+    // If a credential or passcode already exists on this device, reactivate immediately
+    if (biometricDevice.credentialId || biometricDevice.passcodeHash) {
+      const updated = saveBiometricDeviceState({
+        enabled: true,
+        lockOnResume: biometricLockOnResume,
+      });
+      setBiometricDevice(updated);
+      await persistUpdates({
+        biometricLockEnabled: true,
+        biometricLockOnResume,
+      });
+      setBiometricNotice('App lock enabled on this device.');
+      return;
+    }
+
+    // Enroll device platform biometrics (Android BiometricPrompt / Face ID / Touch ID / Windows Hello)
+    setIsEnrollingBiometric(true);
+    try {
+      const userLabel =
+        currentUser?.displayName || currentUser?.email || 'Save N Know User';
+      const userId = currentUser?.uid || settings.userId || 'snk_user';
+      const result = await enrollPlatformBiometric(userLabel, userId);
+
+      if (result.success) {
+        const updated = saveBiometricDeviceState({
+          enabled: true,
+          lockOnResume: biometricLockOnResume,
+        });
+        setBiometricDevice(updated);
+        await persistUpdates({
+          biometricLockEnabled: true,
+          biometricLockOnResume,
+        });
+        setBiometricNotice(
+          'Biometric lock enabled. Your device will verify you before opening the app.'
+        );
+      } else {
+        setBiometricError(
+          result.error || 'Unable to enroll device biometrics.'
+        );
+        if (result.blockedByEnvironment) {
+          setShowPinSetup(true);
+        }
+      }
+    } finally {
+      setIsEnrollingBiometric(false);
+    }
+  };
+
+  const handleReEnrollBiometric = async () => {
+    setBiometricError(null);
+    setBiometricNotice(null);
+    setIsEnrollingBiometric(true);
+    try {
+      const userLabel =
+        currentUser?.displayName || currentUser?.email || 'Save N Know User';
+      const userId = currentUser?.uid || settings.userId || 'snk_user';
+      const result = await enrollPlatformBiometric(userLabel, userId);
+      if (result.success) {
+        const updated = saveBiometricDeviceState({
+          enabled: true,
+          lockOnResume: biometricLockOnResume,
+        });
+        setBiometricDevice(updated);
+        await persistUpdates({
+          biometricLockEnabled: true,
+          biometricLockOnResume,
+        });
+        setBiometricNotice('Device biometrics updated and active.');
+      } else {
+        setBiometricError(
+          result.error || 'Unable to verify device biometrics.'
+        );
+      }
+    } finally {
+      setIsEnrollingBiometric(false);
+    }
+  };
+
+  const handleToggleLockOnResume = async () => {
+    const nextVal = !biometricLockOnResume;
+    setBiometricLockOnResume(nextVal);
+    const updated = saveBiometricDeviceState({ lockOnResume: nextVal });
+    setBiometricDevice(updated);
+    await persistUpdates({ biometricLockOnResume: nextVal });
+  };
+
+  const handleSaveBackupPasscode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBiometricError(null);
+    setBiometricNotice(null);
+
+    const cleanPin = backupPinInput.replace(/\D/g, '');
+    const cleanConfirm = backupPinConfirm.replace(/\D/g, '');
+    if (cleanPin.length < 4 || cleanPin.length > 6) {
+      setBiometricError('Passcode must be 4 to 6 digits.');
+      return;
+    }
+    if (cleanPin !== cleanConfirm) {
+      setBiometricError('Passcodes do not match.');
+      return;
+    }
+
+    setIsSavingPin(true);
+    try {
+      const saved = await setBackupPasscode(cleanPin);
+      if (!saved) {
+        setBiometricError('Unable to save passcode. Enter 4 to 6 digits.');
+        return;
+      }
+      const updated = saveBiometricDeviceState({
+        enabled: true,
+        lockOnResume: biometricLockOnResume,
+      });
+      setBiometricDevice(updated);
+      setBackupPinInput('');
+      setBackupPinConfirm('');
+      setShowPinSetup(false);
+      await persistUpdates({
+        biometricLockEnabled: true,
+        biometricLockOnResume,
+      });
+      setBiometricNotice('Backup passcode saved and app lock enabled.');
+    } finally {
+      setIsSavingPin(false);
+    }
+  };
+
+  const handleRemoveBackupPasscode = async () => {
+    clearBackupPasscode();
+    const afterClear = getBiometricDeviceState();
+    const stillHasBio = Boolean(afterClear.credentialId);
+    const updated = saveBiometricDeviceState({
+      enabled: stillHasBio ? afterClear.enabled : false,
+    });
+    setBiometricDevice(updated);
+    if (!stillHasBio) {
+      await persistUpdates({ biometricLockEnabled: false });
+    }
+    setBiometricNotice('Backup passcode removed.');
   };
 
   // Helper: invoke backend /api/settings/deductions/define with exact user-selected fields
@@ -3228,7 +3498,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <button
                   type="button"
                   onClick={handleResetDefaultVaultRates}
-                  disabled={isSaving}
+                  disabled={isSaving || isSavingVaultRates}
                   className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50 text-center"
                 >
                   Reset Defaults
@@ -3236,13 +3506,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <button
                   type="button"
                   onClick={handleSaveVaultRates}
-                  disabled={isSaving}
+                  disabled={isSaving || isSavingVaultRates}
                   className="rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50 text-center"
                 >
-                  Save Vault Changes
+                  {isSavingVaultRates ? 'Saving...' : 'Save Vault Changes'}
                 </button>
               </div>
             </div>
+
+            {vaultRatesNotice && (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-xs font-medium text-emerald-800">
+                {vaultRatesNotice}
+              </div>
+            )}
+
+            <p className="text-[11px] text-slate-500">
+              Percentage updates apply strictly to new income records. Past transactions stay locked at their recorded vault splits.
+            </p>
 
             {/* Existing Savings Vaults Grid — Clean 2-Column Stacked Layout Without Overlap */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -4573,6 +4853,250 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </div>
                 )}
               </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Collapsible App Security & Biometric Lock (Android / PWA) */}
+      <div className="rounded-xl border border-slate-200/90 bg-white p-4 sm:p-5">
+        <div
+          onClick={() => setIsSecurityCollapsed((prev) => !prev)}
+          className={`flex items-center justify-between gap-3 cursor-pointer select-none ${
+            isSecurityCollapsed ? '' : 'border-b border-slate-100 pb-3.5 mb-4'
+          }`}
+        >
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="font-display text-base font-semibold text-slate-900 break-words">
+                App Security & Biometric Lock
+              </h2>
+              <span
+                className={`rounded-md px-2 py-0.5 font-mono text-[11px] font-semibold ${
+                  isBiometricLockActive
+                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                    : 'bg-slate-100 text-slate-500 border border-slate-200'
+                }`}
+              >
+                {isBiometricLockActive ? 'Enabled' : 'Off'}
+              </span>
+            </div>
+            <p className="text-xs text-slate-500">
+              Require device fingerprint, face unlock, or backup passcode before accessing app content.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsSecurityCollapsed((prev) => !prev);
+            }}
+            className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 shrink-0"
+          >
+            <span>{isSecurityCollapsed ? 'Expand' : 'Collapse'}</span>
+            <svg
+              className={`h-3.5 w-3.5 text-slate-500 transition-transform ${
+                isSecurityCollapsed ? '' : 'rotate-180'
+              }`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+        </div>
+
+        {!isSecurityCollapsed && (
+          <div className="space-y-4">
+            {/* Primary Biometric Toggle Row */}
+            <div className="flex items-center justify-between gap-4 rounded-xl border border-slate-200/80 bg-slate-50/70 p-3.5">
+              <div className="min-w-0 space-y-0.5">
+                <div className="text-sm font-semibold text-slate-900">
+                  Biometric App Lock
+                </div>
+                <p className="text-xs text-slate-500">
+                  {biometricSupport?.platformAvailable
+                    ? biometricSupport.isAndroid
+                      ? 'Android biometrics detected (Fingerprint / Face Unlock).'
+                      : 'Device biometric authenticator detected.'
+                    : biometricSupport?.isInIframe
+                    ? 'Install or open the PWA directly on your device for native biometrics, or set a backup passcode.'
+                    : 'Use native device biometrics where supported, or protect access with a backup passcode.'}
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={isBiometricLockActive}
+                disabled={isEnrollingBiometric || isSaving}
+                onClick={handleToggleBiometricLock}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none disabled:opacity-50 ${
+                  isBiometricLockActive ? '' : 'bg-slate-300'
+                }`}
+                style={
+                  isBiometricLockActive
+                    ? { backgroundColor: 'var(--app-accent)' }
+                    : undefined
+                }
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${
+                    isBiometricLockActive ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {biometricNotice && (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-xs font-medium text-emerald-800">
+                {biometricNotice}
+              </div>
+            )}
+
+            {biometricError && (
+              <div className="rounded-lg border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-medium text-rose-700">
+                {biometricError}
+              </div>
+            )}
+
+            {/* Lock On Resume Toggle */}
+            <div className="flex items-center justify-between gap-4 rounded-xl border border-slate-200/80 bg-white px-3.5 py-3">
+              <div className="min-w-0 space-y-0.5">
+                <div className="text-xs font-semibold text-slate-900">
+                  Lock when returning to app
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  Re-lock automatically after switching away from the PWA.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={biometricLockOnResume}
+                disabled={isSaving}
+                onClick={handleToggleLockOnResume}
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none ${
+                  biometricLockOnResume ? '' : 'bg-slate-300'
+                }`}
+                style={
+                  biometricLockOnResume
+                    ? { backgroundColor: 'var(--app-accent)' }
+                    : undefined
+                }
+              >
+                <span
+                  className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+                    biometricLockOnResume ? 'translate-x-4' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Credential Actions & Backup Passcode */}
+            <div className="flex flex-wrap items-center gap-2">
+              {biometricDevice.credentialId && (
+                <button
+                  type="button"
+                  disabled={isEnrollingBiometric}
+                  onClick={handleReEnrollBiometric}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  {isEnrollingBiometric ? 'Verifying...' : 'Re-verify Biometrics'}
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPinSetup((prev) => !prev);
+                  setBiometricError(null);
+                }}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              >
+                {biometricDevice.passcodeHash
+                  ? 'Change Backup Passcode'
+                  : 'Set Backup Passcode'}
+              </button>
+
+              {biometricDevice.passcodeHash && (
+                <button
+                  type="button"
+                  onClick={handleRemoveBackupPasscode}
+                  className="rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-xs font-medium text-rose-600 hover:bg-rose-50"
+                >
+                  Remove Passcode
+                </button>
+              )}
+
+              {isBiometricLockActive && onLockAppNow && (
+                <button
+                  type="button"
+                  onClick={onLockAppNow}
+                  className="ml-auto rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
+                >
+                  Lock App Now
+                </button>
+              )}
+            </div>
+
+            {showPinSetup && (
+              <form
+                onSubmit={handleSaveBackupPasscode}
+                className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-3"
+              >
+                <div className="text-xs font-semibold text-slate-900">
+                  Backup Passcode (4–6 digits)
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    maxLength={6}
+                    value={backupPinInput}
+                    onChange={(e) =>
+                      setBackupPinInput(e.target.value.replace(/\D/g, '').slice(0, 6))
+                    }
+                    placeholder="Enter 4–6 digit passcode"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 focus:border-slate-500 focus:outline-none"
+                  />
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    maxLength={6}
+                    value={backupPinConfirm}
+                    onChange={(e) =>
+                      setBackupPinConfirm(e.target.value.replace(/\D/g, '').slice(0, 6))
+                    }
+                    placeholder="Confirm passcode"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 focus:border-slate-500 focus:outline-none"
+                  />
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowPinSetup(false);
+                      setBackupPinInput('');
+                      setBackupPinConfirm('');
+                    }}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSavingPin || backupPinInput.length < 4}
+                    className="rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    {isSavingPin ? 'Saving...' : 'Save Passcode'}
+                  </button>
+                </div>
+              </form>
             )}
           </div>
         )}

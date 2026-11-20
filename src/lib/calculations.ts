@@ -629,6 +629,66 @@ export function computeSavingsBreakdown(
 }
 
 /**
+ * Computes Savings Vault shares for a specific income deduction item.
+ * If the deduction carries a frozen `savingsSplitSnapshot` recorded when the income
+ * was saved (or preserved prior to a vault percentage change), uses those locked
+ * historical vault percentages so subsequent Settings rate changes only affect new incomes.
+ */
+export function computeSavingsBreakdownForDeduction(
+  deduction: Pick<IncomeDeductionItem, 'savingsSplitSnapshot' | 'amount'> | undefined,
+  targetAmount: number,
+  accounts: FinancialAccount[] = DEFAULT_FINANCIAL_ACCOUNTS,
+  settings?: UserSettings
+): SavingsSplitShare[] {
+  const snapshot = deduction?.savingsSplitSnapshot;
+  if (!Array.isArray(snapshot) || snapshot.length === 0) {
+    return computeSavingsBreakdown(targetAmount, accounts, settings);
+  }
+
+  const total = Math.max(0, Math.round((Number(targetAmount) || 0) * 100) / 100);
+  const totalRateSum = snapshot.reduce(
+    (sum, s) => sum + (Number(s.percentage) || 0),
+    0
+  );
+  const lastActiveIdx = snapshot.reduce(
+    (lastIdx, s, idx) => (Number(s.percentage) > 0 ? idx : lastIdx),
+    snapshot.length - 1
+  );
+
+  let runningSum = 0;
+  return snapshot.map((s, index) => {
+    const pct = Math.max(0, Math.round((Number(s.percentage) || 0) * 100) / 100);
+    const matchedAcc =
+      accounts.find((a) => a.id === s.accountId) ||
+      accounts.find((a) => a.linkedSavingsBucketId === s.bucketId);
+
+    let shareAmount = 0;
+    if (total > 0 && pct > 0) {
+      if (Math.abs(totalRateSum - 100) < 0.01 && index === lastActiveIdx) {
+        shareAmount = Math.max(0, Math.round((total - runningSum) * 100) / 100);
+      } else {
+        shareAmount = Math.round(((total * pct) / 100) * 100) / 100;
+        runningSum = Math.round((runningSum + shareAmount) * 100) / 100;
+      }
+    }
+
+    const baseName =
+      getVaultCleanName(matchedAcc?.name || s.accountName || s.bucketName) ||
+      'Savings Vault';
+    const labelWithLockedPct = `${baseName} (${pct}%)`;
+
+    return {
+      bucketId: s.bucketId,
+      bucketName: labelWithLockedPct,
+      percentage: pct,
+      amount: shareAmount,
+      accountId: matchedAcc?.id || s.accountId,
+      accountName: labelWithLockedPct,
+    };
+  });
+}
+
+/**
  * Computes the monetary deduction amount for a single deduction rule against a gross income amount.
  */
 export function computeDeductionAmount(
@@ -644,13 +704,19 @@ export function computeDeductionAmount(
   return Math.round(((gross * cleanVal) / 100) * 100) / 100;
 }
 
-export const APP_VERSION = '4.9.0';
+export const APP_VERSION = '4.10.0';
 
 export const VERSION_RELEASE_LOG: {
   version: string;
   date: string;
   summary: string;
 }[] = [
+  {
+    version: '4.10.0',
+    date: '2026-11-20',
+    summary:
+      'Added backend-managed prospective savings vault rate updates (POST /api/settings/vault-rates/update) that preserve historical income splits while applying new percentages only to new income records, plus an opt-in Android/PWA Biometric App Lock screen toggled in Settings.',
+  },
   {
     version: '4.9.0',
     date: '2026-11-19',
@@ -2175,13 +2241,13 @@ export function getSavingsSplitTransfers(
     for (const d of deds) {
       if (!isSavingsDeduction(d)) continue;
       if (d.amount <= 0) continue;
-      const nativeShares = computeSavingsBreakdown(d.amount, accounts, settings);
+      const nativeShares = computeSavingsBreakdownForDeduction(d, d.amount, accounts, settings);
       const { convertedAmount: baseSavTotal, exchangeRate2dp: exchangeRate } = convertCurrency2dp(
         d.amount,
         incCurr,
         settings.currency
       );
-      const baseShares = computeSavingsBreakdown(baseSavTotal, accounts, settings);
+      const baseShares = computeSavingsBreakdownForDeduction(d, baseSavTotal, accounts, settings);
 
       for (let i = 0; i < nativeShares.length; i++) {
         const nativeShare = nativeShares[i];
@@ -2352,7 +2418,7 @@ export function calculateAllocation(
     }
 
     const savingsShares = isSav
-      ? computeSavingsBreakdown(dedAmount, DEFAULT_FINANCIAL_ACCOUNTS, settings)
+      ? computeSavingsBreakdownForDeduction(ded, dedAmount, DEFAULT_FINANCIAL_ACCOUNTS, settings)
       : undefined;
 
     customDeductionsList.push({
@@ -2421,11 +2487,29 @@ export function calculateAllocation(
       ? Math.round(((totalAllocatedDeductions / gross) * 100) * 10) / 10
       : 0;
 
-  const overallSavingsBreakdown = computeSavingsBreakdown(
-    totalSavingsDeductions,
-    DEFAULT_FINANCIAL_ACCOUNTS,
-    settings
-  );
+  const aggregatedSharesMap = new Map<string, SavingsSplitShare>();
+  for (const cDed of customDeductionsList) {
+    if (!cDed.isSavingsSplit || !cDed.savingsShares) continue;
+    for (const share of cDed.savingsShares) {
+      const prev = aggregatedSharesMap.get(share.bucketId);
+      if (prev) {
+        aggregatedSharesMap.set(share.bucketId, {
+          ...prev,
+          amount: Math.round((prev.amount + share.amount) * 100) / 100,
+        });
+      } else {
+        aggregatedSharesMap.set(share.bucketId, { ...share });
+      }
+    }
+  }
+  const overallSavingsBreakdown =
+    aggregatedSharesMap.size > 0
+      ? Array.from(aggregatedSharesMap.values())
+      : computeSavingsBreakdown(
+          totalSavingsDeductions,
+          DEFAULT_FINANCIAL_ACCOUNTS,
+          settings
+        );
   const savingsDistribution = overallSavingsBreakdown.map((share) => ({
     bucketId: share.bucketId,
     bucketName: share.bucketName,
@@ -3401,7 +3485,8 @@ export function calculateAccountSummaries(
       for (const d of deds) {
         incTotalDedsNative += Number(d.amount) || 0;
         if (isSavingsDeduction(d)) {
-          const shares = computeSavingsBreakdown(
+          const shares = computeSavingsBreakdownForDeduction(
+            d,
             d.amount,
             effectiveAccountsList,
             settings

@@ -13,7 +13,7 @@ import {
   formatPercent,
   getEffectiveIncomeDeductions,
   isSavingsDeduction,
-  computeSavingsBreakdown,
+  computeSavingsBreakdownForDeduction,
   getIncomeDeductionExpenses,
   getSavingsSplitTransfers,
   getEffectiveSavingsPillars,
@@ -406,7 +406,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           totalSavingsSplitRouted += amt;
           addCurrencyBucketAmount(savingsByCurrencyMap, nativeCurrency, nativeDedAmt);
 
-          const shares = computeSavingsBreakdown(amt, accounts, settings);
+          const shares = computeSavingsBreakdownForDeduction(d, amt, accounts, settings);
           for (const share of shares) {
             const prevPillar = pillarTotals.get(share.accountId) || {
               count: 0,

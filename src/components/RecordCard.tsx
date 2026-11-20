@@ -13,7 +13,7 @@ import {
   getSubcategoryBadgeStyle,
   getEffectiveIncomeDeductions,
   isSavingsDeduction,
-  computeSavingsBreakdown,
+  computeSavingsBreakdownForDeduction,
   getEffectiveNetTransferAccountId,
   resolveValidAccountId,
   getIncomeNativeGross,
@@ -873,7 +873,7 @@ export const IncomeDetailPopupModal: React.FC<IncomeDetailPopupModalProps> = ({
               {itemDeductions.map((ded) => {
                 const isSav = isSavingsDeduction(ded);
                 const savingsShares = isSav
-                  ? computeSavingsBreakdown(ded.amount, accounts, settings)
+                  ? computeSavingsBreakdownForDeduction(ded, ded.amount, accounts, settings)
                   : [];
                 const subLabel =
                   ded.expenseSubcategory || ded.expenseCategory || 'General';

@@ -17,6 +17,7 @@ import {
   isSavingsDeduction,
   getSavingsCutRateForDate,
   computeSavingsBreakdown,
+  computeSavingsBreakdownForDeduction,
   getEffectiveExpenseCategoryPreferences,
   resolveDeductionExpenseMapping,
   resolveIntuitiveSubcategoryColor,
@@ -3489,7 +3490,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                             {itemDeductions.map((ded) => {
                               const isSav = isSavingsDeduction(ded);
                               const savingsShares = isSav
-                                ? computeSavingsBreakdown(ded.amount, accounts, settings)
+                                ? computeSavingsBreakdownForDeduction(ded, ded.amount, accounts, settings)
                                 : [];
 
                               return (

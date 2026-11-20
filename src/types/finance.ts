@@ -25,6 +25,7 @@ export interface IncomeDeductionItem {
   isCustomRateOverride?: boolean; // True when user explicitly customized the rate on this income record
   expenseCategory?: string; // Matched Expense Category from user preferences
   expenseSubcategory?: string; // Matched Expense Subcategory from user preferences
+  savingsSplitSnapshot?: SavingsSplitShare[]; // Frozen vault split percentages & amounts locked for this income record
 }
 
 export interface CustomDeduction {
@@ -123,6 +124,8 @@ export interface UserSettings {
   askNetIncomeTransfer?: boolean; // Ask user after deduction of an income where net should be transferred
   defaultNetIncomeAccountId?: string; // Optional default destination account for net income after deductions
   autoDebitSavingsVaults?: boolean; // Automate vault debit from each respective savings vault based on past vault-debit expenses
+  biometricLockEnabled?: boolean; // Require Android/device biometric verification before accessing app content
+  biometricLockOnResume?: boolean; // Re-lock PWA when returning from background
   updatedAt: string;
 }
 
