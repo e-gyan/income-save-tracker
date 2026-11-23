@@ -77,6 +77,7 @@ interface FlexibleExpensesViewProps {
   budgets?: FinancialBudget[];
   currency: string;
   timeRange?: TimeRangePreset;
+  onResetTimeRange?: () => void;
   onAddExpenses: (
     items: Omit<FlexibleExpense, 'id' | 'createdAt' | 'userId'>[]
   ) => Promise<void>;
@@ -101,6 +102,7 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
   budgets = [],
   currency,
   timeRange = 'all',
+  onResetTimeRange,
   onAddExpenses,
   onDeleteExpense,
   onEditExpense,
@@ -162,6 +164,32 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
     createEmptyRow(todayStr, defaultAcc?.id || ''),
   ]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [batchFeedback, setBatchFeedback] = useState<{
+    type: 'error' | 'success';
+    message: string;
+    outsideRange?: boolean;
+  } | null>(null);
+
+  // Ensure every draft row always resolves to a valid account once accounts hydrate
+  useEffect(() => {
+    if (!defaultAcc?.id) return;
+    setRows((prev) => {
+      let changed = false;
+      const next = prev.map((r) => {
+        const hasValidAcc = Boolean(
+          r.accountId && accounts.some((a) => a.id === r.accountId)
+        );
+        if (hasValidAcc) return r;
+        changed = true;
+        return {
+          ...r,
+          accountId: defaultAcc.id,
+          currency: r.currency || getAccountCurrency(defaultAcc, currency),
+        };
+      });
+      return changed ? next : prev;
+    });
+  }, [accounts, defaultAcc?.id, currency]);
 
   // Filters, search & presentation mode
   const [searchTerm, setSearchTerm] = useState('');
@@ -340,19 +368,21 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
     () =>
       rows.filter((r) => {
         const amt = parseFloat(r.amount);
-        return !isNaN(amt) && amt > 0 && r.accountId;
+        const resolvedAccId = r.accountId || defaultAcc?.id || '';
+        return !isNaN(amt) && amt > 0 && Boolean(resolvedAccId);
       }),
-    [rows]
+    [rows, defaultAcc?.id]
   );
 
   const batchTotalAmount = useMemo(
     () =>
       validDraftRows.reduce((sum, r) => {
         const rawAmt = parseFloat(r.amount) || 0;
+        const resolvedAccId = r.accountId || defaultAcc?.id || '';
         const rowCurr =
           r.currency ||
           getAccountCurrency(
-            accounts.find((a) => a.id === r.accountId),
+            accounts.find((a) => a.id === resolvedAccId),
             currency
           );
         const { convertedAmount } = convertCurrency2dp(
@@ -363,23 +393,53 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
         );
         return sum + convertedAmount;
       }, 0),
-    [validDraftRows, accounts, currency, fxSnapshot]
+    [validDraftRows, accounts, defaultAcc?.id, currency, fxSnapshot]
   );
 
   const handleSubmitBatch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (validDraftRows.length === 0) return;
+    setBatchFeedback(null);
+
+    const incompleteRowNums: number[] = [];
+    rows.forEach((r, idx) => {
+      const amt = parseFloat(r.amount);
+      const hasAnyInput =
+        Boolean(r.amount.trim()) ||
+        Boolean(r.recipient.trim()) ||
+        Boolean(r.notes.trim()) ||
+        rows.length === 1;
+      if (hasAnyInput && (isNaN(amt) || amt <= 0)) {
+        incompleteRowNums.push(idx + 1);
+      }
+    });
+
+    if (incompleteRowNums.length > 0) {
+      setBatchFeedback({
+        type: 'error',
+        message: `Enter a valid amount for Expense #${incompleteRowNums.join(', #')} (or remove the row).`,
+      });
+      return;
+    }
+
+    if (validDraftRows.length === 0) {
+      setBatchFeedback({
+        type: 'error',
+        message: 'Enter an amount greater than 0 to record expenses.',
+      });
+      return;
+    }
 
     setIsSubmitting(true);
     try {
       const batchId = `batch_${Date.now()}`;
       const payloads: Omit<FlexibleExpense, 'id' | 'createdAt' | 'userId'>[] =
         validDraftRows.map((r) => {
+          const resolvedAccId = r.accountId || defaultAcc?.id || '';
           const rawAmt = roundTo2Decimals(parseFloat(r.amount));
           const rowCurr = (
             r.currency ||
             getAccountCurrency(
-              accounts.find((a) => a.id === r.accountId),
+              accounts.find((a) => a.id === resolvedAccId),
               currency
             )
           ).toUpperCase();
@@ -400,8 +460,8 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
 
           return {
             batchId,
-            date: r.date || batchDate,
-            accountId: r.accountId,
+            date: r.date || batchDate || todayStr,
+            accountId: resolvedAccId,
             recipient: toLabel || undefined,
             category: catLabel,
             subcategory: subLabel || catLabel,
@@ -416,7 +476,16 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
         });
 
       await onAddExpenses(payloads);
+      const anyOutsideRange = payloads.some((p) => !isDateInPreset(p.date, timeRange));
+      const count = payloads.length;
       setRows([createEmptyRow(batchDate, defaultAcc?.id || '')]);
+      setBatchFeedback({
+        type: 'success',
+        message: anyOutsideRange
+          ? `Recorded ${count} ${count === 1 ? 'expense' : 'expenses'}. Hidden by active date filter.`
+          : `Recorded ${count} ${count === 1 ? 'expense' : 'expenses'}.`,
+        outsideRange: anyOutsideRange,
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -901,7 +970,6 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
                         </label>
                         <input
                           type="date"
-                          required
                           value={row.date}
                           onChange={(e) =>
                             handleUpdateRow(row.rowId, { date: e.target.value })
@@ -1077,11 +1145,11 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
                             type="number"
                             min="0.01"
                             step="0.01"
-                            required
                             value={row.amount}
-                            onChange={(e) =>
-                              handleUpdateRow(row.rowId, { amount: e.target.value })
-                            }
+                            onChange={(e) => {
+                              setBatchFeedback(null);
+                              handleUpdateRow(row.rowId, { amount: e.target.value });
+                            }}
                             placeholder="0.00"
                             className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-xs font-semibold text-right text-slate-900 tabular-nums focus:outline-none"
                           />
@@ -1312,6 +1380,39 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
                 );
               })}
             </div>
+
+            {batchFeedback && (
+              <div
+                className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs ${
+                  batchFeedback.type === 'error'
+                    ? 'border-rose-200 bg-rose-50 text-rose-800'
+                    : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                }`}
+              >
+                <span className="font-medium">{batchFeedback.message}</span>
+                <div className="flex items-center gap-2 shrink-0">
+                  {batchFeedback.outsideRange && onResetTimeRange && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onResetTimeRange();
+                        setBatchFeedback(null);
+                      }}
+                      className="rounded border border-emerald-300 bg-white px-2 py-0.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100"
+                    >
+                      Show All Dates
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setBatchFeedback(null)}
+                    className="text-[11px] opacity-70 hover:opacity-100"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Instance Actions */}
             <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100">

@@ -704,13 +704,19 @@ export function computeDeductionAmount(
   return Math.round(((gross * cleanVal) / 100) * 100) / 100;
 }
 
-export const APP_VERSION = '4.10.0';
+export const APP_VERSION = '4.11.0';
 
 export const VERSION_RELEASE_LOG: {
   version: string;
   date: string;
   summary: string;
 }[] = [
+  {
+    version: '4.11.0',
+    date: '2026-11-23',
+    summary:
+      'Fixed multi-record expense and income batch saving with collision-proof IDs, awaited persistence, and date-filter feedback; enabled automated and manual debiting across all individual Savings Vaults; added Savings Vault Group Credit with exact committed principal tracking and optional earnings recording; removed the summary bar between Create Account and Operating Accounts.',
+  },
   {
     version: '4.10.0',
     date: '2026-11-20',

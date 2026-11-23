@@ -57,8 +57,17 @@ import {
   sortRecordsByArrivalTime,
   groupRecordsByPeriod,
   RecordGroupPeriod,
+  TimeRangePreset,
+  isDateInPreset,
 } from '../lib/dateFilters.ts';
 import { RecordCard } from './RecordCard.tsx';
+
+interface QueuedIncomeEntry {
+  queueId: string;
+  receipt: Omit<IncomeReceipt, 'id' | 'createdAt' | 'updatedAt' | 'userId'>;
+  vaultDebits: Omit<FlexibleExpense, 'id' | 'createdAt' | 'userId'>[];
+  accountName: string;
+}
 
 interface IncomeLogViewProps {
   incomes: IncomeReceipt[];
@@ -67,9 +76,14 @@ interface IncomeLogViewProps {
   settings: UserSettings;
   accounts: FinancialAccount[];
   currency: string;
+  timeRange?: TimeRangePreset;
+  onResetTimeRange?: () => void;
   onAddIncome: (
     receipt: Omit<IncomeReceipt, 'id' | 'createdAt' | 'updatedAt' | 'userId'>
   ) => Promise<IncomeReceipt | void>;
+  onAddIncomes?: (
+    receipts: Omit<IncomeReceipt, 'id' | 'createdAt' | 'updatedAt' | 'userId'>[]
+  ) => Promise<IncomeReceipt[] | void>;
   onUpdateIncome: (receipt: IncomeReceipt) => Promise<void>;
   onDeleteIncome: (id: string) => Promise<void>;
   onAddExpenses?: (
@@ -97,7 +111,10 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
   settings,
   accounts,
   currency,
+  timeRange = 'all',
+  onResetTimeRange,
   onAddIncome,
+  onAddIncomes,
   onUpdateIncome,
   onDeleteIncome,
   onAddExpenses,
@@ -896,121 +913,224 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
     }
   };
 
+  const [queuedIncomes, setQueuedIncomes] = useState<QueuedIncomeEntry[]>([]);
+  const [incomeFeedback, setIncomeFeedback] = useState<{
+    type: 'error' | 'success';
+    message: string;
+    outsideRange?: boolean;
+  } | null>(null);
+
+  const resolvedDraftSource = (
+    isAddingNewSource && newSourceDraft.trim() ? newSourceDraft : clientOrSource
+  ).trim();
+  const resolvedDraftOrigin = (
+    isAddingNewOrigin && newOriginDraft.trim() ? newOriginDraft : notes
+  ).trim();
+  const isCurrentDraftValid =
+    Boolean(resolvedDraftSource) && rawDraftInputGross > 0;
+
+  const resetCurrentIncomeDraft = () => {
+    setGrossAmount('');
+    setClientOrSource('');
+    setNotes('');
+    setIncomeCurrency(selectedAccountCurrency);
+    setIsAddingNewSource(false);
+    setNewSourceDraft('');
+    setIsAddingNewOrigin(false);
+    setNewOriginDraft('');
+    setIsNetTransferPromptOpen(false);
+    setExcludedAutoVaultIds([]);
+    setVaultDebitEdits({});
+    setEditingVaultPlanId(null);
+    setDedValueDrafts({});
+    setAutomateVaultDebit(Boolean(settings.autoDebitSavingsVaults));
+    setDraftNetTransferAccountId(settings.defaultNetIncomeAccountId || '');
+    setDraftDeductions(
+      buildDefaultDeductionsForIncome(
+        0,
+        settings,
+        expenses,
+        date,
+        selectedAccountCurrency,
+        fxSnapshot
+      )
+    );
+  };
+
+  const buildCurrentDraftBundle = (
+    chosenNetTargetAccId: string
+  ): QueuedIncomeEntry | null => {
+    if (!resolvedDraftSource || rawDraftInputGross <= 0) return null;
+
+    const validDeductions = computedDraftDeductions
+      .filter((d) => d.name.trim() !== '' && d.value > 0)
+      .map((d) => {
+        const isSav = isSavingsDeduction(d);
+        return {
+          ...d,
+          name: d.name.trim(),
+          value: Number(d.value) || 0,
+          amount: computeDeductionAmount(
+            rawDraftInputGross,
+            d.type,
+            Number(d.value) || 0
+          ),
+          isSavingsSplit: isSav,
+          destinationAccountId: undefined,
+        };
+      });
+
+    const totalDedRate =
+      rawDraftInputGross > 0
+        ? Math.min(
+            100,
+            Math.round(((draftTotalDeductions / rawDraftInputGross) * 100) * 10) /
+              10
+          )
+        : 0;
+
+    persistIncomeSourceOption(resolvedDraftSource);
+    if (resolvedDraftOrigin) {
+      persistIncomeOriginOption(resolvedDraftOrigin);
+    }
+
+    let cleanNetTargetId: string | undefined;
+    if (chosenNetTargetAccId === '__KEEP__') {
+      cleanNetTargetId = '__KEEP__';
+    } else if (
+      chosenNetTargetAccId &&
+      chosenNetTargetAccId !== effectiveSelectedAccountId
+    ) {
+      cleanNetTargetId = chosenNetTargetAccId;
+    } else if (
+      !chosenNetTargetAccId &&
+      settings.defaultNetIncomeAccountId &&
+      settings.defaultNetIncomeAccountId !== effectiveSelectedAccountId
+    ) {
+      cleanNetTargetId = '__KEEP__';
+    }
+
+    const receiptPayload: Omit<
+      IncomeReceipt,
+      'id' | 'createdAt' | 'updatedAt' | 'userId'
+    > = {
+      date,
+      quarter: getQuarterFromDate(date),
+      clientOrSource: resolvedDraftSource,
+      category: category.trim() || 'General',
+      accountId: effectiveSelectedAccountId,
+      netTransferredToAccountId: cleanNetTargetId,
+      currency: activeIncomeCurrency,
+      originalGrossAmount: rawDraftInputGross,
+      exchangeRate: draftConversion.exchangeRate2dp,
+      grossAmount: rawDraftInputGross,
+      savingsRate: totalDedRate,
+      receiptId: generateReceiptCode(),
+      notes: resolvedDraftOrigin,
+      allocatedDeductions: validDeductions,
+    };
+
+    const batchKey = `auto_vault_debit_${Date.now()}_${Math.random()
+      .toString(36)
+      .slice(2, 6)}`;
+    const vaultDebits: Omit<FlexibleExpense, 'id' | 'createdAt' | 'userId'>[] =
+      automateVaultDebit && selectedAutoVaultDebits.length > 0
+        ? selectedAutoVaultDebits.map((plan) =>
+            plannedVaultDebitToExpensePayload(plan, {
+              date,
+              batchId: batchKey,
+              incomeSource: resolvedDraftSource,
+            })
+          )
+        : [];
+
+    return {
+      queueId: `qinc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      receipt: receiptPayload,
+      vaultDebits,
+      accountName: selectedAccountObj?.name || 'Account',
+    };
+  };
+
+  const handleQueueCurrentIncome = () => {
+    setIncomeFeedback(null);
+    if (!resolvedDraftSource) {
+      setIncomeFeedback({
+        type: 'error',
+        message: 'Select or enter an Income Source before adding to batch.',
+      });
+      return;
+    }
+    if (rawDraftInputGross <= 0) {
+      setIncomeFeedback({
+        type: 'error',
+        message: 'Enter a Total Income amount greater than 0.',
+      });
+      return;
+    }
+    const bundle = buildCurrentDraftBundle(draftNetTransferAccountId);
+    if (!bundle) return;
+    setQueuedIncomes((prev) => [...prev, bundle]);
+    resetCurrentIncomeDraft();
+  };
+
   const executeSaveIncomeRecord = async (chosenNetTargetAccId: string) => {
-    if (!clientOrSource.trim() || rawDraftInputGross <= 0) return;
+    setIncomeFeedback(null);
+    const currentBundle = isCurrentDraftValid
+      ? buildCurrentDraftBundle(chosenNetTargetAccId)
+      : null;
+
+    const allBundles: QueuedIncomeEntry[] = [
+      ...queuedIncomes,
+      ...(currentBundle ? [currentBundle] : []),
+    ];
+
+    if (allBundles.length === 0) {
+      setIncomeFeedback({
+        type: 'error',
+        message: 'Select an Income Source and enter an amount greater than 0.',
+      });
+      return;
+    }
 
     setIsSubmitting(true);
     try {
-      const validDeductions = computedDraftDeductions
-        .filter((d) => d.name.trim() !== '' && d.value > 0)
-        .map((d) => {
-          const isSav = isSavingsDeduction(d);
-          return {
-            ...d,
-            name: d.name.trim(),
-            value: Number(d.value) || 0,
-            amount: computeDeductionAmount(
-              rawDraftInputGross,
-              d.type,
-              Number(d.value) || 0
-            ),
-            isSavingsSplit: isSav,
-            destinationAccountId: undefined,
-          };
-        });
+      const receiptsToSave = allBundles.map((b) => b.receipt);
+      const debitsToSave = allBundles.flatMap((b) => b.vaultDebits);
 
-      const totalDedRate =
-        rawDraftInputGross > 0
-          ? Math.min(
-              100,
-              Math.round(
-                ((draftTotalDeductions / rawDraftInputGross) * 100) * 10
-              ) / 10
-            )
-          : 0;
-
-      persistIncomeSourceOption(clientOrSource);
-      if (notes.trim()) {
-        persistIncomeOriginOption(notes);
+      if (receiptsToSave.length > 1 && onAddIncomes) {
+        await onAddIncomes(receiptsToSave);
+      } else if (receiptsToSave.length === 1) {
+        await onAddIncome(receiptsToSave[0]);
+      } else {
+        for (const r of receiptsToSave) {
+          await onAddIncome(r);
+        }
       }
 
-      let cleanNetTargetId: string | undefined;
-      if (chosenNetTargetAccId === '__KEEP__') {
-        cleanNetTargetId = '__KEEP__';
-      } else if (
-        chosenNetTargetAccId &&
-        chosenNetTargetAccId !== effectiveSelectedAccountId
-      ) {
-        cleanNetTargetId = chosenNetTargetAccId;
-      } else if (
-        !chosenNetTargetAccId &&
-        settings.defaultNetIncomeAccountId &&
-        settings.defaultNetIncomeAccountId !== effectiveSelectedAccountId
-      ) {
-        cleanNetTargetId = '__KEEP__';
+      if (debitsToSave.length > 0 && onAddExpenses) {
+        await onAddExpenses(debitsToSave);
       }
 
-      // Save the income directly in the account's currency without conversion
-      const createdReceipt = await onAddIncome({
-        date,
-        quarter: getQuarterFromDate(date),
-        clientOrSource: clientOrSource.trim(),
-        category: category.trim() || 'General',
-        accountId: effectiveSelectedAccountId,
-        netTransferredToAccountId: cleanNetTargetId,
-        currency: activeIncomeCurrency,
-        originalGrossAmount: rawDraftInputGross,
-        exchangeRate: draftConversion.exchangeRate2dp,
-        grossAmount: rawDraftInputGross,
-        savingsRate: totalDedRate,
-        receiptId: generateReceiptCode(),
-        notes: notes.trim(),
-        allocatedDeductions: validDeductions,
-      });
-
-      if (
-        automateVaultDebit &&
-        selectedAutoVaultDebits.length > 0 &&
-        onAddExpenses
-      ) {
-        const batchKey = `auto_vault_debit_${
-          (createdReceipt && createdReceipt.id) || Date.now()
-        }`;
-        const autoDebitPayloads = selectedAutoVaultDebits.map((plan) =>
-          plannedVaultDebitToExpensePayload(plan, {
-            date,
-            batchId: batchKey,
-            incomeSource: clientOrSource.trim(),
-          })
-        );
-        await onAddExpenses(autoDebitPayloads);
-      }
-
-      setGrossAmount('');
-      setClientOrSource('');
-      setNotes('');
-      setIncomeCurrency(selectedAccountCurrency);
-      setIsAddingNewSource(false);
-      setNewSourceDraft('');
-      setIsAddingNewOrigin(false);
-      setNewOriginDraft('');
-      setIsNetTransferPromptOpen(false);
-      setExcludedAutoVaultIds([]);
-      setVaultDebitEdits({});
-      setEditingVaultPlanId(null);
-      setDedValueDrafts({});
-      setAutomateVaultDebit(Boolean(settings.autoDebitSavingsVaults));
-      setDraftNetTransferAccountId(settings.defaultNetIncomeAccountId || '');
-      setDraftDeductions(
-        buildDefaultDeductionsForIncome(
-          0,
-          settings,
-          expenses,
-          date,
-          selectedAccountCurrency,
-          fxSnapshot
-        )
+      const anyOutsideRange = receiptsToSave.some(
+        (r) => !isDateInPreset(r.date, timeRange)
       );
+      const count = receiptsToSave.length;
+      const debitCount = debitsToSave.length;
+
+      setQueuedIncomes([]);
+      resetCurrentIncomeDraft();
+      setIncomeFeedback({
+        type: 'success',
+        message: anyOutsideRange
+          ? `Saved ${count} ${count === 1 ? 'income' : 'incomes'}${
+              debitCount > 0 ? ` and ${debitCount} vault debits` : ''
+            }. Hidden by active date filter.`
+          : `Saved ${count} ${count === 1 ? 'income' : 'incomes'}${
+              debitCount > 0 ? ` and ${debitCount} vault debits` : ''
+            }.`,
+        outsideRange: anyOutsideRange,
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -1018,9 +1138,24 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
 
   const handleRecordIncome = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!clientOrSource.trim() || rawDraftInputGross <= 0) return;
+    setIncomeFeedback(null);
 
-    if (settings.askNetIncomeTransfer !== false && draftNetRetained > 0) {
+    if (queuedIncomes.length === 0 && !isCurrentDraftValid) {
+      setIncomeFeedback({
+        type: 'error',
+        message: !resolvedDraftSource
+          ? 'Select or enter an Income Source.'
+          : 'Enter a Total Income amount greater than 0.',
+      });
+      return;
+    }
+
+    if (
+      queuedIncomes.length === 0 &&
+      isCurrentDraftValid &&
+      settings.askNetIncomeTransfer !== false &&
+      draftNetRetained > 0
+    ) {
       setIsNetTransferPromptOpen(true);
       return;
     }
@@ -1984,9 +2119,11 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                       type="number"
                       step="0.01"
                       min="0.01"
-                      required
                       value={grossAmount}
-                      onChange={(e) => setGrossAmount(e.target.value)}
+                      onChange={(e) => {
+                        setIncomeFeedback(null);
+                        setGrossAmount(e.target.value);
+                      }}
                       placeholder="0.00"
                       className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 tabular-nums placeholder:text-slate-400 focus:border-slate-900 focus:outline-none"
                     />
@@ -2495,26 +2632,45 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                 {/* 5b. Automated Savings Vault Debit Checkbox */}
                 {draftSavingsTotal > 0 && (
                   <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-2">
-                    <label className="flex items-start gap-2.5 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={automateVaultDebit}
-                        onChange={(e) => setAutomateVaultDebit(e.target.checked)}
-                        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 shrink-0"
-                      />
-                      <div className="min-w-0">
-                        <div className="text-xs font-semibold text-slate-900">
-                          Automate vault debit from respective savings vaults
+                    <div className="flex items-start justify-between gap-2">
+                      <label className="flex items-start gap-2.5 cursor-pointer select-none flex-1 min-w-0">
+                        <input
+                          type="checkbox"
+                          checked={automateVaultDebit}
+                          onChange={(e) => setAutomateVaultDebit(e.target.checked)}
+                          className="mt-0.5 h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 shrink-0"
+                        />
+                        <div className="min-w-0">
+                          <div className="text-xs font-semibold text-slate-900">
+                            Automate vault debit from respective savings vaults
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            {effectivePlannedVaultDebits.length > 0
+                              ? `${selectedAutoVaultDebits.length} of ${effectivePlannedVaultDebits.length} active savings vaults selected.`
+                              : 'No funded savings vaults available.'}
+                          </div>
                         </div>
-                        <div className="text-[11px] text-slate-500">
-                          {plannedVaultDebits.length > 0
-                            ? `Matches ${plannedVaultDebits.length} vault${
-                                plannedVaultDebits.length === 1 ? '' : 's'
-                              } with previous vault debit expenses.`
-                            : 'No past savings vault debit expenses found yet.'}
-                        </div>
-                      </div>
-                    </label>
+                      </label>
+                      {automateVaultDebit && effectivePlannedVaultDebits.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (selectedAutoVaultDebits.length === effectivePlannedVaultDebits.length) {
+                              setExcludedAutoVaultIds(
+                                effectivePlannedVaultDebits.map((p) => p.vaultAccountId)
+                              );
+                            } else {
+                              setExcludedAutoVaultIds([]);
+                            }
+                          }}
+                          className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-100 shrink-0"
+                        >
+                          {selectedAutoVaultDebits.length === effectivePlannedVaultDebits.length
+                            ? 'Clear All'
+                            : 'Select All'}
+                        </button>
+                      )}
+                    </div>
 
                     {automateVaultDebit && effectivePlannedVaultDebits.length > 0 && (
                       <div className="space-y-1.5 border-t border-slate-200/80 pt-2">
@@ -2801,13 +2957,122 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                   </div>
                 </div>
 
-              <button
-                type="submit"
-                disabled={isSubmitting || !clientOrSource.trim() || numericDraftGross <= 0}
-                className="w-full rounded-lg bg-slate-900 py-2.5 px-4 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"
-              >
-                {isSubmitting ? 'Saving...' : 'Save Income'}
-              </button>
+              {/* Multi-Income Batch Queue */}
+              {queuedIncomes.length > 0 && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-slate-900">
+                      Batch Queue ({queuedIncomes.length})
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setQueuedIncomes([])}
+                      className="text-[11px] font-medium text-slate-500 hover:text-slate-900"
+                    >
+                      Clear Queue
+                    </button>
+                  </div>
+                  <div className="space-y-1.5">
+                    {queuedIncomes.map((item, idx) => (
+                      <div
+                        key={item.queueId}
+                        className="flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
+                      >
+                        <div className="min-w-0">
+                          <div className="font-semibold text-slate-900 truncate">
+                            {idx + 1}. {item.receipt.clientOrSource}
+                          </div>
+                          <div className="text-[10px] text-slate-500 truncate">
+                            {item.receipt.date} · {item.accountName}
+                            {item.vaultDebits.length > 0
+                              ? ` · ${item.vaultDebits.length} vault debits`
+                              : ''}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="font-mono font-semibold text-emerald-700 tabular-nums">
+                            +{formatAmount(
+                              item.receipt.grossAmount,
+                              item.receipt.currency || currency
+                            )}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setQueuedIncomes((prev) =>
+                                prev.filter((q) => q.queueId !== item.queueId)
+                              )
+                            }
+                            className="text-[11px] text-slate-400 hover:text-rose-600"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {incomeFeedback && (
+                <div
+                  className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs ${
+                    incomeFeedback.type === 'error'
+                      ? 'border-rose-200 bg-rose-50 text-rose-800'
+                      : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                  }`}
+                >
+                  <span className="font-medium">{incomeFeedback.message}</span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {incomeFeedback.outsideRange && onResetTimeRange && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onResetTimeRange();
+                          setIncomeFeedback(null);
+                        }}
+                        className="rounded border border-emerald-300 bg-white px-2 py-0.5 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100"
+                      >
+                        Show All Dates
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setIncomeFeedback(null)}
+                      className="text-[11px] opacity-70 hover:opacity-100"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isSubmitting || !isCurrentDraftValid}
+                  onClick={handleQueueCurrentIncome}
+                  className="rounded-lg border border-slate-200 bg-white py-2.5 px-3.5 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-40 transition-colors shrink-0"
+                >
+                  + Add Another Income
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    isSubmitting ||
+                    (queuedIncomes.length === 0 && !isCurrentDraftValid)
+                  }
+                  className="flex-1 rounded-lg bg-slate-900 py-2.5 px-4 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"
+                >
+                  {isSubmitting
+                    ? 'Saving...'
+                    : queuedIncomes.length > 0
+                    ? `Save ${
+                        queuedIncomes.length + (isCurrentDraftValid ? 1 : 0)
+                      } Incomes`
+                    : 'Save Income'}
+                </button>
+              </div>
             </form>
           )}
         </div>

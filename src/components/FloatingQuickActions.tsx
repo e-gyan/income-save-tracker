@@ -274,11 +274,6 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
 
         for (const share of selectedTransferShares) {
           const edit = transferDebitEdits[share.vaultAccountId];
-          const hasDebitPlan = Boolean(share.debitPlan || edit?.enabledCustom);
-          if (!hasDebitPlan) {
-            finalExcludedDebitIds.add(share.vaultAccountId);
-            continue;
-          }
           if (edit) {
             const parsedEditAmt =
               edit.amountStr !== undefined ? parseFloat(edit.amountStr) : undefined;
@@ -341,7 +336,6 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
               if (finalExcludedDebitIds.has(share.vaultAccountId)) continue;
               const edit = transferDebitEdits[share.vaultAccountId];
               const basePlan = share.debitPlan;
-              if (!basePlan && !edit?.enabledCustom) continue;
 
               const rec =
                 edit?.recipient !== undefined
@@ -994,6 +988,14 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
     setExpAccountId(learnedExpVaultDebit.vaultAccountId);
     setExpCurrency(learnedExpVaultDebit.vaultCurrency);
   }, [learnedExpVaultDebit, activeModal, expManualAccountOverride]);
+
+  // Keep expAccountId synced to a valid account when accounts hydrate
+  useEffect(() => {
+    if (!defaultOperatingId) return;
+    if (!expAccountId || !accounts.some((a) => a.id === expAccountId)) {
+      setExpAccountId(defaultOperatingId);
+    }
+  }, [accounts, defaultOperatingId, expAccountId]);
 
   const handleOpenExpenseModal = () => {
     setIsMenuOpen(false);
@@ -2236,28 +2238,53 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
 
               {quickSavingsTotal > 0 && (
                 <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 space-y-2">
-                  <label className="flex items-start gap-2.5 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={quickAutomateVaultDebit}
-                      onChange={(e) =>
-                        setQuickAutomateVaultDebit(e.target.checked)
-                      }
-                      className="mt-0.5 h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 shrink-0"
-                    />
-                    <div className="min-w-0">
-                      <div className="text-xs font-semibold text-slate-900">
-                        Automate vault debit from respective savings vaults
+                  <div className="flex items-start justify-between gap-2">
+                    <label className="flex items-start gap-2.5 cursor-pointer select-none flex-1 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={quickAutomateVaultDebit}
+                        onChange={(e) =>
+                          setQuickAutomateVaultDebit(e.target.checked)
+                        }
+                        className="mt-0.5 h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 shrink-0"
+                      />
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-slate-900">
+                          Automate vault debit from respective savings vaults
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {effectiveQuickPlannedVaultDebits.length > 0
+                            ? `${selectedQuickAutoVaultDebits.length} of ${effectiveQuickPlannedVaultDebits.length} active savings vaults selected.`
+                            : 'No funded savings vaults available.'}
+                        </div>
                       </div>
-                      <div className="text-[11px] text-slate-500">
-                        {quickPlannedVaultDebits.length > 0
-                          ? `Matches ${quickPlannedVaultDebits.length} vault${
-                              quickPlannedVaultDebits.length === 1 ? '' : 's'
-                            } with previous vault debit expenses.`
-                          : 'No past savings vault debit expenses found yet.'}
-                      </div>
-                    </div>
-                  </label>
+                    </label>
+                    {quickAutomateVaultDebit && effectiveQuickPlannedVaultDebits.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (
+                            selectedQuickAutoVaultDebits.length ===
+                            effectiveQuickPlannedVaultDebits.length
+                          ) {
+                            setExcludedQuickAutoVaultIds(
+                              effectiveQuickPlannedVaultDebits.map(
+                                (p) => p.vaultAccountId
+                              )
+                            );
+                          } else {
+                            setExcludedQuickAutoVaultIds([]);
+                          }
+                        }}
+                        className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-100 shrink-0"
+                      >
+                        {selectedQuickAutoVaultDebits.length ===
+                        effectiveQuickPlannedVaultDebits.length
+                          ? 'Clear All'
+                          : 'Select All'}
+                      </button>
+                    )}
+                  </div>
 
                   {quickAutomateVaultDebit &&
                     effectiveQuickPlannedVaultDebits.length > 0 && (

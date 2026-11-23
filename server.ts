@@ -2549,85 +2549,86 @@ app.post('/api/transfers/automate-savings-vaults', (req: Request, res: Response)
             ? debitOverrides[pillar.accountId]
             : undefined;
 
-        if (vaultHistory.length > 0 || override) {
-          // Weight frequency & recency for past vault debits
-          const groups = new Map<string, { sample: any; score: number; count: number }>();
-          vaultHistory.forEach((exp: any, idx: number) => {
-            const rec = String(exp.recipient || exp.description || '').trim();
-            const cat = String(exp.category || 'Savings Allocation').trim();
-            const sub = String(exp.subcategory || '').trim();
-            const sig = `${rec.toLowerCase()}||${cat.toLowerCase()}||${sub.toLowerCase()}`;
-            const recencyBoost = Math.max(1, vaultHistory.length - idx);
-            const prev = groups.get(sig);
-            if (prev) {
-              prev.count += 1;
-              prev.score += 10 + recencyBoost;
-            } else {
-              groups.set(sig, { sample: exp, score: 10 + recencyBoost, count: 1 });
-            }
-          });
-          const best = Array.from(groups.values()).sort((a, b) => b.score - a.score)[0];
-          const sample = best?.sample || {};
+        const cleanPillarName = String(pillar.name || 'Savings Vault')
+          .replace(/\s*\(\d+(?:\.\d+)?%\)\s*$/, '')
+          .trim() || pillar.name;
 
-          const resolvedRecipient =
-            override?.recipient !== undefined
-              ? String(override.recipient).trim()
-              : String(
-                  sample.recipient ||
-                    sample.description ||
-                    sample.subcategory ||
-                    pillar.name
-                ).trim();
-          const resolvedCategory =
-            override?.category !== undefined
-              ? String(override.category).trim() || 'Savings Allocation'
-              : String(sample.category || 'Savings Allocation').trim();
-          const resolvedSub =
-            override?.subcategory !== undefined
-              ? String(override.subcategory).trim() || undefined
-              : String(sample.subcategory || '').trim() || undefined;
-          const resolvedNotes =
-            override?.notes !== undefined
-              ? String(override.notes).trim()
-              : String(sample.notes || '').trim();
-
-          const debitVaultAmt =
-            override?.debitAmountInVaultCurr !== undefined
-              ? round2dp(Math.max(0, Number(override.debitAmountInVaultCurr) || 0))
-              : toVault.convertedAmount;
-
-          if (debitVaultAmt > 0) {
-            const debitToBase =
-              vaultCurr === upperBase
-                ? { convertedAmount: debitVaultAmt, exchangeRate2dp: 1.0 }
-                : convertServer2dp(
-                    debitVaultAmt,
-                    vaultCurr,
-                    upperBase,
-                    activeRates,
-                    upperBase
-                  );
-
-            const autoTag = `Auto-debited from ${pillar.name} (Manual transfer ${pillar.percentage}%)`;
-            vaultDebits.push({
-              date: normalizedDate,
-              batchId: transferBatchId,
-              accountId: pillar.accountId,
-              vaultAction: 'debit',
-              recipient: resolvedRecipient || pillar.name,
-              category: resolvedCategory,
-              subcategory: resolvedSub,
-              subcategoryColor: sample.subcategoryColor || undefined,
-              description:
-                resolvedSub || resolvedRecipient || resolvedCategory,
-              notes: resolvedNotes ? `${resolvedNotes} · ${autoTag}` : autoTag,
-              currency: vaultCurr,
-              originalAmount: debitVaultAmt,
-              exchangeRate: debitToBase.exchangeRate2dp,
-              amount: debitToBase.convertedAmount,
-              pastMatchCount: vaultHistory.length,
-            });
+        // Weight frequency & recency for past vault debits when history exists
+        const groups = new Map<string, { sample: any; score: number; count: number }>();
+        vaultHistory.forEach((exp: any, idx: number) => {
+          const rec = String(exp.recipient || exp.description || '').trim();
+          const cat = String(exp.category || 'Savings Allocation').trim();
+          const sub = String(exp.subcategory || '').trim();
+          const sig = `${rec.toLowerCase()}||${cat.toLowerCase()}||${sub.toLowerCase()}`;
+          const recencyBoost = Math.max(1, vaultHistory.length - idx);
+          const prev = groups.get(sig);
+          if (prev) {
+            prev.count += 1;
+            prev.score += 10 + recencyBoost;
+          } else {
+            groups.set(sig, { sample: exp, score: 10 + recencyBoost, count: 1 });
           }
+        });
+        const best = Array.from(groups.values()).sort((a, b) => b.score - a.score)[0];
+        const sample = best?.sample || {};
+
+        const resolvedRecipient =
+          override?.recipient !== undefined
+            ? String(override.recipient).trim()
+            : String(
+                sample.recipient ||
+                  sample.description ||
+                  sample.subcategory ||
+                  cleanPillarName
+              ).trim();
+        const resolvedCategory =
+          override?.category !== undefined
+            ? String(override.category).trim() || 'Savings Allocation'
+            : String(sample.category || 'Savings Allocation').trim();
+        const resolvedSub =
+          override?.subcategory !== undefined
+            ? String(override.subcategory).trim() || undefined
+            : String(sample.subcategory || '').trim() || undefined;
+        const resolvedNotes =
+          override?.notes !== undefined
+            ? String(override.notes).trim()
+            : String(sample.notes || '').trim();
+
+        const debitVaultAmt =
+          override?.debitAmountInVaultCurr !== undefined
+            ? round2dp(Math.max(0, Number(override.debitAmountInVaultCurr) || 0))
+            : toVault.convertedAmount;
+
+        if (debitVaultAmt > 0) {
+          const debitToBase =
+            vaultCurr === upperBase
+              ? { convertedAmount: debitVaultAmt, exchangeRate2dp: 1.0 }
+              : convertServer2dp(
+                  debitVaultAmt,
+                  vaultCurr,
+                  upperBase,
+                  activeRates,
+                  upperBase
+                );
+
+          const autoTag = `Auto-debited from ${pillar.name} (Manual transfer ${pillar.percentage}%)`;
+          vaultDebits.push({
+            date: normalizedDate,
+            batchId: transferBatchId,
+            accountId: pillar.accountId,
+            vaultAction: 'debit',
+            recipient: resolvedRecipient || cleanPillarName,
+            category: resolvedCategory,
+            subcategory: resolvedSub,
+            subcategoryColor: sample.subcategoryColor || undefined,
+            description:
+              resolvedSub || resolvedRecipient || resolvedCategory,
+            notes: resolvedNotes ? `${resolvedNotes} · ${autoTag}` : autoTag,
+            currency: vaultCurr,
+            originalAmount: debitVaultAmt,
+            exchangeRate: debitToBase.exchangeRate2dp,
+            amount: debitToBase.convertedAmount,
+          });
         }
       }
     });

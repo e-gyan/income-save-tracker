@@ -909,9 +909,11 @@ export default function App() {
     }
   };
 
-  const handleAddIncome = async (
-    receiptData: Omit<IncomeReceipt, 'id' | 'createdAt' | 'updatedAt' | 'userId'>
-  ): Promise<IncomeReceipt> => {
+  const buildStampedIncomeReceipt = (
+    receiptData: Omit<IncomeReceipt, 'id' | 'createdAt' | 'updatedAt' | 'userId'>,
+    nowMs: number,
+    idx = 0
+  ): IncomeReceipt => {
     // Stamp active savings vault split percentages onto each savings deduction so
     // future vault percentage changes in Settings never rewrite this income record.
     const stampedDeductions = Array.isArray(receiptData.allocatedDeductions)
@@ -934,30 +936,77 @@ export default function App() {
         })
       : receiptData.allocatedDeductions;
 
-    const newReceipt: IncomeReceipt = {
+    const randSuffix = Math.random().toString(36).slice(2, 7);
+    const stampIso = new Date(nowMs + idx).toISOString();
+
+    return {
       ...receiptData,
       allocatedDeductions: stampedDeductions,
-      id: `inc_${Date.now()}`,
+      id: `inc_${nowMs}_${idx}_${randSuffix}`,
       userId: effectiveUserId,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: stampIso,
+      updatedAt: stampIso,
     };
+  };
 
-    const nextIncomes = [newReceipt, ...incomes];
-    setIncomes(nextIncomes);
-    setLocalData('incomes', nextIncomes, effectiveUserId);
+  const handleAddIncome = async (
+    receiptData: Omit<IncomeReceipt, 'id' | 'createdAt' | 'updatedAt' | 'userId'>
+  ): Promise<IncomeReceipt> => {
+    const newReceipt = buildStampedIncomeReceipt(receiptData, Date.now(), 0);
 
-    (async () => {
+    let persistedIncomes: IncomeReceipt[] = [];
+    setIncomes((prev) => {
+      const next = [newReceipt, ...prev];
+      persistedIncomes = next;
+      setLocalData('incomes', next, effectiveUserId);
+      return next;
+    });
+
+    if (currentUser) {
       try {
-        if (currentUser) {
-          await saveIncomeReceipt(currentUser.uid, newReceipt);
-        }
+        await saveIncomeReceipt(currentUser.uid, newReceipt);
+        syncAuthenticatedCloudSnapshotToBackend(currentUser.uid, {
+          incomes: persistedIncomes,
+        });
       } catch (err) {
-        console.error('Background income save error:', err);
+        console.error('Income save error:', err);
       }
-    })();
+    }
 
     return newReceipt;
+  };
+
+  const handleAddIncomes = async (
+    receiptsData: Omit<IncomeReceipt, 'id' | 'createdAt' | 'updatedAt' | 'userId'>[]
+  ): Promise<IncomeReceipt[]> => {
+    if (receiptsData.length === 0) return [];
+    const nowMs = Date.now();
+    const newReceipts: IncomeReceipt[] = receiptsData.map((r, idx) =>
+      buildStampedIncomeReceipt(r, nowMs, idx)
+    );
+
+    let persistedIncomes: IncomeReceipt[] = [];
+    setIncomes((prev) => {
+      const next = [...newReceipts, ...prev];
+      persistedIncomes = next;
+      setLocalData('incomes', next, effectiveUserId);
+      return next;
+    });
+
+    if (currentUser) {
+      try {
+        await Promise.all(
+          newReceipts.map((rec) => saveIncomeReceipt(currentUser.uid, rec))
+        );
+        syncAuthenticatedCloudSnapshotToBackend(currentUser.uid, {
+          incomes: persistedIncomes,
+        });
+      } catch (err) {
+        console.error('Batch income save error:', err);
+      }
+    }
+
+    return newReceipts;
   };
 
   const handleUpdateIncome = async (updatedReceipt: IncomeReceipt) => {
@@ -1054,11 +1103,12 @@ export default function App() {
         selectedAcc && isSavingsVaultAccount(selectedAcc, settings)
       );
 
-      // Automate debit from Savings Vault as expenses come in by learning from past vault-debit expenses
+      // Preserve the user's explicit account selection; only auto-route to a learned
+      // Savings Vault when no valid account was selected on the payload.
       let resolvedAccountId = item.accountId;
       let resolvedVaultAction = item.vaultAction;
 
-      if (!alreadyVault && item.vaultAction !== 'credit') {
+      if (!selectedAcc && item.vaultAction !== 'credit') {
         const learnedVault = learnSavingsVaultDebitAccount({
           recipient: item.recipient,
           description: item.description || item.notes,
@@ -1087,9 +1137,11 @@ export default function App() {
             )
           : undefined);
 
+      const randSuffix = Math.random().toString(36).slice(2, 7);
+
       return {
         ...item,
-        id: `exp_${nowMs}_${index}`,
+        id: `exp_${nowMs}_${index}_${randSuffix}`,
         userId: effectiveUserId,
         accountId: resolvedAccountId,
         vaultAction: resolvedVaultAction,
@@ -1098,21 +1150,26 @@ export default function App() {
       };
     });
 
-    const nextExpenses = [...newRecords, ...expenses];
-    setExpenses(nextExpenses);
-    setLocalData('expenses', nextExpenses, effectiveUserId);
+    let persistedExpenses: FlexibleExpense[] = [];
+    setExpenses((prev) => {
+      const next = [...newRecords, ...prev];
+      persistedExpenses = next;
+      setLocalData('expenses', next, effectiveUserId);
+      return next;
+    });
 
-    (async () => {
+    if (currentUser) {
       try {
-        if (currentUser) {
-          for (const rec of newRecords) {
-            await saveFlexibleExpense(currentUser.uid, rec);
-          }
-        }
+        await Promise.all(
+          newRecords.map((rec) => saveFlexibleExpense(currentUser.uid, rec))
+        );
+        syncAuthenticatedCloudSnapshotToBackend(currentUser.uid, {
+          expenses: persistedExpenses,
+        });
       } catch (err) {
         console.error('Expense save error:', err);
       }
-    })();
+    }
   };
 
   const handleUpdateExpense = async (updatedExpense: FlexibleExpense) => {
@@ -2532,7 +2589,10 @@ export default function App() {
                 settings={settings}
                 accounts={filteredAccounts}
                 currency={settings.currency}
+                timeRange={timeRange}
+                onResetTimeRange={() => setTimeRange('all')}
                 onAddIncome={handleAddIncome}
+                onAddIncomes={handleAddIncomes}
                 onUpdateIncome={handleUpdateIncome}
                 onDeleteIncome={handleDeleteIncome}
                 onAddExpenses={handleAddExpenses}
@@ -2554,6 +2614,7 @@ export default function App() {
                 budgets={budgets}
                 currency={settings.currency}
                 timeRange={timeRange}
+                onResetTimeRange={() => setTimeRange('all')}
                 onAddExpenses={handleAddExpenses}
                 onUpdateExpense={handleUpdateExpense}
                 onDeleteExpense={handleDeleteExpense}

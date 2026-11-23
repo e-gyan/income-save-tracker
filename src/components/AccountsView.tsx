@@ -24,8 +24,6 @@ import {
   getEffectiveNetTransferAccountId,
   resolveValidAccountId,
   getIncomeNativeGross,
-  formatTotalByCurrencyMode,
-  getSecondaryCurrencyModeCaption,
   formatAccountCardBalanceByMode,
   resolveIntuitiveSubcategoryColor,
   DEFAULT_ACCOUNT_TYPES,
@@ -231,7 +229,9 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
   const [creditVaultAccount, setCreditVaultAccount] =
     useState<FinancialAccount | null>(null);
   const [vaultModalMode, setVaultModalMode] = useState<'debit' | 'credit'>('debit');
+  const [creditScopeMode, setCreditScopeMode] = useState<'single' | 'group'>('single');
   const [selectedDebitInstanceId, setSelectedDebitInstanceId] = useState<string>('');
+  const [selectedGroupDebitIds, setSelectedGroupDebitIds] = useState<string[]>([]);
   const [causeDate, setCauseDate] = useState(
     () => new Date().toISOString().split('T')[0]
   );
@@ -240,6 +240,8 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
   const [causeSubcategory, setCauseSubcategory] = useState('');
   const [causeCurrency, setCauseCurrency] = useState<string>(currency || 'GHS');
   const [causeAmount, setCauseAmount] = useState('');
+  const [hasCauseEarnings, setHasCauseEarnings] = useState(false);
+  const [causeEarningsAmount, setCauseEarningsAmount] = useState('');
   const [causeNotes, setCauseNotes] = useState('');
   const [isSubmittingCause, setIsSubmittingCause] = useState(false);
 
@@ -303,18 +305,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
     return availableDestinationAccounts[0]?.id || '';
   }, [transferDestId, transferSourceId, availableDestinationAccounts]);
 
-  const {
-    summaries,
-    totalCashAcrossAllAccounts,
-    totalGrossDeposited,
-    totalTransferredSavings,
-    manualVaultTransfersCount,
-    totalAllocatedSavings,
-    cashByCurrency,
-    grossDepositedByCurrency,
-    netAfterDeductionsByCurrency,
-    transferredSavingsByCurrency,
-  } = useMemo(
+  const { summaries } = useMemo(
     () =>
       calculateAccountSummaries(
         accounts,
@@ -325,15 +316,6 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
         fxSnapshot
       ),
     [accounts, incomes, expenses, settings, transfers, fxSnapshot]
-  );
-
-  const totalNetAfterDeductions = useMemo(
-    () =>
-      Math.max(
-        0,
-        Math.round((totalGrossDeposited - totalAllocatedSavings) * 100) / 100
-      ),
-    [totalGrossDeposited, totalAllocatedSavings]
   );
 
   const effectivePillars = useMemo(
@@ -437,35 +419,191 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
     }
   };
 
-  // Active debited cause instances on `creditVaultAccount` that have not yet been credited back
-  const activeVaultDebitInstances = useMemo(() => {
-    if (!creditVaultAccount) return [];
-    const creditedExpenseIds = new Set(
-      expenses
-        .filter((e) => e.vaultAction === 'credit' && e.linkedExpenseId)
-        .map((e) => e.linkedExpenseId!)
+  const getExpenseAmountInTargetCurrency = (
+    exp: FlexibleExpense,
+    targetCurr: string
+  ): number => {
+    const cleanTarget = (targetCurr || currency || 'GHS').toUpperCase();
+    const hasOrig = exp.originalAmount !== undefined && Number(exp.originalAmount) > 0;
+    const sourceCurr = (exp.currency || currency || 'GHS').toUpperCase();
+    const rawAmt = hasOrig ? Number(exp.originalAmount) : Number(exp.amount) || 0;
+    if (sourceCurr === cleanTarget) return roundTo2Decimals(rawAmt);
+    return convertCurrency2dp(rawAmt, sourceCurr, cleanTarget, fxSnapshot)
+      .convertedAmount;
+  };
+
+  // Helper to compute active (unsettled) debited cause instances for any Savings Vault,
+  // tracking exact remaining committed principal after any prior partial credits.
+  const getActiveVaultDebitsForAccount = (vaultAcc: FinancialAccount | null) => {
+    if (!vaultAcc) return [];
+    const vaultCurr = getAccountCurrency(vaultAcc, currency);
+    const creditedByDebitId = new Map<string, number>();
+    for (const exp of expenses) {
+      if (exp.vaultAction === 'credit' && exp.linkedExpenseId) {
+        const creditedAmt = getExpenseAmountInTargetCurrency(exp, vaultCurr);
+        creditedByDebitId.set(
+          exp.linkedExpenseId,
+          roundTo2Decimals((creditedByDebitId.get(exp.linkedExpenseId) || 0) + creditedAmt)
+        );
+      }
+    }
+
+    return expenses
+      .filter(
+        (e) =>
+          resolveValidAccountId(e.accountId, accounts, settings) === vaultAcc.id &&
+          e.vaultAction !== 'credit' &&
+          !e.id.startsWith('exp_ded_') &&
+          !e.id.startsWith('exp_cut_')
+      )
+      .map((exp) => {
+        const committedInVaultCurr = getExpenseAmountInTargetCurrency(exp, vaultCurr);
+        const alreadyCredited = creditedByDebitId.get(exp.id) || 0;
+        const remainingCommitted = roundTo2Decimals(
+          Math.max(0, committedInVaultCurr - alreadyCredited)
+        );
+        return {
+          expense: exp,
+          vaultCurr,
+          originalCommitted: committedInVaultCurr,
+          alreadyCredited,
+          remainingCommitted,
+          causeLabel:
+            (exp.recipient || exp.description || exp.subcategory || exp.category || 'Committed Cause').trim(),
+        };
+      })
+      .filter((item) => item.remainingCommitted > 0.01)
+      .sort((a, b) => (a.expense.date || '').localeCompare(b.expense.date || ''));
+  };
+
+  // Active debited cause instances on `creditVaultAccount` that still have committed principal
+  const activeVaultDebitEntries = useMemo(
+    () => getActiveVaultDebitsForAccount(creditVaultAccount),
+    [creditVaultAccount, expenses, accounts, settings, currency, fxSnapshot]
+  );
+
+  const selectedActiveVaultDebits = useMemo(() => {
+    if (vaultModalMode !== 'credit') return [];
+    if (creditScopeMode === 'group') {
+      const idSet = new Set(selectedGroupDebitIds);
+      return activeVaultDebitEntries.filter((item) => idSet.has(item.expense.id));
+    }
+    if (selectedDebitInstanceId) {
+      const matched = activeVaultDebitEntries.find(
+        (item) => item.expense.id === selectedDebitInstanceId
+      );
+      return matched ? [matched] : [];
+    }
+    return [];
+  }, [
+    vaultModalMode,
+    creditScopeMode,
+    selectedGroupDebitIds,
+    selectedDebitInstanceId,
+    activeVaultDebitEntries,
+  ]);
+
+  const selectedCommittedTotalInCauseCurr = useMemo(() => {
+    if (selectedActiveVaultDebits.length === 0) return 0;
+    const targetCurr = (
+      causeCurrency ||
+      getAccountCurrency(creditVaultAccount, currency)
+    ).toUpperCase();
+    return roundTo2Decimals(
+      selectedActiveVaultDebits.reduce((sum, item) => {
+        if (item.vaultCurr === targetCurr) return sum + item.remainingCommitted;
+        return (
+          sum +
+          convertCurrency2dp(
+            item.remainingCommitted,
+            item.vaultCurr,
+            targetCurr,
+            fxSnapshot
+          ).convertedAmount
+        );
+      }, 0)
     );
-    return expenses.filter(
-      (e) =>
-        e.accountId === creditVaultAccount.id &&
-        e.vaultAction !== 'credit' &&
-        !e.id.startsWith('exp_ded_') &&
-        !e.id.startsWith('exp_cut_') &&
-        !creditedExpenseIds.has(e.id)
+  }, [selectedActiveVaultDebits, causeCurrency, creditVaultAccount, currency, fxSnapshot]);
+
+  const distinctActiveCauseNames = useMemo(() => {
+    const map = new Map<string, { label: string; ids: string[]; total: number }>();
+    for (const item of activeVaultDebitEntries) {
+      const key = item.causeLabel.toLowerCase();
+      const prev = map.get(key);
+      if (prev) {
+        prev.ids.push(item.expense.id);
+        prev.total = roundTo2Decimals(prev.total + item.remainingCommitted);
+      } else {
+        map.set(key, {
+          label: item.causeLabel,
+          ids: [item.expense.id],
+          total: item.remainingCommitted,
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [activeVaultDebitEntries]);
+
+  const syncGroupSelectionFields = (
+    nextIds: string[],
+    entries = activeVaultDebitEntries,
+    targetCurr = causeCurrency
+  ) => {
+    const idSet = new Set(nextIds);
+    const chosen = entries.filter((item) => idSet.has(item.expense.id));
+    if (chosen.length === 0) {
+      setCauseAmount('');
+      return;
+    }
+    const cleanCurr = (targetCurr || chosen[0].vaultCurr || currency).toUpperCase();
+    const total = roundTo2Decimals(
+      chosen.reduce((sum, item) => {
+        if (item.vaultCurr === cleanCurr) return sum + item.remainingCommitted;
+        return (
+          sum +
+          convertCurrency2dp(
+            item.remainingCommitted,
+            item.vaultCurr,
+            cleanCurr,
+            fxSnapshot
+          ).convertedAmount
+        );
+      }, 0)
     );
-  }, [creditVaultAccount, expenses]);
+    const uniqueLabels = Array.from(new Set(chosen.map((c) => c.causeLabel)));
+    setCauseRecipient(
+      uniqueLabels.length === 1
+        ? uniqueLabels[0]
+        : `Group Return (${chosen.length} debits)`
+    );
+    setCauseCategory(
+      chosen[0].expense.category || categoryPreferences[0]?.name || 'Savings Cause'
+    );
+    setCauseSubcategory(chosen[0].expense.subcategory || '');
+    setCauseAmount(total > 0 ? String(total) : '');
+  };
 
   const openVaultCauseModal = (
     acc: FinancialAccount,
     mode: 'debit' | 'credit' = 'debit',
-    prefillDebitItem?: FlexibleExpense
+    prefillDebitItem?: FlexibleExpense,
+    initialScope?: 'single' | 'group'
   ) => {
     const vaultCurr = getAccountCurrency(acc, currency);
+    const activeEntries = getActiveVaultDebitsForAccount(acc);
     setCreditVaultAccount(acc);
     setVaultModalMode(mode);
     setCauseDate(new Date().toISOString().split('T')[0]);
+    setHasCauseEarnings(false);
+    setCauseEarningsAmount('');
+
     if (mode === 'credit' && prefillDebitItem) {
+      const matchedEntry = activeEntries.find(
+        (item) => item.expense.id === prefillDebitItem.id
+      );
+      setCreditScopeMode('single');
       setSelectedDebitInstanceId(prefillDebitItem.id);
+      setSelectedGroupDebitIds([prefillDebitItem.id]);
       setCauseRecipient(
         prefillDebitItem.recipient ||
           prefillDebitItem.description ||
@@ -476,20 +614,45 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
       setCauseSubcategory(prefillDebitItem.subcategory || '');
       const itemCurr = prefillDebitItem.currency || vaultCurr;
       setCauseCurrency(itemCurr);
-      const amtToShow =
-        prefillDebitItem.originalAmount !== undefined &&
-        prefillDebitItem.currency === itemCurr
-          ? prefillDebitItem.originalAmount
-          : convertBaseToAccountCurrency(
-              prefillDebitItem.amount,
-              { currency: itemCurr },
-              currency,
+      const amtToShow = matchedEntry
+        ? itemCurr === matchedEntry.vaultCurr
+          ? matchedEntry.remainingCommitted
+          : convertCurrency2dp(
+              matchedEntry.remainingCommitted,
+              matchedEntry.vaultCurr,
+              itemCurr,
               fxSnapshot
-            );
+            ).convertedAmount
+        : getExpenseAmountInTargetCurrency(prefillDebitItem, itemCurr);
       setCauseAmount(String(amtToShow || ''));
       setCauseNotes(`Credited back from ${prefillDebitItem.date}`);
+    } else if (mode === 'credit' && activeEntries.length > 0 && initialScope !== 'single') {
+      const allIds = activeEntries.map((item) => item.expense.id);
+      const totalCommitted = roundTo2Decimals(
+        activeEntries.reduce((sum, item) => sum + item.remainingCommitted, 0)
+      );
+      const uniqueLabels = Array.from(new Set(activeEntries.map((c) => c.causeLabel)));
+      setCreditScopeMode(
+        initialScope || (activeEntries.length > 1 ? 'group' : 'single')
+      );
+      setSelectedGroupDebitIds(allIds);
+      setSelectedDebitInstanceId(activeEntries.length === 1 ? allIds[0] : '');
+      setCauseCurrency(vaultCurr);
+      setCauseRecipient(
+        uniqueLabels.length === 1
+          ? uniqueLabels[0]
+          : `Group Return (${activeEntries.length} debits)`
+      );
+      setCauseCategory(
+        activeEntries[0].expense.category || categoryPreferences[0]?.name || 'Savings Cause'
+      );
+      setCauseSubcategory(activeEntries[0].expense.subcategory || '');
+      setCauseAmount(totalCommitted > 0 ? String(totalCommitted) : '');
+      setCauseNotes('');
     } else {
+      setCreditScopeMode('single');
       setSelectedDebitInstanceId('');
+      setSelectedGroupDebitIds([]);
       setCauseRecipient('');
       setCauseCategory(categoryPreferences[0]?.name || '');
       setCauseSubcategory(categoryPreferences[0]?.subcategories?.[0] || '');
@@ -501,8 +664,11 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
 
   const handleSelectDebitInstanceToCredit = (instanceId: string) => {
     setSelectedDebitInstanceId(instanceId);
-    const matched = activeVaultDebitInstances.find((d) => d.id === instanceId);
-    if (matched) {
+    const matchedEntry = activeVaultDebitEntries.find(
+      (d) => d.expense.id === instanceId
+    );
+    if (matchedEntry) {
+      const matched = matchedEntry.expense;
       const vaultCurr = getAccountCurrency(creditVaultAccount, currency);
       const itemCurr = matched.currency || vaultCurr;
       setCauseRecipient(
@@ -512,14 +678,14 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
       setCauseSubcategory(matched.subcategory || '');
       setCauseCurrency(itemCurr);
       const amtToShow =
-        matched.originalAmount !== undefined && matched.currency === itemCurr
-          ? matched.originalAmount
-          : convertBaseToAccountCurrency(
-              matched.amount,
-              { currency: itemCurr },
-              currency,
+        itemCurr === matchedEntry.vaultCurr
+          ? matchedEntry.remainingCommitted
+          : convertCurrency2dp(
+              matchedEntry.remainingCommitted,
+              matchedEntry.vaultCurr,
+              itemCurr,
               fxSnapshot
-            );
+            ).convertedAmount;
       setCauseAmount(String(amtToShow || ''));
       setCauseNotes(`Cause ended (${matched.date})`);
     }
@@ -528,44 +694,197 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
   const handleSubmitCreditCause = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!creditVaultAccount || !onAddExpenses) return;
-    const rawAmt = roundTo2Decimals(parseFloat(causeAmount));
-    if (isNaN(rawAmt) || rawAmt <= 0 || !causeRecipient.trim()) return;
+
+    const rawPrincipalAmt = roundTo2Decimals(
+      Math.max(0, parseFloat(causeAmount) || 0)
+    );
+    const rawEarningsAmt =
+      vaultModalMode === 'credit' && hasCauseEarnings
+        ? roundTo2Decimals(Math.max(0, parseFloat(causeEarningsAmount) || 0))
+        : 0;
+
+    if (vaultModalMode === 'debit') {
+      if (rawPrincipalAmt <= 0 || !causeRecipient.trim()) return;
+    } else {
+      if (rawPrincipalAmt <= 0 && rawEarningsAmt <= 0) return;
+      if (!causeRecipient.trim()) return;
+    }
 
     setIsSubmittingCause(true);
     try {
-      const selectedCurr = (causeCurrency || getAccountCurrency(creditVaultAccount, currency)).toUpperCase();
-      const { convertedAmount, exchangeRate2dp } = convertCurrency2dp(
-        rawAmt,
-        selectedCurr,
-        currency,
-        fxSnapshot
-      );
+      const selectedCurr = (
+        causeCurrency || getAccountCurrency(creditVaultAccount, currency)
+      ).toUpperCase();
       const toLabel = causeRecipient.trim();
       const noteLabel = causeNotes.trim();
       const catLabel = causeCategory.trim() || 'Savings Cause';
       const subLabel = causeSubcategory.trim() || catLabel;
-      await onAddExpenses([
-        {
+
+      if (vaultModalMode === 'debit') {
+        const { convertedAmount, exchangeRate2dp } = convertCurrency2dp(
+          rawPrincipalAmt,
+          selectedCurr,
+          currency,
+          fxSnapshot
+        );
+        await onAddExpenses([
+          {
+            date: causeDate,
+            accountId: creditVaultAccount.id,
+            recipient: toLabel,
+            category: catLabel,
+            subcategory: subLabel,
+            notes: noteLabel || undefined,
+            description: subLabel,
+            currency: selectedCurr,
+            originalAmount: rawPrincipalAmt,
+            exchangeRate: exchangeRate2dp,
+            amount: convertedAmount,
+            vaultAction: 'debit',
+          },
+        ]);
+        setCreditVaultAccount(null);
+        setSelectedDebitInstanceId('');
+        return;
+      }
+
+      // Credit Vault flow (supports single cause, group credit across multiple debits, and optional earnings)
+      const creditBatchId = `vault_credit_${Date.now()}`;
+      const creditRecords: Omit<FlexibleExpense, 'id' | 'createdAt' | 'userId'>[] =
+        [];
+
+      if (rawPrincipalAmt > 0) {
+        if (selectedActiveVaultDebits.length > 0) {
+          let remainingToAllocate = rawPrincipalAmt;
+          for (const item of selectedActiveVaultDebits) {
+            if (remainingToAllocate <= 0.005) break;
+            const itemCommittedInSelectedCurr =
+              item.vaultCurr === selectedCurr
+                ? item.remainingCommitted
+                : convertCurrency2dp(
+                    item.remainingCommitted,
+                    item.vaultCurr,
+                    selectedCurr,
+                    fxSnapshot
+                  ).convertedAmount;
+            const allocAmt = roundTo2Decimals(
+              Math.min(remainingToAllocate, itemCommittedInSelectedCurr)
+            );
+            if (allocAmt <= 0) continue;
+            remainingToAllocate = roundTo2Decimals(remainingToAllocate - allocAmt);
+
+            const conv = convertCurrency2dp(
+              allocAmt,
+              selectedCurr,
+              currency,
+              fxSnapshot
+            );
+            const itemCat = item.expense.category || catLabel;
+            const itemSub = item.expense.subcategory || subLabel || itemCat;
+            creditRecords.push({
+              batchId: creditBatchId,
+              date: causeDate,
+              accountId: creditVaultAccount.id,
+              recipient: item.causeLabel || toLabel,
+              category: itemCat,
+              subcategory: itemSub,
+              notes: noteLabel
+                ? `${noteLabel} · Principal return (${item.expense.date})`
+                : `Principal return (${item.expense.date})`,
+              description: itemSub,
+              currency: selectedCurr,
+              originalAmount: allocAmt,
+              exchangeRate: conv.exchangeRate2dp,
+              amount: conv.convertedAmount,
+              vaultAction: 'credit',
+              linkedExpenseId: item.expense.id,
+            });
+          }
+
+          // If user entered principal above committed sum, record surplus cleanly on vault
+          if (remainingToAllocate > 0.01) {
+            const conv = convertCurrency2dp(
+              remainingToAllocate,
+              selectedCurr,
+              currency,
+              fxSnapshot
+            );
+            creditRecords.push({
+              batchId: creditBatchId,
+              date: causeDate,
+              accountId: creditVaultAccount.id,
+              recipient: toLabel,
+              category: catLabel,
+              subcategory: subLabel,
+              notes: noteLabel || 'Additional principal credit',
+              description: subLabel,
+              currency: selectedCurr,
+              originalAmount: remainingToAllocate,
+              exchangeRate: conv.exchangeRate2dp,
+              amount: conv.convertedAmount,
+              vaultAction: 'credit',
+            });
+          }
+        } else {
+          const conv = convertCurrency2dp(
+            rawPrincipalAmt,
+            selectedCurr,
+            currency,
+            fxSnapshot
+          );
+          creditRecords.push({
+            batchId: creditBatchId,
+            date: causeDate,
+            accountId: creditVaultAccount.id,
+            recipient: toLabel,
+            category: catLabel,
+            subcategory: subLabel,
+            notes: noteLabel || undefined,
+            description: subLabel,
+            currency: selectedCurr,
+            originalAmount: rawPrincipalAmt,
+            exchangeRate: conv.exchangeRate2dp,
+            amount: conv.convertedAmount,
+            vaultAction: 'credit',
+          });
+        }
+      }
+
+      if (rawEarningsAmt > 0) {
+        const earnConv = convertCurrency2dp(
+          rawEarningsAmt,
+          selectedCurr,
+          currency,
+          fxSnapshot
+        );
+        creditRecords.push({
+          batchId: creditBatchId,
           date: causeDate,
           accountId: creditVaultAccount.id,
-          recipient: toLabel,
-          category: catLabel,
-          subcategory: subLabel,
-          notes: noteLabel || undefined,
-          description: subLabel,
+          recipient: `Earnings · ${toLabel}`,
+          category: catLabel || 'Savings Earnings',
+          subcategory: 'Cause Earnings',
+          notes: noteLabel
+            ? `Earnings from ${toLabel} · ${noteLabel}`
+            : `Earnings from committed cause (${toLabel})`,
+          description: 'Cause Earnings',
           currency: selectedCurr,
-          originalAmount: rawAmt,
-          exchangeRate: exchangeRate2dp,
-          amount: convertedAmount,
-          vaultAction: vaultModalMode,
-          linkedExpenseId:
-            vaultModalMode === 'credit' && selectedDebitInstanceId
-              ? selectedDebitInstanceId
-              : undefined,
-        },
-      ]);
+          originalAmount: rawEarningsAmt,
+          exchangeRate: earnConv.exchangeRate2dp,
+          amount: earnConv.convertedAmount,
+          vaultAction: 'credit',
+        });
+      }
+
+      if (creditRecords.length > 0) {
+        await onAddExpenses(creditRecords);
+      }
+
       setCreditVaultAccount(null);
       setSelectedDebitInstanceId('');
+      setSelectedGroupDebitIds([]);
+      setHasCauseEarnings(false);
+      setCauseEarningsAmount('');
     } finally {
       setIsSubmittingCause(false);
     }
@@ -930,11 +1249,6 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
         const finalExcludedDebitIds = new Set<string>(excludedTransferDebitVaultIds);
         for (const share of selectedTransferVaultShares) {
           const edit = transferDebitEdits[share.vaultAccountId];
-          const hasDebitOption = Boolean(share.debitPlan || edit?.enabledCustom);
-          if (!hasDebitOption) {
-            finalExcludedDebitIds.add(share.vaultAccountId);
-            continue;
-          }
           if (edit) {
             const parsedEditAmt =
               edit.amountStr !== undefined ? parseFloat(edit.amountStr) : undefined;
@@ -996,7 +1310,6 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
               if (finalExcludedDebitIds.has(share.vaultAccountId)) continue;
               const edit = transferDebitEdits[share.vaultAccountId];
               const basePlan = share.debitPlan;
-              if (!basePlan && !edit?.enabledCustom) continue;
 
               const rec =
                 edit?.recipient !== undefined
@@ -1973,126 +2286,6 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
             isCreateAccountCollapsed ? 'lg:col-span-12' : 'lg:col-span-8'
           } space-y-6`}
         >
-          {/* Aggregate Summary Bar (Calculated from Main Non-Virtual Accounts) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 rounded-xl border border-slate-200/90 bg-white p-5">
-            <div>
-              <div className="text-xs text-slate-500">Total Balance Across Accounts</div>
-              <div
-                className={`mt-1 font-mono text-xl font-semibold tabular-nums break-words ${
-                  totalCashAcrossAllAccounts < 0
-                    ? 'text-rose-600'
-                    : 'text-emerald-700'
-                }`}
-              >
-                {formatTotalByCurrencyMode(
-                  totalCashAcrossAllAccounts,
-                  cashByCurrency,
-                  settings
-                )}
-              </div>
-              {getSecondaryCurrencyModeCaption(
-                totalCashAcrossAllAccounts,
-                cashByCurrency,
-                settings
-              ) && (
-                <div className="mt-1 font-mono text-[11px] text-slate-400 tabular-nums break-words">
-                  {getSecondaryCurrencyModeCaption(
-                    totalCashAcrossAllAccounts,
-                    cashByCurrency,
-                    settings
-                  )}
-                </div>
-              )}
-            </div>
-            <div>
-              <div className="text-xs text-slate-500">Total Income Deposited</div>
-              <div
-                className={`mt-1 font-mono text-xl font-semibold tabular-nums break-words ${
-                  totalGrossDeposited < 0 ? 'text-rose-600' : 'text-emerald-700'
-                }`}
-              >
-                {formatTotalByCurrencyMode(
-                  totalGrossDeposited,
-                  grossDepositedByCurrency,
-                  settings
-                )}
-              </div>
-              {getSecondaryCurrencyModeCaption(
-                totalGrossDeposited,
-                grossDepositedByCurrency,
-                settings
-              ) && (
-                <div className="mt-1 font-mono text-[11px] text-slate-400 tabular-nums break-words">
-                  {getSecondaryCurrencyModeCaption(
-                    totalGrossDeposited,
-                    grossDepositedByCurrency,
-                    settings
-                  )}
-                </div>
-              )}
-            </div>
-            <div>
-              <div className="text-xs text-slate-500">Net Income After Deductions</div>
-              <div
-                className={`mt-1 font-mono text-xl font-semibold tabular-nums break-words ${
-                  totalNetAfterDeductions < 0 ? 'text-rose-600' : 'text-emerald-700'
-                }`}
-              >
-                {formatTotalByCurrencyMode(
-                  totalNetAfterDeductions,
-                  netAfterDeductionsByCurrency,
-                  settings
-                )}
-              </div>
-              {getSecondaryCurrencyModeCaption(
-                totalNetAfterDeductions,
-                netAfterDeductionsByCurrency,
-                settings
-              ) && (
-                <div className="mt-1 font-mono text-[11px] text-slate-400 tabular-nums break-words">
-                  {getSecondaryCurrencyModeCaption(
-                    totalNetAfterDeductions,
-                    netAfterDeductionsByCurrency,
-                    settings
-                  )}
-                </div>
-              )}
-            </div>
-            <div>
-              <div className="text-xs text-slate-500">Total Savings Accumulated</div>
-              <div
-                className={`mt-1 font-mono text-xl font-semibold tabular-nums break-words ${
-                  totalTransferredSavings < 0 ? 'text-rose-600' : 'text-emerald-700'
-                }`}
-              >
-                {formatTotalByCurrencyMode(
-                  totalTransferredSavings,
-                  transferredSavingsByCurrency,
-                  settings
-                )}
-              </div>
-              {getSecondaryCurrencyModeCaption(
-                totalTransferredSavings,
-                transferredSavingsByCurrency,
-                settings
-              ) && (
-                <div className="mt-1 font-mono text-[11px] text-slate-400 tabular-nums break-words">
-                  {getSecondaryCurrencyModeCaption(
-                    totalTransferredSavings,
-                    transferredSavingsByCurrency,
-                    settings
-                  )}
-                </div>
-              )}
-              {manualVaultTransfersCount > 0 && (
-                <div className="mt-1 text-[11px] text-slate-400">
-                  Includes {manualVaultTransfersCount} manual vault transfer
-                  {manualVaultTransfersCount === 1 ? '' : 's'}
-                </div>
-              )}
-            </div>
-          </div>
-
           {/* Section 1: Operating Accounts (Collapsible, Collapsed by Default, Name & Amount Only on Card) */}
           <div className="rounded-xl border border-slate-200/90 bg-white p-4 sm:p-5">
             <div
@@ -2282,6 +2475,9 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                 onClick={() => {
                   setVaultModalMode('debit');
                   setSelectedDebitInstanceId('');
+                  setSelectedGroupDebitIds([]);
+                  setHasCauseEarnings(false);
+                  setCauseEarningsAmount('');
                 }}
                 className={`rounded-md py-1.5 px-2.5 text-xs font-semibold transition-colors ${
                   vaultModalMode === 'debit'
@@ -2293,7 +2489,18 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setVaultModalMode('credit')}
+                onClick={() => {
+                  setVaultModalMode('credit');
+                  if (activeVaultDebitEntries.length > 1) {
+                    const allIds = activeVaultDebitEntries.map((i) => i.expense.id);
+                    setCreditScopeMode('group');
+                    setSelectedGroupDebitIds(allIds);
+                    syncGroupSelectionFields(allIds, activeVaultDebitEntries, causeCurrency);
+                  } else if (activeVaultDebitEntries.length === 1) {
+                    setCreditScopeMode('single');
+                    handleSelectDebitInstanceToCredit(activeVaultDebitEntries[0].expense.id);
+                  }
+                }}
                 className={`rounded-md py-1.5 px-2.5 text-xs font-semibold transition-colors ${
                   vaultModalMode === 'credit'
                     ? 'bg-emerald-600 text-white'
@@ -2305,29 +2512,217 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
             </div>
 
             <form onSubmit={handleSubmitCreditCause} className="space-y-3.5">
-              {/* When in Credit Mode, allow selecting an active debited cause instance to credit back */}
+              {/* When in Credit Mode and active debits exist: Single vs Group Credit */}
               {vaultModalMode === 'credit' &&
-                activeVaultDebitInstances.length > 0 && (
-                  <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 space-y-1.5">
-                    <label className="block text-xs font-semibold text-emerald-900">
-                      Select Debited Cause Instance to Credit Back
-                    </label>
-                    <select
-                      value={selectedDebitInstanceId}
-                      onChange={(e) =>
-                        handleSelectDebitInstanceToCredit(e.target.value)
-                      }
-                      className="w-full rounded-lg border border-emerald-200 bg-white px-3 py-1.5 text-xs text-slate-900 focus:outline-none"
-                    >
-                      <option value="">Custom / General Credit...</option>
-                      {activeVaultDebitInstances.map((inst) => (
-                        <option key={inst.id} value={inst.id}>
-                          {inst.recipient || inst.description || inst.category} —{' '}
-                          {formatAmount(inst.amount, currency)} (
-                          {formatDateDDMMYYYY(inst.date)})
-                        </option>
-                      ))}
-                    </select>
+                activeVaultDebitEntries.length > 0 && (
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-emerald-950">
+                        Committed Debits ({activeVaultDebitEntries.length})
+                      </span>
+                      <div className="inline-flex rounded-md border border-emerald-200 bg-white p-0.5 text-[11px] font-semibold">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCreditScopeMode('group');
+                            const nextIds =
+                              selectedGroupDebitIds.length > 0
+                                ? selectedGroupDebitIds
+                                : activeVaultDebitEntries.map((i) => i.expense.id);
+                            setSelectedGroupDebitIds(nextIds);
+                            syncGroupSelectionFields(nextIds, activeVaultDebitEntries, causeCurrency);
+                          }}
+                          className={`rounded px-2 py-0.5 transition-colors ${
+                            creditScopeMode === 'group'
+                              ? 'bg-emerald-600 text-white'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          Group Credit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCreditScopeMode('single');
+                            if (!selectedDebitInstanceId && activeVaultDebitEntries[0]) {
+                              handleSelectDebitInstanceToCredit(
+                                activeVaultDebitEntries[0].expense.id
+                              );
+                            }
+                          }}
+                          className={`rounded px-2 py-0.5 transition-colors ${
+                            creditScopeMode === 'single'
+                              ? 'bg-emerald-600 text-white'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          Single Debit
+                        </button>
+                      </div>
+                    </div>
+
+                    {creditScopeMode === 'group' ? (
+                      <div className="space-y-2">
+                        {/* Quick Cause Group Chips & Select All / Clear */}
+                        <div className="flex flex-wrap items-center justify-between gap-1.5">
+                          <div className="flex flex-wrap items-center gap-1">
+                            {distinctActiveCauseNames.length > 1 &&
+                              distinctActiveCauseNames.map((grp) => {
+                                const allGrpSelected = grp.ids.every((id) =>
+                                  selectedGroupDebitIds.includes(id)
+                                );
+                                return (
+                                  <button
+                                    key={grp.label}
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedGroupDebitIds(grp.ids);
+                                      syncGroupSelectionFields(
+                                        grp.ids,
+                                        activeVaultDebitEntries,
+                                        causeCurrency
+                                      );
+                                    }}
+                                    className={`rounded border px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                                      allGrpSelected &&
+                                      selectedGroupDebitIds.length === grp.ids.length
+                                        ? 'border-emerald-600 bg-emerald-600 text-white'
+                                        : 'border-emerald-200 bg-white text-emerald-900 hover:bg-emerald-100'
+                                    }`}
+                                  >
+                                    {grp.label} ({grp.ids.length})
+                                  </button>
+                                );
+                              })}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const allIds = activeVaultDebitEntries.map(
+                                (i) => i.expense.id
+                              );
+                              const nextIds =
+                                selectedGroupDebitIds.length === allIds.length
+                                  ? []
+                                  : allIds;
+                              setSelectedGroupDebitIds(nextIds);
+                              syncGroupSelectionFields(
+                                nextIds,
+                                activeVaultDebitEntries,
+                                causeCurrency
+                              );
+                            }}
+                            className="text-[11px] font-semibold text-emerald-800 hover:text-emerald-950 underline underline-offset-2 shrink-0"
+                          >
+                            {selectedGroupDebitIds.length ===
+                            activeVaultDebitEntries.length
+                              ? 'Clear All'
+                              : 'Select All'}
+                          </button>
+                        </div>
+
+                        <div className="max-h-36 overflow-y-auto space-y-1 pr-0.5">
+                          {activeVaultDebitEntries.map((item) => {
+                            const isSelected = selectedGroupDebitIds.includes(
+                              item.expense.id
+                            );
+                            return (
+                              <label
+                                key={item.expense.id}
+                                className="flex items-center justify-between gap-2 rounded-md border border-emerald-200/80 bg-white px-2.5 py-1.5 text-[11px] cursor-pointer hover:border-emerald-400"
+                              >
+                                <span className="flex items-center gap-2 min-w-0">
+                                  <input
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    onChange={(e) => {
+                                      const checked = e.target.checked;
+                                      const nextIds = checked
+                                        ? [...selectedGroupDebitIds, item.expense.id]
+                                        : selectedGroupDebitIds.filter(
+                                            (id) => id !== item.expense.id
+                                          );
+                                      setSelectedGroupDebitIds(nextIds);
+                                      syncGroupSelectionFields(
+                                        nextIds,
+                                        activeVaultDebitEntries,
+                                        causeCurrency
+                                      );
+                                    }}
+                                    className="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 shrink-0"
+                                  />
+                                  <span className="min-w-0 truncate">
+                                    <span className="font-semibold text-slate-900">
+                                      {item.causeLabel}
+                                    </span>{' '}
+                                    <span className="text-slate-500">
+                                      ({formatDateDDMMYYYY(item.expense.date)})
+                                    </span>
+                                  </span>
+                                </span>
+                                <span className="font-mono font-semibold text-slate-900 tabular-nums shrink-0">
+                                  {formatAmount(
+                                    item.remainingCommitted,
+                                    item.vaultCurr
+                                  )}
+                                </span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : (
+                      <select
+                        value={selectedDebitInstanceId}
+                        onChange={(e) =>
+                          handleSelectDebitInstanceToCredit(e.target.value)
+                        }
+                        className="w-full rounded-lg border border-emerald-200 bg-white px-3 py-1.5 text-xs text-slate-900 focus:outline-none"
+                      >
+                        <option value="">Custom / General Credit...</option>
+                        {activeVaultDebitEntries.map((item) => (
+                          <option key={item.expense.id} value={item.expense.id}>
+                            {item.causeLabel} —{' '}
+                            {formatAmount(item.remainingCommitted, item.vaultCurr)}{' '}
+                            ({formatDateDDMMYYYY(item.expense.date)})
+                          </option>
+                        ))}
+                      </select>
+                    )}
+
+                    {/* Exact Amount Committed Indicator */}
+                    {selectedCommittedTotalInCauseCurr > 0 && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-emerald-300/80 bg-white px-2.5 py-1.5 text-xs">
+                        <span className="font-medium text-emerald-900">
+                          Exact Amount Committed ({selectedActiveVaultDebits.length}{' '}
+                          {selectedActiveVaultDebits.length === 1 ? 'debit' : 'debits'})
+                        </span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="font-mono font-bold text-emerald-800 tabular-nums">
+                            {formatAmount(
+                              selectedCommittedTotalInCauseCurr,
+                              causeCurrency
+                            )}
+                          </span>
+                          {Math.abs(
+                            (parseFloat(causeAmount) || 0) -
+                              selectedCommittedTotalInCauseCurr
+                          ) > 0.009 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setCauseAmount(
+                                  String(selectedCommittedTotalInCauseCurr)
+                                )
+                              }
+                              className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 hover:bg-emerald-100"
+                            >
+                              Use Exact
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -2343,18 +2738,20 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                   placeholder="e.g. Treasury Bond, Mutual Funds, Buying of Lands"
                   className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none"
                 />
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {CAUSE_PRESETS.map((preset) => (
-                    <button
-                      key={preset}
-                      type="button"
-                      onClick={() => setCauseRecipient(preset)}
-                      className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
-                    >
-                      {preset}
-                    </button>
-                  ))}
-                </div>
+                {vaultModalMode === 'debit' && (
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {CAUSE_PRESETS.map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => setCauseRecipient(preset)}
+                        className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -2388,13 +2785,15 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Amount ({causeCurrency})
+                    {vaultModalMode === 'credit'
+                      ? `Credit Principal (${causeCurrency})`
+                      : `Amount (${causeCurrency})`}
                   </label>
                   <input
                     type="number"
-                    min="0.01"
+                    min="0"
                     step="0.01"
-                    required
+                    required={vaultModalMode === 'debit' || !hasCauseEarnings}
                     value={causeAmount}
                     onChange={(e) => setCauseAmount(e.target.value)}
                     placeholder="0.00"
@@ -2407,9 +2806,77 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                 </div>
               </div>
 
+              {/* Optional Earnings Input in Credit Mode */}
+              {vaultModalMode === 'credit' && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-2.5">
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={hasCauseEarnings}
+                      onChange={(e) => {
+                        setHasCauseEarnings(e.target.checked);
+                        if (!e.target.checked) setCauseEarningsAmount('');
+                      }}
+                      className="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-600"
+                    />
+                    <span className="text-xs font-semibold text-slate-800">
+                      Were there earnings from this commitment?
+                    </span>
+                  </label>
+
+                  {hasCauseEarnings && (
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                        Earnings / Returns ({causeCurrency})
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={causeEarningsAmount}
+                        onChange={(e) => setCauseEarningsAmount(e.target.value)}
+                        placeholder="0.00"
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs font-semibold text-right text-emerald-700 tabular-nums focus:border-emerald-600 focus:outline-none"
+                      />
+                    </div>
+                  )}
+
+                  {(() => {
+                    const pAmt = roundTo2Decimals(
+                      Math.max(0, parseFloat(causeAmount) || 0)
+                    );
+                    const eAmt = hasCauseEarnings
+                      ? roundTo2Decimals(
+                          Math.max(0, parseFloat(causeEarningsAmount) || 0)
+                        )
+                      : 0;
+                    const totalInflow = roundTo2Decimals(pAmt + eAmt);
+                    if (totalInflow <= 0) return null;
+                    return (
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200/80 pt-2 text-[11px]">
+                        <span className="text-slate-600">
+                          Principal {formatAmount(pAmt, causeCurrency)}
+                          {eAmt > 0
+                            ? ` + Earnings ${formatAmount(eAmt, causeCurrency)}`
+                            : ''}
+                        </span>
+                        <span className="font-mono font-bold text-emerald-700 tabular-nums">
+                          Total Credit: +{formatAmount(totalInflow, causeCurrency)}
+                        </span>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
               {(() => {
                 const vaultNativeCurr = getAccountCurrency(creditVaultAccount, currency);
-                const rawCauseAmt = parseFloat(causeAmount) || 0;
+                const rawCauseAmt = roundTo2Decimals(
+                  Math.max(0, parseFloat(causeAmount) || 0) +
+                    (vaultModalMode === 'credit' && hasCauseEarnings
+                      ? Math.max(0, parseFloat(causeEarningsAmount) || 0)
+                      : 0)
+                );
                 if (rawCauseAmt <= 0 || (causeCurrency === vaultNativeCurr && causeCurrency === currency)) {
                   return null;
                 }
@@ -2523,7 +2990,13 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                 <button
                   type="submit"
                   disabled={
-                    isSubmittingCause || !causeRecipient.trim() || !causeAmount
+                    isSubmittingCause ||
+                    !causeRecipient.trim() ||
+                    (vaultModalMode === 'debit'
+                      ? (parseFloat(causeAmount) || 0) <= 0
+                      : (parseFloat(causeAmount) || 0) <= 0 &&
+                        (!hasCauseEarnings ||
+                          (parseFloat(causeEarningsAmount) || 0) <= 0))
                   }
                   className={`rounded-lg px-4 py-2 text-xs font-semibold text-white disabled:opacity-40 ${
                     vaultModalMode === 'credit'
@@ -2534,7 +3007,10 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                   {isSubmittingCause
                     ? 'Saving...'
                     : vaultModalMode === 'credit'
-                    ? 'Credit Vault'
+                    ? creditScopeMode === 'group' &&
+                      selectedActiveVaultDebits.length > 1
+                      ? `Group Credit (${selectedActiveVaultDebits.length})`
+                      : 'Credit Vault'
                     : 'Debit Vault'}
                 </button>
               </div>
@@ -2732,12 +3208,31 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                           onClick={() => {
                             const acc = selectedHistorySummary.account;
                             setHistoryModalAccountId(null);
-                            openVaultCauseModal(acc, 'credit');
+                            openVaultCauseModal(acc, 'credit', undefined, 'single');
                           }}
                           className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
                         >
                           Credit Vault
                         </button>
+                        {(() => {
+                          const activeCount = getActiveVaultDebitsForAccount(
+                            selectedHistorySummary.account
+                          ).length;
+                          if (activeCount === 0) return null;
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const acc = selectedHistorySummary.account;
+                                setHistoryModalAccountId(null);
+                                openVaultCauseModal(acc, 'credit', undefined, 'group');
+                              }}
+                              className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
+                            >
+                              Group Credit ({activeCount})
+                            </button>
+                          );
+                        })()}
                       </>
                     )}
                     {onNavigateToTab && (

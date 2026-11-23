@@ -18,6 +18,7 @@ import {
   isSavingsVaultAccount,
   resolveValidAccountId,
   resolveIntuitiveSubcategoryColor,
+  getVaultCleanName,
   LEGACY_SEEDED_CUT_IDS,
 } from './calculations.ts';
 import {
@@ -877,6 +878,7 @@ export interface PlannedSavingsVaultDebit {
   debitAmountInBaseCurr: number;
   exchangeRateToBase: number;
   pastMatchCount: number;
+  hasPastHistory?: boolean;
   lastDebitDate?: string;
 }
 
@@ -934,7 +936,48 @@ export function buildAutomatedSavingsVaultDebitPlan(params: {
       return resolvedAccId === share.accountId;
     });
 
-    if (vaultHistory.length === 0) continue;
+    const vaultAcc = accounts.find((a) => a.id === share.accountId);
+    const vaultCurr = getAccountCurrency(vaultAcc, baseCurr);
+
+    const debitInVaultCurr =
+      incCurr === vaultCurr
+        ? roundTo2Decimals(share.amount)
+        : convertCurrency2dp(share.amount, incCurr, vaultCurr, fxSnapshot)
+            .convertedAmount;
+
+    const toBase =
+      vaultCurr === baseCurr
+        ? { convertedAmount: debitInVaultCurr, exchangeRate2dp: 1 }
+        : convertCurrency2dp(debitInVaultCurr, vaultCurr, baseCurr, fxSnapshot);
+
+    if (toBase.convertedAmount <= 0) continue;
+
+    const cleanVaultLabel =
+      getVaultCleanName(share.accountName) || share.accountName;
+
+    if (vaultHistory.length === 0) {
+      plans.push({
+        vaultAccountId: share.accountId,
+        vaultAccountName: share.accountName,
+        vaultBucketId: share.bucketId,
+        vaultPercentage: share.percentage,
+        vaultCurrency: vaultCurr,
+        recipient: cleanVaultLabel,
+        category: 'Savings Allocation',
+        subcategory: undefined,
+        subcategoryColor: undefined,
+        description: cleanVaultLabel,
+        notes: undefined,
+        shareAmountInIncomeCurr: roundTo2Decimals(share.amount),
+        debitAmountInVaultCurr: debitInVaultCurr,
+        debitAmountInBaseCurr: toBase.convertedAmount,
+        exchangeRateToBase: toBase.exchangeRate2dp,
+        pastMatchCount: 0,
+        hasPastHistory: false,
+        lastDebitDate: undefined,
+      });
+      continue;
+    }
 
     // Group by normalized cause/category/subcategory signature, weighting frequency & recency
     const sortedRecent = [...vaultHistory].sort((a, b) => {
@@ -978,34 +1021,17 @@ export function buildAutomatedSavingsVaultDebitPlan(params: {
       return (b.latestDate || '').localeCompare(a.latestDate || '');
     })[0];
 
-    if (!best) continue;
-
-    const sample = best.sample;
-    const vaultAcc = accounts.find((a) => a.id === share.accountId);
-    const vaultCurr = getAccountCurrency(vaultAcc, baseCurr);
-
-    const debitInVaultCurr =
-      incCurr === vaultCurr
-        ? roundTo2Decimals(share.amount)
-        : convertCurrency2dp(share.amount, incCurr, vaultCurr, fxSnapshot)
-            .convertedAmount;
-
-    const toBase =
-      vaultCurr === baseCurr
-        ? { convertedAmount: debitInVaultCurr, exchangeRate2dp: 1 }
-        : convertCurrency2dp(debitInVaultCurr, vaultCurr, baseCurr, fxSnapshot);
-
-    if (toBase.convertedAmount <= 0) continue;
-
+    const sample = best?.sample;
     const resolvedRecipient =
-      (sample.recipient || '').trim() ||
-      (sample.description || '').trim() ||
-      (sample.subcategory || '').trim() ||
-      share.accountName;
-    const resolvedCategory = (sample.category || '').trim() || 'Savings Allocation';
-    const resolvedSub = (sample.subcategory || '').trim() || undefined;
+      (sample?.recipient || '').trim() ||
+      (sample?.description || '').trim() ||
+      (sample?.subcategory || '').trim() ||
+      cleanVaultLabel;
+    const resolvedCategory =
+      (sample?.category || '').trim() || 'Savings Allocation';
+    const resolvedSub = (sample?.subcategory || '').trim() || undefined;
     const resolvedColor =
-      sample.subcategoryColor ||
+      sample?.subcategoryColor ||
       (resolvedSub
         ? resolveIntuitiveSubcategoryColor(
             resolvedSub,
@@ -1026,17 +1052,18 @@ export function buildAutomatedSavingsVaultDebitPlan(params: {
       subcategory: resolvedSub,
       subcategoryColor: resolvedColor,
       description:
-        (sample.description || '').trim() ||
+        (sample?.description || '').trim() ||
         resolvedSub ||
         resolvedRecipient ||
         resolvedCategory,
-      notes: (sample.notes || '').trim() || undefined,
+      notes: (sample?.notes || '').trim() || undefined,
       shareAmountInIncomeCurr: roundTo2Decimals(share.amount),
       debitAmountInVaultCurr: debitInVaultCurr,
       debitAmountInBaseCurr: toBase.convertedAmount,
       exchangeRateToBase: toBase.exchangeRate2dp,
       pastMatchCount: vaultHistory.length,
-      lastDebitDate: best.latestDate || undefined,
+      hasPastHistory: true,
+      lastDebitDate: best?.latestDate || undefined,
     });
   }
 
