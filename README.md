@@ -1,29 +1,30 @@
-# Save N Know: Enterprise Financial Allocation and Multi-Account Ledger (`v4.11.0`)
+# Save N Know: Enterprise Financial Allocation and Multi-Account Ledger (`v4.14.0`)
 
-**Save N Know** is an installable Progressive Web App (PWA) and enterprise-grade personal and business capital allocation, multi-account ledger, multi-purpose expense budgeting & savings/transfer goal tracking, account-driven FX currency conversion, file import & ingestion, expense intelligence, biometric app security, and automated savings vault platform built with React 19, TypeScript, Tailwind CSS v4, Express, and Firebase (Authentication and Cloud Firestore).
+**Save N Know** is an installable Progressive Web App (PWA) and enterprise-grade personal and business capital allocation, multi-account ledger, multi-purpose expense budgeting & savings/transfer goal tracking, account-driven FX currency conversion, Google Drive spreadsheet alignment & side-by-side reconciliation, file import & ingestion, expense intelligence, biometric app security, and automated savings vault platform built with React 19, TypeScript, Tailwind CSS v4, Express, and Firebase (Authentication and Cloud Firestore).
 
 ---
 
 ## 1. Core Product Capabilities
 
+- **Auto-Map Subcategories & Side-by-Side Reconciliation Table (`ReconciliationTable.tsx`, `DriveAlignmentModal.tsx`, `driveAlignment.ts`, `SettingsView.tsx`, `server.ts`)**:
+  - Dedicated `ReconciliationTable` rendered immediately after a spreadsheet is selected, placing each **Imported Record (Spreadsheet)** directly side-by-side with its matched **Existing App Record**.
+  - Includes an **Auto-map subcategories** toggle switch in the Reconciliation Table that automatically assigns the parent category defined in Settings whenever an imported record carries a known subcategory (and cleanly restores original values when toggled off), with live auto-mapping on inline subcategory edits and in Settings File Import (`POST /api/import/parse` and `POST /api/drive/reconcile`).
+  - Visually highlights field-level differences in **Amounts** (with numeric variance and live 2dp FX previews), **Dates**, **Categories / Subcategories**, **Accounts**, **Payees / Sources**, and **Notes**, with one-click **Keep App** field reverts, expandable inline editing, and individual plus select-all approval checkboxes.
+- **App-Wide `dd/mm/yyyy` Date Standardization (`dateFilters.ts`, `driveAlignment.ts`, all Views & Modals)**:
+  - Unified `formatDateDDMMYYYY` and `formatDateTimeDDMMYYYY` formatting applied consistently across transaction cards, Reconciliation Table rows and diffs, Settings import previews and release logs, Revision History, Savings allocations, Account notes, Budgets, Analytics, and Income/Expense queues.
+- **Full Session, Navigation & Workflow State Restoration (`appStateRestore.ts`, `App.tsx`, `SettingsView.tsx`, `DriveAlignmentModal.tsx`)**:
+  - Integrates browser History (`pushState` / `replaceState` / `popstate`) with session/local storage so pressing **Back / Forward**, switching tabs, reloading, or resuming the PWA restores the exact previous view, active date filter, per-tab scroll position, open Drive Alignment modal, and all performed workflow actions (selected rows, inline adjustments, field reverts, Auto-map toggle, filters, search queries, and file import previews).
+- **Google Drive Read-Only Spreadsheet Connection (`firebase.ts`, `DriveAlignmentModal.tsx`, `SettingsView.tsx`, `App.tsx`)**:
+  - Connects to Google Drive with read-only permission (`drive.readonly`) via Firebase Google Auth with strict in-memory token caching (cleared on sign-out, never stored in browser storage).
+  - Pre-filled with the target Google Drive spreadsheet link beside File Import in Settings (`POST /api/drive/read-spreadsheet` & `POST /api/drive/reconcile`), supporting **Excel (`.xlsx` / `.xls`)**, **CSV / TSV**, and multi-tab **Google Sheets** with worksheet tab switching and live Column Mapping.
 - **Reliable Multi-Record Income & Expense Batch Recording (`App.tsx`, `FlexibleExpensesView.tsx`, `IncomeLogView.tsx`, `FloatingQuickActions.tsx`)**:
-  - Multi-item expense batches and multi-entry income queues save atomically with collision-proof IDs (`inc_*` / `exp_*`), functional React state updaters, and awaited `Promise.all` Firestore persistence so concurrent snapshots never drop submitted records.
-  - Preserves explicitly selected operating accounts, resolves custom typed source/origin drafts automatically, validates incomplete rows clearly before submit, and surfaces a 1-tap `Show All Dates` action if newly saved records fall outside the active date filter.
-- **Complete Individual Savings Vault Debiting (`deductionIntelligence.ts`, `server.ts`, `IncomeLogView.tsx`, `AccountsView.tsx`, `FloatingQuickActions.tsx`)**:
-  - Automated and manual savings vault debiting plans and executes debits for **every** active individual Savings Vault specified by the user (including vaults without prior debit history), with per-vault customization and `Select All / Clear All` controls.
-- **Savings Vault Group Credit & Commitment Earnings (`AccountsView.tsx`)**:
-  - After debiting a Savings Vault, users can switch between **Group Credit** and **Single Debit** inside the Credit Vault modal, select individual debited causes or group chips, see the **exact remaining committed principal** (net of prior linked credits), enter the principal amount to credit back, and optionally record **earnings** generated from the commitment in one flow.
-  - Principal credits allocate sequentially across selected debits (`linkedExpenseId`) while earnings post as a clean linked credit (`Cause Earnings`), updating both the Savings Vault and attached Main Account balances automatically.
-- **Streamlined Accounts Workspace (`AccountsView.tsx`)**:
-  - Removed the intermediate aggregate summary bar between Create Account and Operating Accounts for a direct, clutter-free account management workflow.
+  - Multi-item expense batches and multi-entry income queues save atomically with collision-proof IDs, functional React state updaters, awaited `Promise.all` Firestore persistence, explicit account preservation, row validation, and a one-tap `Show All Dates` action.
+- **Complete Individual Savings Vault Debiting & Group Credit + Earnings (`deductionIntelligence.ts`, `server.ts`, `AccountsView.tsx`)**:
+  - Debits every active individual Savings Vault specified by the user and enables Group Credit mode with exact remaining committed principal tracking and optional commitment earnings (`Cause Earnings`).
 - **Backend-Managed Prospective Savings Vault Percentages (`server.ts`, `calculations.ts`, `App.tsx`, `SettingsView.tsx`)**:
-  - Dedicated `POST /api/settings/vault-rates/update` endpoint freezes existing income records' savings deductions with their historical `savingsSplitSnapshot` before applying updated vault percentages prospectively to new income records.
+  - `POST /api/settings/vault-rates/update` freezes historical income splits while applying updated vault percentages prospectively to new income records.
 - **PWA / Android Biometric App Lock (`biometricAuth.ts`, `BiometricLockScreen.tsx`, `server.ts`, `App.tsx`, `SettingsView.tsx`)**:
-  - Opt-in WebAuthn platform biometric gate (`POST /api/security/biometric/challenge` and `POST /api/security/biometric/verify`) with offline PWA verification, salted SHA-256 backup passcode, and automatic resume lock.
-- **Backend-Driven Category & Subcategory Editing with Full Record Cascade (`server.ts`, `App.tsx`, `SettingsView.tsx`, `calculations.ts`)**:
-  - `POST /api/categories/edit` atomically updates category/subcategory names and cascades replacements across Expenses, Income Deductions, Deduction Rules, and Budgets.
-- **Dynamic Top-5 Frequent Expense Suggestions, Date-Responsive "By Category" View & Expanded Theme Automation**:
-  - Learns recurring expense patterns while leaving `To / Cause` and `Notes` blank, aggregates `By Category` with `POST /api/expenses/by-category`, collapses Analytics by default, and includes 11 color palettes plus `6:45 AM/PM` and `Auto` display modes.
+  - Opt-in WebAuthn platform biometric gate with offline PWA verification, salted SHA-256 backup passcode, and automatic resume lock.
 
 ---
 
@@ -38,53 +39,61 @@
 │   └── apple-touch-icon.png            # iOS home screen touch icon (180x180)
 ├── src/
 │   ├── index.css                       # Tailwind CSS v4 styles, theme variables & smooth input interaction rules
-│   ├── App.tsx                         # Root state orchestrator, BiometricLockScreen gate, atomic multi-record income/expense persistence & cloud sync
+│   ├── App.tsx                         # Root state orchestrator, History API + session restoration, BiometricLockScreen gate & atomic persistence
 │   ├── types/
 │   │   └── finance.ts                  # TypeScript models (IncomeReceipt, FlexibleExpense, Accounts, Budgets, UserSettings)
 │   ├── lib/
-│   │   ├── firebase.ts                 # Firebase Auth + Firestore persistentLocalCache (IndexedDB) + experimentalForceLongPolling
+│   │   ├── appStateRestore.ts          # Navigation history snapshots, per-tab scroll persistence & workflow state restoration helpers
+│   │   ├── dateFilters.ts              # Local calendar presets, arrival sorting & unified dd/mm/yyyy date/time formatters
+│   │   ├── firebase.ts                 # Firebase Auth (including read-only Google Drive in-memory OAuth token) & persistent Firestore cache
 │   │   ├── firestoreService.ts         # Real-time Firestore subscriptions, settings persistence & backend snapshot sync
+│   │   ├── driveAlignment.ts           # Drive URL parser, subcategory-to-category resolver, reconciliation types & dd/mm/yyyy diff engine
 │   │   ├── biometricAuth.ts            # WebAuthn Android/Platform Biometric enrollment & verification + backup passcode
 │   │   ├── colorThemes.ts              # 11 color palettes, blended light canvas tints & 6:45 schedule helper
 │   │   ├── calculations.ts             # Allocation engine, snapshot-locked vault splits, 2dp FX & account summaries
 │   │   ├── deductionIntelligence.ts    # Full-vault debit planning, Top-5 expense learning & deduction rule suggestions
 │   │   └── budgetCalculations.ts       # Multi-purpose Budgets & Goals evaluation, FX conversion rates & recurring period auto-recreation
 │   └── components/
+│       ├── ReconciliationTable.tsx     # Side-by-side Imported vs. Existing table with Auto-map subcategories toggle, dd/mm/yyyy dates & approval checkboxes
+│       ├── DriveAlignmentModal.tsx     # Full-screen Google Drive alignment workspace with persisted session state, sheet tabs & column mapper
 │       ├── BiometricLockScreen.tsx     # Full-screen Android/PWA biometric & backup passcode unlock gate
 │       ├── Navigation.tsx              # Mobile date filter + renderNavIcon + 5-item icon+label BottomMenuBar
 │       ├── Header.tsx                  # Static top navigation bar with clickable Overview brand, date filter & drawer trigger
 │       ├── Sidebar.tsx                 # Collapsible top-right drawer with 2x2 Display Mode selector, Color Palette swatches & 7 nav views
-│       ├── IncomeLogView.tsx           # Single & multi-entry income batch queue, all-vault automated debits & date-filter feedback
+│       ├── IncomeLogView.tsx           # Single & multi-entry income batch queue, all-vault automated debits & dd/mm/yyyy display
 │       ├── FlexibleExpensesView.tsx    # Multi-item expense batch recording with validation, account hydration & date-filtered By Category sync
 │       ├── FloatingQuickActions.tsx    # Quick-add modals (Automated All-Vault Transfer, Income, Quick Expense)
 │       ├── DashboardView.tsx           # Overview with unified Savings Accumulated & Allocation Flow
 │       ├── AnalyticsView.tsx           # Analytics charts & snapshot-locked pillar metrics (all sections collapsed by default)
 │       ├── AccountsView.tsx            # Operating Accounts, Savings Vaults, Transfer Funds & Group Credit + Earnings workflow
-│       ├── RecordCard.tsx              # Transaction detail card rendering snapshot-locked vault split shares
+│       ├── RecordCard.tsx              # Transaction detail card rendering dd/mm/yyyy dates & snapshot-locked vault split shares
 │       ├── SavingsDetailView.tsx       # Savings pillars & sub-bucket distribution across deductions and manual vault transfers
+│       ├── RevisionHistoryView.tsx     # Semantic version log & rollback view with dd/mm/yyyy timestamps
 │       ├── EditExpenseModal.tsx        # Standalone expense editing modal
 │       ├── BudgetsView.tsx             # Multi-purpose Budgets & Goals view (accessible via Sidebar)
-│       └── SettingsView.tsx            # Settings customization, prospective vault rate controls & App Security / Biometric Lock card
-├── server.ts                           # Express server (port 3000) + /api/transfers/automate-savings-vaults + /api/settings/* + /api/security/biometric/* + /api/categories/edit
+│       └── SettingsView.tsx            # Settings customization, persisted File Import + Google Drive Alignment, subcategory matching & Biometric Lock
+├── server.ts                           # Express server (port 3000) + /api/drive/* + /api/import/parse + /api/transfers/* + /api/settings/*
 ├── firebase-blueprint.json             # Firestore entity blueprint schema
 └── README.md                           # Enterprise documentation & GitHub commit change log
 ```
 
 ---
 
-## 3. GitHub File Change Summary (`v4.11.0`)
+## 3. GitHub File Change Summary (`v4.14.0`)
 
 Brief summary of changes per file for GitHub commit and release notes:
 
 | File Path | Summary of Changes for GitHub |
 | :--- | :--- |
-| `src/lib/deductionIntelligence.ts` | Updated `buildAutomatedSavingsVaultDebitPlan` to generate debit plans for every funded Savings Vault (not just vaults with prior debit history), using learned defaults when available and clean vault defaults otherwise. |
-| `server.ts` | Removed the prior-history gate in `POST /api/transfers/automate-savings-vaults` so every selected individual Savings Vault receives its automated debit entry. |
-| `src/App.tsx` | Added `handleAddIncomes` batch handler and hardened `handleAddIncome` / `handleAddExpenses` with collision-proof IDs, functional state updates, awaited `Promise.all` Firestore writes, explicit account preservation, and date-filter reset callbacks. |
-| `src/components/FlexibleExpensesView.tsx` | Added automatic row account hydration, clear multi-row validation feedback so incomplete rows are never silently dropped, and post-save date-filter visibility confirmation with a 1-tap `Show All Dates` button. |
-| `src/components/IncomeLogView.tsx` | Added multi-record income batch queue (`+ Add Another Income`, `Save N Incomes`), draft source/origin auto-resolution, all-vault automated debit selection with `Select All / Clear All`, and date-filter visibility notice. |
-| `src/components/FloatingQuickActions.tsx` | Enabled all-vault debiting in Quick Transfer, added Quick Expense account hydration, and added `Select All / Clear All` across all funded Savings Vaults in Quick Income. |
-| `src/components/AccountsView.tsx` | Removed the 4-card aggregate summary bar between Create Account and Operating Accounts; enabled all-vault manual transfer debiting; added Savings Vault Group Credit mode with exact remaining committed principal tracking, cause filters, editable principal credit, and optional earnings recording. |
-| `src/lib/calculations.ts` | Bumped `APP_VERSION` to `4.11.0` and added `v4.11.0` entry to `VERSION_RELEASE_LOG`. |
-| `src/components/Header.tsx` | Bumped `APP_VERSION` to `4.11.0`. |
-| `README.md` | Updated enterprise documentation and `v4.11.0` per-file GitHub commit change log. |
+| `src/lib/appStateRestore.ts` | Added navigation history snapshot builders/parsers (`buildHistoryStateSnapshot`, `parseHistoryStateSnapshot`), aligned restorable tabs with `ActiveTab`, and provided per-user navigation and workflow storage helpers. |
+| `src/components/ReconciliationTable.tsx` | Added the **Auto-map subcategories** switch toolbar with live auto-mapped count and inline `Auto-mapped` row cue; standardized imported, existing, and editor dates to `dd/mm/yyyy`. |
+| `src/components/DriveAlignmentModal.tsx` | Wired `autoMapSubcategories` toggle and live in-place re-mapping (plus inline subcategory edit auto-mapping), sent `expenseCategoryPreferences` to `/api/drive/reconcile`, persisted/restored full Drive session state with all performed user actions, and formatted modified dates and search matching as `dd/mm/yyyy`. |
+| `src/components/SettingsView.tsx` | Passed `expenseCategoryPreferences` to `/api/import/parse` with client-side subcategory-to-category resolution, persisted/restored Settings import preview and Drive modal state across navigation returns, and formatted all displayed dates as `dd/mm/yyyy`. |
+| `src/App.tsx` | Wired full state restoration using History API (`pushState`/`replaceState`/`popstate`), per-tab scroll position preservation, `visibilitychange`/`pagehide` flushing, and synced Drive modal open state across Back/Forward returns. |
+| `src/components/RevisionHistoryView.tsx` | Standardized revision timestamps to `dd/mm/yyyy · HH:mm` via `formatDateTimeDDMMYYYY`. |
+| `src/components/SavingsDetailView.tsx` | Standardized savings allocation dates to `dd/mm/yyyy` via `formatDateDDMMYYYY`. |
+| `src/components/IncomeLogView.tsx` | Standardized queued income receipt dates to `dd/mm/yyyy` via `formatDateDDMMYYYY`. |
+| `src/components/AccountsView.tsx` | Standardized generated vault debit/credit note dates to `dd/mm/yyyy` via `formatDateDDMMYYYY`. |
+| `src/lib/calculations.ts` | Bumped `APP_VERSION` to `4.14.0` and added `v4.14.0` release log entry. |
+| `src/components/Header.tsx` | Bumped `APP_VERSION` to `4.14.0`. |
+| `README.md` | Updated enterprise component architecture and `v4.14.0` per-file GitHub commit change log. |

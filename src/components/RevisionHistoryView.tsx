@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { RevisionEntry } from '../types/finance.ts';
 import { formatSemanticVersion } from '../lib/calculations.ts';
+import { formatDateTimeDDMMYYYY } from '../lib/dateFilters.ts';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 
 interface RevisionHistoryViewProps {
@@ -101,7 +102,7 @@ export const RevisionHistoryView: React.FC<RevisionHistoryViewProps> = ({
                       )}
                     </td>
                     <td className="py-2.5 px-3.5 text-slate-500 whitespace-nowrap tabular-nums">
-                      {new Date(rev.timestamp).toLocaleString()}
+                      {formatDateTimeDDMMYYYY(rev.timestamp, rev.timestamp)}
                     </td>
                     <td className="py-2.5 px-3.5 font-sans text-slate-700">
                       <span className="border border-slate-200 rounded px-1.5 py-0.5 bg-slate-50 text-[11px]">

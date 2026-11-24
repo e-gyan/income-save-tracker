@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import * as XLSX from 'xlsx';
 
 dotenv.config();
 
@@ -534,12 +535,36 @@ function detectCurrencyAndCleanNumber(
   };
 }
 
+function formatYmdToDDMMYYYY(dateStr: string): string {
+  const s = String(dateStr || '').trim();
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  return s || '—';
+}
+
 function normalizeDateString(rawDate: any): string {
   const today = new Date().toISOString().split('T')[0];
   if (!rawDate) return today;
   const s = String(rawDate).trim();
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
     return s.slice(0, 10);
+  }
+  // Prioritize DD/MM/YYYY or DD-MM-YYYY (matching app-wide dd/mm/yyyy date format)
+  const dmyMatch = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  if (dmyMatch) {
+    const a = parseInt(dmyMatch[1], 10);
+    const b = parseInt(dmyMatch[2], 10);
+    let y = parseInt(dmyMatch[3], 10);
+    if (y < 100) y += y >= 70 ? 1900 : 2000;
+    let day = a;
+    let month = b;
+    if (b > 12 && a <= 12) {
+      month = a;
+      day = b;
+    }
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${y}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
   }
   const parsed = new Date(s);
   if (!isNaN(parsed.getTime())) {
@@ -601,7 +626,28 @@ app.post('/api/import/parse', async (req: Request, res: Response) => {
       isBase64 = false,
       baseCurrency = 'USD',
       accounts = [],
+      expenseCategoryPreferences = [],
     } = req.body || {};
+
+    const subToCatMap = new Map<string, { category: string; subcategory: string }>();
+    const knownCategoryKeys = new Set<string>();
+    if (Array.isArray(expenseCategoryPreferences)) {
+      for (const pref of expenseCategoryPreferences) {
+        const parentName = String(pref?.name || '').trim();
+        if (!parentName) continue;
+        knownCategoryKeys.add(parentName.toLowerCase().replace(/\s+/g, ' '));
+        if (Array.isArray(pref?.subcategories)) {
+          for (const sub of pref.subcategories) {
+            const cleanSub = String(sub || '').trim();
+            if (!cleanSub) continue;
+            const key = cleanSub.toLowerCase().replace(/\s+/g, ' ');
+            if (!subToCatMap.has(key)) {
+              subToCatMap.set(key, { category: parentName, subcategory: cleanSub });
+            }
+          }
+        }
+      }
+    }
 
     const upperBase = String(baseCurrency || 'USD').trim().toUpperCase();
     const cachedFx = fxCache.get(upperBase);
@@ -809,18 +855,39 @@ app.post('/api/import/parse', async (req: Request, res: Response) => {
           ),
         });
       } else {
-        const cleanCat = String(raw.category || 'General').trim();
-        const cleanSub = String(raw.subcategory || cleanCat || 'General').trim();
+        const rawCat = String(raw.category || '').trim();
+        const rawSub = String(raw.subcategory || '').trim();
+        let resolvedCat = rawCat || 'General';
+        let resolvedSub = rawSub;
+
+        if (rawSub) {
+          const matchedSub = subToCatMap.get(rawSub.toLowerCase().replace(/\s+/g, ' '));
+          if (matchedSub) {
+            resolvedCat = matchedSub.category;
+            resolvedSub = matchedSub.subcategory;
+          }
+        } else if (rawCat) {
+          const catKey = rawCat.toLowerCase().replace(/\s+/g, ' ');
+          if (!knownCategoryKeys.has(catKey)) {
+            const catAsSub = subToCatMap.get(catKey);
+            if (catAsSub) {
+              resolvedCat = catAsSub.category;
+              resolvedSub = catAsSub.subcategory;
+            }
+          }
+        }
+
+        const finalSub = resolvedSub || resolvedCat || 'General';
         parsedExpenses.push({
           date: dateStr,
           accountId: accMatch.id,
           recipient: String(
             raw.recipient || raw.to || raw.payee || raw.vendor || raw.merchant || ''
           ).trim(),
-          category: cleanCat,
-          subcategory: cleanSub,
+          category: resolvedCat,
+          subcategory: finalSub,
           notes: String(raw.notes || raw.description || '').trim() || undefined,
-          description: cleanSub,
+          description: finalSub,
           currency: rowCurr,
           originalAmount: absAmt,
           exchangeRate: exchangeRate2dp,
@@ -4156,6 +4223,971 @@ app.get('/manifest.webmanifest', (_req: Request, res: Response) => {
       ],
     })
   );
+});
+
+/**
+ * ============================================================================
+ * GOOGLE DRIVE SPREADSHEET RECORD ALIGNMENT & 3-WAY RECONCILIATION ENDPOINTS
+ * ============================================================================
+ */
+
+function extractDriveFileIdSafe(input: string): string | null {
+  const trimmed = String(input || '').trim();
+  if (!trimmed) return null;
+  const fileMatch = trimmed.match(/\/(?:file|spreadsheets|document)\/d\/([a-zA-Z0-9_-]{10,120})/);
+  if (fileMatch && fileMatch[1]) return fileMatch[1];
+  const queryMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_-]{10,120})/);
+  if (queryMatch && queryMatch[1]) return queryMatch[1];
+  if (/^[a-zA-Z0-9_-]{15,120}$/.test(trimmed)) return trimmed;
+  return null;
+}
+
+function formatCellValue(cell: any): string {
+  if (cell === null || cell === undefined) return '';
+  if (cell instanceof Date && !isNaN(cell.getTime())) {
+    const yyyy = cell.getFullYear();
+    const mm = String(cell.getMonth() + 1).padStart(2, '0');
+    const dd = String(cell.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  if (typeof cell === 'number') {
+    return Number.isFinite(cell) ? String(cell) : '';
+  }
+  return String(cell).trim();
+}
+
+function detectSpreadsheetColumnMapping(headers: string[]): Record<string, string | undefined> {
+  const mapping: Record<string, string | undefined> = {};
+  const used = new Set<string>();
+
+  const pick = (patterns: RegExp[]): string | undefined => {
+    for (const pattern of patterns) {
+      const match = headers.find((h) => !used.has(h) && pattern.test(h.trim().toLowerCase()));
+      if (match) {
+        used.add(match);
+        return match;
+      }
+    }
+    return undefined;
+  };
+
+  mapping.date = pick([
+    /^date$/,
+    /transaction\s*date/,
+    /posting\s*date/,
+    /value\s*date/,
+    /entry\s*date/,
+    /\bdate\b/,
+    /timestamp/,
+  ]);
+  mapping.type = pick([
+    /^(record\s*)?type$/,
+    /transaction\s*type/,
+    /entry\s*type/,
+    /\bkind\b/,
+    /direction/,
+    /flow/,
+  ]);
+  mapping.debit = pick([
+    /^debit(\s*amount)?$/,
+    /withdrawal/,
+    /outflow/,
+    /money\s*out/,
+    /paid\s*out/,
+    /spent/,
+  ]);
+  mapping.credit = pick([
+    /^credit(\s*amount)?$/,
+    /deposit/,
+    /inflow/,
+    /money\s*in/,
+    /paid\s*in/,
+    /received/,
+  ]);
+  mapping.amount = pick([
+    /^(gross\s*)?amount$/,
+    /^total(\s*amount)?$/,
+    /^value$/,
+    /^sum$/,
+    /amount/,
+    /price/,
+    /cost/,
+  ]);
+  mapping.currency = pick([/^currency$/, /\bccy\b/, /\bcurr\b/, /currency/]);
+  mapping.toAccount = pick([
+    /to\s*account/,
+    /dest(ination)?\s*account/,
+    /target\s*account/,
+    /credit\s*account/,
+  ]);
+  mapping.account = pick([
+    /^(from\s*)?account(\s*name)?$/,
+    /source\s*account/,
+    /wallet/,
+    /bank(\s*account)?/,
+    /vault/,
+    /account/,
+  ]);
+  mapping.subcategory = pick([
+    /^sub[\s_-]*category$/,
+    /sub[\s_-]*cat/,
+    /line\s*item/,
+    /item\s*type/,
+  ]);
+  mapping.category = pick([
+    /^category$/,
+    /expense\s*category/,
+    /classification/,
+    /group/,
+    /budget/,
+    /category/,
+  ]);
+  mapping.counterparty = pick([
+    /^(client|source|payee|merchant|vendor|recipient)$/,
+    /to\s*\/\s*cause/,
+    /client\s*(\/|or)\s*source/,
+    /paid\s*to/,
+    /received\s*from/,
+    /beneficiary/,
+    /counterparty/,
+    /merchant/,
+    /payee/,
+    /vendor/,
+    /recipient/,
+    /source/,
+    /cause/,
+    /title/,
+    /name/,
+  ]);
+  mapping.notes = pick([
+    /^notes?$/,
+    /^description$/,
+    /^memo$/,
+    /^narration$/,
+    /^details?$/,
+    /^remarks?$/,
+    /^reference$/,
+    /description/,
+    /note/,
+    /memo/,
+    /narration/,
+  ]);
+
+  return mapping;
+}
+
+function extractWorkbookSheets(workbook: XLSX.WorkBook) {
+  const sheets: {
+    name: string;
+    headers: string[];
+    rows: Record<string, string>[];
+    totalRowCount: number;
+    autoMapping: Record<string, string | undefined>;
+  }[] = [];
+
+  for (const sheetName of workbook.SheetNames) {
+    const ws = workbook.Sheets[sheetName];
+    if (!ws) continue;
+
+    const matrix = XLSX.utils.sheet_to_json<any[]>(ws, {
+      header: 1,
+      defval: '',
+      raw: false,
+      dateNF: 'yyyy-mm-dd',
+    });
+
+    if (!Array.isArray(matrix) || matrix.length === 0) continue;
+
+    // Detect the real header row within the top 15 rows (skipping sheet titles / blank rows)
+    const headerKeywords =
+      /date|amount|debit|credit|category|account|description|note|source|payee|recipient|merchant|type|currency|balance|income|expense|total|memo/i;
+    let headerRowIdx = 0;
+    let bestScore = -1;
+    const scanLimit = Math.min(matrix.length, 15);
+    for (let r = 0; r < scanLimit; r++) {
+      const row = Array.isArray(matrix[r]) ? matrix[r] : [];
+      const nonEmpty = row
+        .map((c) => formatCellValue(c))
+        .filter((s) => s.length > 0);
+      if (nonEmpty.length < 2) continue;
+      const keywordHits = nonEmpty.filter((s) => headerKeywords.test(s)).length;
+      const numericRatio =
+        nonEmpty.filter((s) => /^[+-]?[\d,.$£€₵¥]+$/.test(s)).length / nonEmpty.length;
+      const score = keywordHits * 10 + nonEmpty.length - numericRatio * 8;
+      if (score > bestScore) {
+        bestScore = score;
+        headerRowIdx = r;
+      }
+    }
+
+    const rawHeaderRow = Array.isArray(matrix[headerRowIdx]) ? matrix[headerRowIdx] : [];
+    const seenHeaders = new Map<string, number>();
+    const headers: string[] = rawHeaderRow.map((cell, idx) => {
+      const base = formatCellValue(cell) || `Column ${idx + 1}`;
+      const count = seenHeaders.get(base) || 0;
+      seenHeaders.set(base, count + 1);
+      return count === 0 ? base : `${base} (${count + 1})`;
+    });
+
+    const dataRows: Record<string, string>[] = [];
+    for (let r = headerRowIdx + 1; r < matrix.length; r++) {
+      const rawRow = Array.isArray(matrix[r]) ? matrix[r] : [];
+      const obj: Record<string, string> = {};
+      let populated = 0;
+      for (let c = 0; c < headers.length; c++) {
+        const val = formatCellValue(rawRow[c]);
+        obj[headers[c]] = val;
+        if (val.length > 0) populated++;
+      }
+      if (populated === 0) continue;
+      // Skip obvious trailing summary/totals rows
+      const firstNonEmpty = Object.values(obj).find((v) => v.length > 0) || '';
+      if (/^(grand\s*)?totals?:?$/i.test(firstNonEmpty.trim())) continue;
+      dataRows.push(obj);
+      if (dataRows.length >= 1500) break;
+    }
+
+    if (headers.filter((h) => !/^Column \d+$/.test(h)).length === 0 && dataRows.length === 0) {
+      continue;
+    }
+
+    sheets.push({
+      name: sheetName,
+      headers,
+      rows: dataRows,
+      totalRowCount: dataRows.length,
+      autoMapping: detectSpreadsheetColumnMapping(headers),
+    });
+  }
+
+  return sheets;
+}
+
+app.post('/api/drive/read-spreadsheet', async (req: Request, res: Response) => {
+  try {
+    const authHeader = String(req.headers.authorization || '').trim();
+    if (!authHeader.startsWith('Bearer ') || authHeader.length < 15) {
+      return res.status(401).json({
+        code: 'DRIVE_AUTH_REQUIRED',
+        error: 'Please connect Google Drive with read-only access first.',
+      });
+    }
+
+    const { fileIdOrUrl = '' } = req.body || {};
+    const fileId = extractDriveFileIdSafe(fileIdOrUrl);
+    if (!fileId) {
+      return res.status(400).json({
+        error: 'Invalid Google Drive link or file ID. Paste a valid Google Drive file URL.',
+      });
+    }
+
+    // 1. Fetch file metadata from Google Drive API v3
+    const metaRes = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType,modifiedTime,size&supportsAllDrives=true`,
+      { headers: { Authorization: authHeader } }
+    );
+
+    if (metaRes.status === 401) {
+      return res.status(401).json({
+        code: 'DRIVE_TOKEN_EXPIRED',
+        error: 'Your Google Drive session expired. Reconnect Google Drive to continue.',
+      });
+    }
+    if (metaRes.status === 403 || metaRes.status === 404) {
+      return res.status(metaRes.status).json({
+        error:
+          'Unable to access this Google Drive file. Verify the signed-in Google account has view permission for this link.',
+      });
+    }
+    if (!metaRes.ok) {
+      const errTxt = await metaRes.text();
+      return res.status(502).json({
+        error: `Google Drive metadata request failed (${metaRes.status}): ${errTxt.slice(0, 180)}`,
+      });
+    }
+
+    const meta = (await metaRes.json()) as {
+      id: string;
+      name: string;
+      mimeType: string;
+      modifiedTime?: string;
+    };
+
+    const mime = String(meta.mimeType || '').toLowerCase();
+    const lowerName = String(meta.name || '').toLowerCase();
+    let workbook: XLSX.WorkBook | null = null;
+
+    // 2. Download or export spreadsheet bytes based on MIME type
+    if (mime === 'application/vnd.google-apps.spreadsheet') {
+      // Export Google Sheet as multi-tab XLSX first so every worksheet tab is preserved
+      const exportUrl = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/export?mimeType=${encodeURIComponent('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}`;
+      const exportRes = await fetch(exportUrl, {
+        headers: { Authorization: authHeader },
+      });
+      if (exportRes.ok) {
+        const buf = Buffer.from(await exportRes.arrayBuffer());
+        workbook = XLSX.read(buf, { type: 'buffer', cellDates: true });
+      } else {
+        // Fallback to CSV export for very large single-sheet Google Sheets
+        const csvRes = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/export?mimeType=text/csv`,
+          { headers: { Authorization: authHeader } }
+        );
+        if (!csvRes.ok) {
+          return res.status(502).json({
+            error: `Failed to export Google Sheet (${exportRes.status}).`,
+          });
+        }
+        const csvText = await csvRes.text();
+        workbook = XLSX.read(csvText, { type: 'string', raw: false });
+      }
+    } else if (
+      mime.includes('spreadsheet') ||
+      mime.includes('excel') ||
+      lowerName.endsWith('.xlsx') ||
+      lowerName.endsWith('.xls') ||
+      lowerName.endsWith('.ods')
+    ) {
+      const dlRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
+        { headers: { Authorization: authHeader } }
+      );
+      if (!dlRes.ok) {
+        return res.status(502).json({
+          error: `Failed to download Excel file from Google Drive (${dlRes.status}).`,
+        });
+      }
+      const buf = Buffer.from(await dlRes.arrayBuffer());
+      workbook = XLSX.read(buf, { type: 'buffer', cellDates: true });
+    } else if (
+      mime.includes('csv') ||
+      mime.includes('tab-separated') ||
+      mime.startsWith('text/') ||
+      lowerName.endsWith('.csv') ||
+      lowerName.endsWith('.tsv') ||
+      lowerName.endsWith('.txt')
+    ) {
+      const dlRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
+        { headers: { Authorization: authHeader } }
+      );
+      if (!dlRes.ok) {
+        return res.status(502).json({
+          error: `Failed to download CSV/text file from Google Drive (${dlRes.status}).`,
+        });
+      }
+      const text = await dlRes.text();
+      workbook = XLSX.read(text, { type: 'string', raw: false });
+    } else {
+      return res.status(415).json({
+        error: `This Drive file (${meta.name}) has unsupported format "${meta.mimeType}". Please select an Excel (.xlsx/.xls), CSV, or Google Sheets file.`,
+      });
+    }
+
+    const sheets = workbook ? extractWorkbookSheets(workbook) : [];
+    if (sheets.length === 0) {
+      return res.status(422).json({
+        error: `No readable tabular rows were found in "${meta.name}".`,
+      });
+    }
+
+    return res.json({
+      fileId: meta.id,
+      fileName: meta.name,
+      mimeType: meta.mimeType,
+      modifiedTime: meta.modifiedTime,
+      sheets,
+    });
+  } catch (error: any) {
+    console.error('Drive read spreadsheet error:', error);
+    return res.status(500).json({
+      error: error?.message || 'Failed to read spreadsheet from Google Drive.',
+    });
+  }
+});
+
+function parseFlexibleSpreadsheetDate(raw: any): string {
+  const today = new Date().toISOString().split('T')[0];
+  if (raw === null || raw === undefined || String(raw).trim() === '') return today;
+
+  const s = String(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+
+  // DD/MM/YYYY or DD-MM-YYYY first (app-wide dd/mm/yyyy convention; falls back to MM/DD/YYYY if second part > 12)
+  const slashMatch = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  if (slashMatch) {
+    const a = parseInt(slashMatch[1], 10);
+    const b = parseInt(slashMatch[2], 10);
+    let y = parseInt(slashMatch[3], 10);
+    if (y < 100) y += y >= 70 ? 1900 : 2000;
+    let day = a;
+    let month = b;
+    if (b > 12 && a <= 12) {
+      month = a;
+      day = b;
+    }
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${y}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+  }
+
+  // Excel serial number (e.g. 45600)
+  if (/^\d{5}(\.\d+)?$/.test(s)) {
+    const serial = parseFloat(s);
+    if (serial > 20000 && serial < 90000) {
+      const utcMs = Math.round((serial - 25569) * 86400 * 1000);
+      const dt = new Date(utcMs);
+      if (!isNaN(dt.getTime())) return dt.toISOString().split('T')[0];
+    }
+  }
+
+  return normalizeDateString(s);
+}
+
+function daysBetweenYmd(a: string, b: string): number {
+  const ta = Date.parse(`${(a || '').slice(0, 10)}T00:00:00Z`);
+  const tb = Date.parse(`${(b || '').slice(0, 10)}T00:00:00Z`);
+  if (!Number.isFinite(ta) || !Number.isFinite(tb)) return 9999;
+  return Math.abs(Math.round((ta - tb) / 86400000));
+}
+
+function textTokenSimilarity(a: string, b: string): number {
+  const norm = (str: string) =>
+    String(str || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((t) => t.length >= 2);
+  const ta = norm(a);
+  const tb = norm(b);
+  if (ta.length === 0 || tb.length === 0) return 0;
+  const setA = new Set(ta);
+  const setB = new Set(tb);
+  let intersect = 0;
+  setA.forEach((tok) => {
+    if (setB.has(tok)) intersect++;
+  });
+  return intersect / Math.max(setA.size, setB.size);
+}
+
+app.post('/api/drive/reconcile', async (req: Request, res: Response) => {
+  try {
+    const {
+      rows = [],
+      mapping = {},
+      baseCurrency = 'USD',
+      accounts = [],
+      incomes = [],
+      expenses = [],
+      transfers = [],
+      categories = [],
+      expenseCategoryPreferences = [],
+      autoMapSubcategories = true,
+    } = req.body || {};
+
+    if (!Array.isArray(rows)) {
+      return res.status(400).json({ error: 'Spreadsheet rows must be an array.' });
+    }
+
+    const subToParentLookup = new Map<string, { category: string; subcategory: string }>();
+    const definedCategoryKeySet = new Set<string>();
+    if (Array.isArray(expenseCategoryPreferences)) {
+      for (const pref of expenseCategoryPreferences) {
+        const parentName = String(pref?.name || '').trim();
+        if (!parentName) continue;
+        definedCategoryKeySet.add(parentName.toLowerCase().replace(/\s+/g, ' '));
+        if (Array.isArray(pref?.subcategories)) {
+          for (const sub of pref.subcategories) {
+            const cleanSub = String(sub || '').trim();
+            if (!cleanSub) continue;
+            const key = cleanSub.toLowerCase().replace(/\s+/g, ' ');
+            if (!subToParentLookup.has(key)) {
+              subToParentLookup.set(key, { category: parentName, subcategory: cleanSub });
+            }
+          }
+        }
+      }
+    }
+
+    const upperBase = String(baseCurrency || 'USD').trim().toUpperCase();
+    const cachedFx = fxCache.get(upperBase);
+    const activeRates = cachedFx?.rates || buildFallbackRatesForBase(upperBase);
+
+    const accountList: any[] = Array.isArray(accounts) ? accounts : [];
+    const defaultAccount =
+      accountList.find((a) => a.isDefaultDeposit && !a.isVirtual && !a.archived) ||
+      accountList.find((a) => !a.isVirtual && !a.archived) ||
+      accountList[0] || {
+        id: 'acc-main-op',
+        name: 'Main Operating Account',
+        currency: upperBase,
+      };
+
+    const resolveAccount = (hint: string): { id: string; name: string; currency: string } => {
+      const cleaned = String(hint || '').trim().toLowerCase();
+      if (cleaned && accountList.length > 0) {
+        const exact = accountList.find(
+          (a) =>
+            String(a.id || '').toLowerCase() === cleaned ||
+            String(a.name || '').toLowerCase() === cleaned
+        );
+        if (exact) {
+          return {
+            id: exact.id,
+            name: exact.name,
+            currency: String(exact.currency || upperBase).toUpperCase(),
+          };
+        }
+        const partial = accountList.find(
+          (a) =>
+            String(a.name || '').toLowerCase().includes(cleaned) ||
+            cleaned.includes(String(a.name || '').toLowerCase())
+        );
+        if (partial) {
+          return {
+            id: partial.id,
+            name: partial.name,
+            currency: String(partial.currency || upperBase).toUpperCase(),
+          };
+        }
+      }
+      return {
+        id: defaultAccount.id || 'acc-main-op',
+        name: defaultAccount.name || 'Main Operating Account',
+        currency: String(defaultAccount.currency || upperBase).toUpperCase(),
+      };
+    };
+
+    const categoryNames: string[] = Array.isArray(categories)
+      ? categories.map((c: any) => String(c || '').trim()).filter(Boolean)
+      : [];
+
+    const resolveCategory = (rawCat: string): string => {
+      const cleaned = String(rawCat || '').trim();
+      if (!cleaned) return categoryNames[0] || 'Other';
+      const lower = cleaned.toLowerCase();
+      const exact = categoryNames.find((c) => c.toLowerCase() === lower);
+      if (exact) return exact;
+      const partial = categoryNames.find(
+        (c) => c.toLowerCase().includes(lower) || lower.includes(c.toLowerCase())
+      );
+      return partial || cleaned;
+    };
+
+    const normalizeStr = (s?: string) =>
+      String(s || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .toLowerCase();
+
+    const getVal = (row: Record<string, string>, col?: string): string => {
+      if (!col) return '';
+      return String(row?.[col] ?? '').trim();
+    };
+
+    const accountNameById = new Map<string, string>();
+    for (const acc of accountList) {
+      accountNameById.set(acc.id, acc.name || acc.id);
+    }
+
+    const computeDiffsServer = (existing: any, proposed: any) => {
+      const diffs: { field: string; label: string; appValue: string; driveValue: string }[] = [];
+      if ((existing.date || '').slice(0, 10) !== (proposed.date || '').slice(0, 10)) {
+        diffs.push({
+          field: 'date',
+          label: 'Date',
+          appValue: formatYmdToDDMMYYYY(existing.date),
+          driveValue: formatYmdToDDMMYYYY(proposed.date),
+        });
+      }
+      if (Math.abs((Number(existing.amount) || 0) - (Number(proposed.amount) || 0)) >= 0.01) {
+        diffs.push({
+          field: 'amount',
+          label: 'Amount',
+          appValue: `${existing.currency} ${round2dp(existing.amount).toFixed(2)}`,
+          driveValue: `${proposed.currency} ${round2dp(proposed.amount).toFixed(2)}`,
+        });
+      }
+      if ((existing.currency || '').toUpperCase() !== (proposed.currency || '').toUpperCase()) {
+        diffs.push({
+          field: 'currency',
+          label: 'Currency',
+          appValue: (existing.currency || upperBase).toUpperCase(),
+          driveValue: (proposed.currency || upperBase).toUpperCase(),
+        });
+      }
+      if (existing.accountId !== proposed.accountId) {
+        diffs.push({
+          field: 'accountId',
+          label: proposed.recordType === 'transfer' ? 'From Account' : 'Account',
+          appValue: accountNameById.get(existing.accountId) || existing.accountId,
+          driveValue: accountNameById.get(proposed.accountId) || proposed.accountId,
+        });
+      }
+      if (
+        proposed.recordType === 'transfer' &&
+        (existing.toAccountId || '') !== (proposed.toAccountId || '')
+      ) {
+        diffs.push({
+          field: 'toAccountId',
+          label: 'To Account',
+          appValue: accountNameById.get(existing.toAccountId) || existing.toAccountId || '—',
+          driveValue: accountNameById.get(proposed.toAccountId) || proposed.toAccountId || '—',
+        });
+      }
+      if (
+        proposed.recordType === 'expense' &&
+        normalizeStr(existing.category) !== normalizeStr(proposed.category)
+      ) {
+        diffs.push({
+          field: 'category',
+          label: 'Category',
+          appValue: existing.category || 'Uncategorized',
+          driveValue: proposed.category || 'Uncategorized',
+        });
+      }
+      if (
+        proposed.recordType === 'expense' &&
+        normalizeStr(existing.subcategory) !== normalizeStr(proposed.subcategory)
+      ) {
+        diffs.push({
+          field: 'subcategory',
+          label: 'Subcategory',
+          appValue: existing.subcategory || 'None',
+          driveValue: proposed.subcategory || 'None',
+        });
+      }
+      if (
+        proposed.recordType !== 'transfer' &&
+        normalizeStr(existing.counterparty) !== normalizeStr(proposed.counterparty)
+      ) {
+        diffs.push({
+          field: 'counterparty',
+          label: proposed.recordType === 'income' ? 'Source' : 'To / Cause',
+          appValue: existing.counterparty || '—',
+          driveValue: proposed.counterparty || '—',
+        });
+      }
+      if (normalizeStr(existing.notes) !== normalizeStr(proposed.notes)) {
+        diffs.push({
+          field: 'notes',
+          label: 'Notes',
+          appValue: existing.notes || '—',
+          driveValue: proposed.notes || '—',
+        });
+      }
+      return diffs;
+    };
+
+    // Build normalized candidate pool from current app ledger
+    const existingPool: {
+      id: string;
+      recordType: 'income' | 'expense' | 'transfer';
+      snapshot: any;
+      baseAmount: number;
+    }[] = [];
+
+    for (const inc of Array.isArray(incomes) ? incomes : []) {
+      const accCurr =
+        accountList.find((a) => a.id === inc.accountId)?.currency || upperBase;
+      const nativeAmt = round2dp(
+        Number(inc.originalGrossAmount ?? inc.grossAmount ?? 0)
+      );
+      const curr = String(inc.currency || accCurr || upperBase).toUpperCase();
+      existingPool.push({
+        id: inc.id,
+        recordType: 'income',
+        baseAmount: round2dp(Number(inc.grossAmount || nativeAmt)),
+        snapshot: {
+          recordType: 'income',
+          date: String(inc.date || '').slice(0, 10),
+          amount: nativeAmt,
+          currency: curr,
+          accountId: inc.accountId || defaultAccount.id,
+          category: 'Income',
+          subcategory: '',
+          counterparty: String(inc.clientOrSource || '').trim(),
+          notes: String(inc.notes || '').trim(),
+        },
+      });
+    }
+
+    for (const exp of Array.isArray(expenses) ? expenses : []) {
+      const accCurr =
+        accountList.find((a) => a.id === exp.accountId)?.currency || upperBase;
+      const nativeAmt = round2dp(Number(exp.originalAmount ?? exp.amount ?? 0));
+      const curr = String(exp.currency || accCurr || upperBase).toUpperCase();
+      existingPool.push({
+        id: exp.id,
+        recordType: 'expense',
+        baseAmount: round2dp(Number(exp.amount || nativeAmt)),
+        snapshot: {
+          recordType: 'expense',
+          date: String(exp.date || '').slice(0, 10),
+          amount: nativeAmt,
+          currency: curr,
+          accountId: exp.accountId || defaultAccount.id,
+          category: String(exp.category || 'Other').trim(),
+          subcategory: String(exp.subcategory || '').trim(),
+          counterparty: String(exp.recipient || exp.description || '').trim(),
+          notes: String(exp.notes || exp.description || '').trim(),
+        },
+      });
+    }
+
+    for (const tr of Array.isArray(transfers) ? transfers : []) {
+      const nativeAmt = round2dp(Number(tr.sourceAmount ?? tr.amount ?? 0));
+      const curr = String(tr.sourceCurrency || upperBase).toUpperCase();
+      existingPool.push({
+        id: tr.id,
+        recordType: 'transfer',
+        baseAmount: round2dp(Number(tr.amount || nativeAmt)),
+        snapshot: {
+          recordType: 'transfer',
+          date: String(tr.date || '').slice(0, 10),
+          amount: nativeAmt,
+          currency: curr,
+          accountId: tr.sourceAccountId || defaultAccount.id,
+          toAccountId: tr.destinationAccountId || defaultAccount.id,
+          category: 'Transfer',
+          subcategory: '',
+          counterparty: '',
+          notes: String(tr.description || '').trim(),
+        },
+      });
+    }
+
+    // Parse all incoming spreadsheet rows first
+    const normalizedDriveRows: {
+      rowIndex: number;
+      rawRow: Record<string, string>;
+      proposed: any;
+      baseAmount: number;
+    }[] = [];
+
+    rows.forEach((rawRow: Record<string, string>, idx: number) => {
+      const dateRaw = getVal(rawRow, mapping.date);
+      const typeRaw = getVal(rawRow, mapping.type).toLowerCase();
+      const amountRaw = getVal(rawRow, mapping.amount);
+      const debitRaw = getVal(rawRow, mapping.debit);
+      const creditRaw = getVal(rawRow, mapping.credit);
+      const currencyRaw = getVal(rawRow, mapping.currency);
+      const accountRaw = getVal(rawRow, mapping.account);
+      const toAccountRaw = getVal(rawRow, mapping.toAccount);
+      const categoryRaw = getVal(rawRow, mapping.category);
+      const subcategoryRaw = getVal(rawRow, mapping.subcategory);
+      const counterpartyRaw = getVal(rawRow, mapping.counterparty);
+      const notesRaw = getVal(rawRow, mapping.notes);
+
+      const accResolved = resolveAccount(accountRaw);
+      const toAccResolved = toAccountRaw ? resolveAccount(toAccountRaw) : null;
+      const fallbackCurr = (currencyRaw || accResolved.currency || upperBase).toUpperCase();
+
+      const parsedMain = detectCurrencyAndCleanNumber(amountRaw, fallbackCurr);
+      const parsedDebit = debitRaw
+        ? detectCurrencyAndCleanNumber(debitRaw, fallbackCurr)
+        : { amount: 0, currency: fallbackCurr };
+      const parsedCredit = creditRaw
+        ? detectCurrencyAndCleanNumber(creditRaw, fallbackCurr)
+        : { amount: 0, currency: fallbackCurr };
+
+      let recordType: 'expense' | 'income' | 'transfer' = 'expense';
+      let amount = 0;
+      let txCurrency = fallbackCurr;
+
+      if (Math.abs(parsedDebit.amount) > 0 && Math.abs(parsedCredit.amount) === 0) {
+        recordType = 'expense';
+        amount = Math.abs(parsedDebit.amount);
+        txCurrency = currencyRaw ? fallbackCurr : parsedDebit.currency;
+      } else if (Math.abs(parsedCredit.amount) > 0 && Math.abs(parsedDebit.amount) === 0) {
+        recordType = 'income';
+        amount = Math.abs(parsedCredit.amount);
+        txCurrency = currencyRaw ? fallbackCurr : parsedCredit.currency;
+      } else if (Math.abs(parsedMain.amount) > 0) {
+        amount = Math.abs(parsedMain.amount);
+        txCurrency = currencyRaw ? fallbackCurr : parsedMain.currency;
+        if (parsedMain.amount > 0 && /income|credit|deposit|inflow|salary|revenue|earning/.test(typeRaw)) {
+          recordType = 'income';
+        } else if (parsedMain.amount < 0) {
+          recordType = 'expense';
+        }
+      } else {
+        // Skip rows with no numeric financial amount
+        return;
+      }
+
+      if (typeRaw) {
+        if (/transfer|move|internal/.test(typeRaw)) {
+          recordType = 'transfer';
+        } else if (/income|credit|deposit|inflow|revenue|salary|earning/.test(typeRaw)) {
+          recordType = 'income';
+        } else if (/expense|debit|outflow|spend|payment|withdrawal|purchase/.test(typeRaw)) {
+          recordType = 'expense';
+        }
+      } else if (toAccResolved && toAccResolved.id !== accResolved.id) {
+        recordType = 'transfer';
+      }
+
+      const cleanDate = parseFlexibleSpreadsheetDate(dateRaw);
+      const counterparty =
+        counterpartyRaw ||
+        (recordType === 'income' ? notesRaw || 'Imported Income' : notesRaw || categoryRaw || 'Imported Entry');
+      const baseConv = convertServer2dp(amount, txCurrency, upperBase, activeRates, upperBase);
+
+      const originalResolvedCategory =
+        recordType === 'expense'
+          ? resolveCategory(categoryRaw)
+          : recordType === 'income'
+            ? 'Income'
+            : 'Transfer';
+      const originalSubcategory = recordType === 'expense' ? subcategoryRaw : '';
+
+      let finalCategory = originalResolvedCategory;
+      let finalSubcategory = originalSubcategory;
+      let autoMappedCategory = false;
+
+      if (recordType === 'expense' && autoMapSubcategories) {
+        if (subcategoryRaw) {
+          const subHit = subToParentLookup.get(normalizeStr(subcategoryRaw));
+          if (subHit) {
+            finalCategory = subHit.category;
+            finalSubcategory = subHit.subcategory;
+            autoMappedCategory = true;
+          }
+        } else if (categoryRaw) {
+          const catKey = normalizeStr(categoryRaw);
+          if (!definedCategoryKeySet.has(catKey)) {
+            const catAsSub = subToParentLookup.get(catKey);
+            if (catAsSub) {
+              finalCategory = catAsSub.category;
+              finalSubcategory = catAsSub.subcategory;
+              autoMappedCategory = true;
+            }
+          }
+        }
+      }
+
+      normalizedDriveRows.push({
+        rowIndex: idx + 1,
+        rawRow,
+        baseAmount: baseConv.convertedAmount,
+        originalCategory: originalResolvedCategory,
+        originalSubcategory,
+        autoMappedCategory,
+        proposed: {
+          recordType,
+          date: cleanDate,
+          amount: round2dp(amount),
+          currency: txCurrency.toUpperCase(),
+          accountId: accResolved.id,
+          toAccountId:
+            recordType === 'transfer'
+              ? toAccResolved?.id || accResolved.id
+              : undefined,
+          category: finalCategory,
+          subcategory: finalSubcategory,
+          counterparty,
+          notes: notesRaw,
+        },
+      } as any);
+    });
+
+    // Deterministic 1-to-1 best-match reconciliation
+    const usedExistingIds = new Set<string>();
+    const reconciledRows: any[] = [];
+
+    for (const item of normalizedDriveRows) {
+      let bestCandidate: (typeof existingPool)[number] | null = null;
+      let bestScore = 0;
+
+      for (const cand of existingPool) {
+        if (usedExistingIds.has(cand.id)) continue;
+        if (cand.recordType !== item.proposed.recordType) continue;
+
+        const dayDelta = daysBetweenYmd(cand.snapshot.date, item.proposed.date);
+        if (dayDelta > 7) continue;
+
+        const nativeDiff = Math.abs(cand.snapshot.amount - item.proposed.amount);
+        const baseDiff = Math.abs(cand.baseAmount - item.baseAmount);
+        const relDiff =
+          item.proposed.amount > 0 ? nativeDiff / item.proposed.amount : 1;
+
+        const textA = `${cand.snapshot.counterparty} ${cand.snapshot.notes} ${cand.snapshot.category}`;
+        const textB = `${item.proposed.counterparty} ${item.proposed.notes} ${item.proposed.category}`;
+        const textSim = textTokenSimilarity(textA, textB);
+        const sameAccount = cand.snapshot.accountId === item.proposed.accountId;
+
+        let score = 0;
+        if (dayDelta === 0) score += 35;
+        else if (dayDelta === 1) score += 24;
+        else if (dayDelta <= 3) score += 14;
+        else score += 5;
+
+        if (nativeDiff < 0.01 || baseDiff < 0.01) score += 45;
+        else if (relDiff <= 0.02) score += 30;
+        else if (relDiff <= 0.08 && textSim >= 0.4) score += 20;
+        else if (dayDelta === 0 && textSim >= 0.6) score += 15;
+        else continue; // Too far in both amount and text to be the same record
+
+        if (sameAccount) score += 10;
+        score += Math.round(textSim * 25);
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestCandidate = cand;
+        }
+      }
+
+      if (bestCandidate && bestScore >= 65) {
+        usedExistingIds.add(bestCandidate.id);
+        const diffs = computeDiffsServer(bestCandidate.snapshot, item.proposed);
+        const status = diffs.length === 0 ? 'matched' : 'difference';
+        reconciledRows.push({
+          rowId: `drv_row_${item.rowIndex}`,
+          rowIndex: item.rowIndex,
+          rawRow: item.rawRow,
+          status,
+          confidence: Math.min(100, bestScore),
+          approved: status === 'difference',
+          proposed: item.proposed,
+          originalCategory: (item as any).originalCategory,
+          originalSubcategory: (item as any).originalSubcategory,
+          autoMappedCategory: Boolean((item as any).autoMappedCategory),
+          matchedRecordId: bestCandidate.id,
+          existingSnapshot: bestCandidate.snapshot,
+          diffs,
+        });
+      } else {
+        reconciledRows.push({
+          rowId: `drv_row_${item.rowIndex}`,
+          rowIndex: item.rowIndex,
+          rawRow: item.rawRow,
+          status: 'missing',
+          confidence: 0,
+          approved: true,
+          proposed: item.proposed,
+          originalCategory: (item as any).originalCategory,
+          originalSubcategory: (item as any).originalSubcategory,
+          autoMappedCategory: Boolean((item as any).autoMappedCategory),
+          diffs: [],
+        });
+      }
+    }
+
+    const summary = {
+      total: reconciledRows.length,
+      matched: reconciledRows.filter((r) => r.status === 'matched').length,
+      differences: reconciledRows.filter((r) => r.status === 'difference').length,
+      missing: reconciledRows.filter((r) => r.status === 'missing').length,
+    };
+
+    return res.json({ rows: reconciledRows, summary });
+  } catch (error: any) {
+    console.error('Drive reconcile error:', error);
+    return res.status(500).json({
+      error: error?.message || 'Failed to reconcile spreadsheet records.',
+    });
+  }
 });
 
 async function startServer() {

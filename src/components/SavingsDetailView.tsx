@@ -8,6 +8,7 @@ import {
   getEffectiveSavingsPillars,
   getManualSavingsVaultTransfersBreakdown,
 } from '../lib/calculations.ts';
+import { formatDateDDMMYYYY } from '../lib/dateFilters.ts';
 
 interface SavingsDetailViewProps {
   incomes: IncomeReceipt[];
@@ -367,7 +368,7 @@ export const SavingsDetailView: React.FC<SavingsDetailViewProps> = ({
                         {alloc.clientOrSource}
                       </span>
                       <span className="text-[11px] text-slate-400 font-mono">
-                        {alloc.date}
+                        {formatDateDDMMYYYY(alloc.date)}
                       </span>
                     </td>
                     <td className="py-2 px-3 text-right text-slate-700 tabular-nums whitespace-nowrap">

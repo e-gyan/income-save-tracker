@@ -2,7 +2,7 @@
  * Save N Know — Main Application Orchestrator
  */
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   auth,
   onAuthStateChanged,
@@ -99,12 +99,19 @@ import { DeductionAgentModal } from './components/DeductionAgentModal.tsx';
 import { EditExpenseModal } from './components/EditExpenseModal.tsx';
 import { OfflineIndicator } from './components/PWAInstallButton.tsx';
 import { BiometricLockScreen } from './components/BiometricLockScreen.tsx';
+import { DriveAlignmentApprovalPayload } from './lib/driveAlignment.ts';
 import {
   shouldStartAppLocked,
   getBiometricDeviceState,
   saveBiometricDeviceState,
 } from './lib/biometricAuth.ts';
 import { TimeRangePreset, isDateInPreset } from './lib/dateFilters.ts';
+import {
+  loadPersistedNavigationState,
+  savePersistedNavigationState,
+  buildHistoryStateSnapshot,
+  parseHistoryStateSnapshot,
+} from './lib/appStateRestore.ts';
 
 export default function App() {
   // Synchronously hydrate the signed-in user and their cloud-cached records on frame 0
@@ -112,10 +119,45 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(() =>
     getPersistedAuthUser()
   );
-  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+
+  // Synchronously restore previous navigation & workflow state (browser history or persisted session)
+  const initialNavBoot = useMemo(() => {
+    const initialUid = getPersistedAuthUser()?.uid || 'guest_user';
+    const historySnap =
+      typeof window !== 'undefined'
+        ? parseHistoryStateSnapshot(window.history.state)
+        : null;
+    const savedNav = loadPersistedNavigationState(initialUid);
+    const restoredTab: ActiveTab =
+      historySnap?.activeTab || savedNav?.activeTab || 'dashboard';
+    const restoredRange: TimeRangePreset =
+      historySnap?.timeRange || savedNav?.timeRange || 'all';
+    const restoredDriveOpen =
+      restoredTab === 'settings' &&
+      Boolean(
+        historySnap?.isDriveAlignmentOpen ??
+          savedNav?.isDriveAlignmentOpen ??
+          false
+      );
+    return {
+      activeTab: restoredTab,
+      timeRange: restoredRange,
+      isDriveAlignmentOpen: restoredDriveOpen,
+      scrollByTab: savedNav?.scrollByTab || {},
+    };
+  }, []);
+
+  const [activeTab, setActiveTab] = useState<ActiveTab>(
+    () => initialNavBoot.activeTab
+  );
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isMobileDateFilterOpen, setIsMobileDateFilterOpen] = useState(false);
-  const [timeRange, setTimeRange] = useState<TimeRangePreset>('all');
+  const [timeRange, setTimeRange] = useState<TimeRangePreset>(
+    () => initialNavBoot.timeRange
+  );
+  const [isDriveAlignmentOpen, setIsDriveAlignmentOpen] = useState<boolean>(
+    () => initialNavBoot.isDriveAlignmentOpen
+  );
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeductionAgentOpen, setIsDeductionAgentOpen] = useState(false);
@@ -127,6 +169,13 @@ export default function App() {
     shouldStartAppLocked()
   );
   const hiddenSinceRef = useRef<number | null>(null);
+  const scrollByTabRef = useRef<Partial<Record<ActiveTab, number>>>(
+    initialNavBoot.scrollByTab
+  );
+  const activeTabRef = useRef<ActiveTab>(initialNavBoot.activeTab);
+  const timeRangeRef = useRef<TimeRangePreset>(initialNavBoot.timeRange);
+  const driveOpenRef = useRef<boolean>(initialNavBoot.isDriveAlignmentOpen);
+  const scrollSaveTimerRef = useRef<number | null>(null);
 
   // Core Data States (Strictly attached to the signed-in account; hydrated synchronously on mount)
   const [settings, setSettings] = useState<UserSettings>(() => {
@@ -2252,6 +2301,228 @@ export default function App() {
     }
   };
 
+  const handleApplyDriveAlignment = async (
+    payload: DriveAlignmentApprovalPayload
+  ): Promise<{ addedCount: number; updatedCount: number }> => {
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const rand = Math.random().toString(36).slice(2, 6);
+
+    const newIncomes: IncomeReceipt[] = (payload.additions.incomes || []).map(
+      (inc, idx) => {
+        const deds =
+          inc.allocatedDeductions && inc.allocatedDeductions.length > 0
+            ? inc.allocatedDeductions
+            : buildDefaultDeductionsForIncome(
+                inc.grossAmount,
+                settings,
+                expenses,
+                inc.date
+              );
+        const totalDed = deds.reduce((s, d) => s + d.amount, 0);
+        const computedRate =
+          inc.grossAmount > 0
+            ? Math.min(100, Math.round(((totalDed / inc.grossAmount) * 100) * 10) / 10)
+            : 0;
+        return buildStampedIncomeReceipt(
+          {
+            ...inc,
+            allocatedDeductions: deds,
+            savingsRate: inc.savingsRate || computedRate,
+          },
+          nowMs,
+          idx
+        );
+      }
+    );
+
+    const newExpenses: FlexibleExpense[] = (payload.additions.expenses || []).map(
+      (exp, idx) => {
+        const subColor = exp.subcategory
+          ? resolveIntuitiveSubcategoryColor(
+              exp.subcategory,
+              exp.category,
+              settings,
+              expenses
+            )
+          : undefined;
+        return {
+          ...exp,
+          id: `exp_drv_${nowMs}_${idx}_${rand}`,
+          userId: effectiveUserId,
+          subcategoryColor: exp.subcategoryColor || subColor,
+          createdAt: new Date(nowMs + idx).toISOString(),
+        };
+      }
+    );
+
+    const newTransfers: AccountTransfer[] = (payload.additions.transfers || []).map(
+      (tr, idx) => ({
+        ...tr,
+        id: `trans_drv_${nowMs}_${idx}_${rand}`,
+        userId: effectiveUserId,
+        createdAt: new Date(nowMs + idx).toISOString(),
+      })
+    );
+
+    const incomeUpdateMap = new Map(
+      (payload.updates.incomes || []).map((u) => [u.id, u.patch])
+    );
+    const expenseUpdateMap = new Map(
+      (payload.updates.expenses || []).map((u) => [u.id, u.patch])
+    );
+    const transferUpdateMap = new Map(
+      (payload.updates.transfers || []).map((u) => [u.id, u.patch])
+    );
+
+    const updatedIncomesToPersist: IncomeReceipt[] = [];
+    const updatedExpensesToPersist: FlexibleExpense[] = [];
+    const updatedTransfersToPersist: AccountTransfer[] = [];
+
+    const nextIncomesList: IncomeReceipt[] =
+      newIncomes.length > 0 || incomeUpdateMap.size > 0
+        ? [
+            ...newIncomes,
+            ...incomes.map((inc) => {
+              const patch = incomeUpdateMap.get(inc.id);
+              if (!patch) return inc;
+              const nextRec: IncomeReceipt = {
+                ...inc,
+                ...patch,
+                id: inc.id,
+                userId: inc.userId || effectiveUserId,
+                createdAt: inc.createdAt,
+                updatedAt: nowIso,
+              };
+              updatedIncomesToPersist.push(nextRec);
+              return nextRec;
+            }),
+          ]
+        : incomes;
+
+    const nextExpensesList: FlexibleExpense[] =
+      newExpenses.length > 0 || expenseUpdateMap.size > 0
+        ? [
+            ...newExpenses,
+            ...expenses.map((exp) => {
+              const patch = expenseUpdateMap.get(exp.id);
+              if (!patch) return exp;
+              const nextCat = patch.category ?? exp.category;
+              const nextSub =
+                patch.subcategory !== undefined ? patch.subcategory : exp.subcategory;
+              const subColor = nextSub
+                ? resolveIntuitiveSubcategoryColor(nextSub, nextCat, settings, expenses)
+                : undefined;
+              const nextRec: FlexibleExpense = {
+                ...exp,
+                ...patch,
+                id: exp.id,
+                userId: exp.userId || effectiveUserId,
+                subcategoryColor: subColor || exp.subcategoryColor,
+                createdAt: exp.createdAt,
+              };
+              updatedExpensesToPersist.push(nextRec);
+              return nextRec;
+            }),
+          ]
+        : expenses;
+
+    const nextTransfersList: AccountTransfer[] =
+      newTransfers.length > 0 || transferUpdateMap.size > 0
+        ? [
+            ...newTransfers,
+            ...transfers.map((tr) => {
+              const patch = transferUpdateMap.get(tr.id);
+              if (!patch) return tr;
+              const nextRec: AccountTransfer = {
+                ...tr,
+                ...patch,
+                id: tr.id,
+                userId: tr.userId || effectiveUserId,
+                createdAt: tr.createdAt,
+              };
+              updatedTransfersToPersist.push(nextRec);
+              return nextRec;
+            }),
+          ]
+        : transfers;
+
+    const updatedIncomesById = new Map(
+      updatedIncomesToPersist.map((rec) => [rec.id, rec])
+    );
+    const updatedExpensesById = new Map(
+      updatedExpensesToPersist.map((rec) => [rec.id, rec])
+    );
+    const updatedTransfersById = new Map(
+      updatedTransfersToPersist.map((rec) => [rec.id, rec])
+    );
+
+    if (newIncomes.length > 0 || updatedIncomesById.size > 0) {
+      setIncomes((prev) => {
+        const merged = [
+          ...newIncomes,
+          ...prev.map((inc) => updatedIncomesById.get(inc.id) || inc),
+        ];
+        setLocalData('incomes', merged, effectiveUserId);
+        return merged;
+      });
+    }
+
+    if (newExpenses.length > 0 || updatedExpensesById.size > 0) {
+      setExpenses((prev) => {
+        const merged = [
+          ...newExpenses,
+          ...prev.map((exp) => updatedExpensesById.get(exp.id) || exp),
+        ];
+        setLocalData('expenses', merged, effectiveUserId);
+        return merged;
+      });
+    }
+
+    if (newTransfers.length > 0 || updatedTransfersById.size > 0) {
+      setTransfers((prev) => {
+        const merged = [
+          ...newTransfers,
+          ...prev.map((tr) => updatedTransfersById.get(tr.id) || tr),
+        ];
+        setLocalData('transfers', merged, effectiveUserId);
+        return merged;
+      });
+    }
+
+    if (currentUser) {
+      const uid = currentUser.uid;
+      await Promise.all([
+        ...newIncomes.map((inc) => saveIncomeReceipt(uid, inc)),
+        ...updatedIncomesToPersist.map((inc) => saveIncomeReceipt(uid, inc)),
+        ...newExpenses.map((exp) => saveFlexibleExpense(uid, exp)),
+        ...updatedExpensesToPersist.map((exp) => saveFlexibleExpense(uid, exp)),
+        ...newTransfers.map((tr) => saveAccountTransfer(uid, tr)),
+        ...updatedTransfersToPersist.map((tr) => saveAccountTransfer(uid, tr)),
+      ]);
+
+      syncAuthenticatedCloudSnapshotToBackend(uid, {
+        ...(newIncomes.length > 0 || updatedIncomesToPersist.length > 0
+          ? { incomes: nextIncomesList }
+          : {}),
+        ...(newExpenses.length > 0 || updatedExpensesToPersist.length > 0
+          ? { expenses: nextExpensesList }
+          : {}),
+        ...(newTransfers.length > 0 || updatedTransfersToPersist.length > 0
+          ? { transfers: nextTransfersList }
+          : {}),
+      });
+    }
+
+    return {
+      addedCount: newIncomes.length + newExpenses.length + newTransfers.length,
+      updatedCount:
+        updatedIncomesToPersist.length +
+        updatedExpensesToPersist.length +
+        updatedTransfersToPersist.length,
+    };
+  };
+
   // Filtered collections corresponding to the active date selection
   const filteredIncomes = useMemo(() => {
     return incomes.filter((inc) => isDateInPreset(inc.date, timeRange));
@@ -2368,12 +2639,207 @@ export default function App() {
     [activeTab]
   );
 
-  // Reset middle workspace scroll position immediately when switching menu options
+  const navUserId = currentUser?.uid || 'guest_user';
+
   useEffect(() => {
-    if (mainScrollRef.current) {
-      mainScrollRef.current.scrollTop = 0;
-    }
+    activeTabRef.current = activeTab;
   }, [activeTab]);
+
+  useEffect(() => {
+    timeRangeRef.current = timeRange;
+  }, [timeRange]);
+
+  useEffect(() => {
+    driveOpenRef.current = isDriveAlignmentOpen;
+  }, [isDriveAlignmentOpen]);
+
+  const flushNavigationState = useCallback(
+    (
+      tabOverride?: ActiveTab,
+      rangeOverride?: TimeRangePreset,
+      driveOpenOverride?: boolean
+    ) => {
+      if (mainScrollRef.current) {
+        scrollByTabRef.current[activeTabRef.current] =
+          mainScrollRef.current.scrollTop;
+      }
+      const nextTab = tabOverride ?? activeTabRef.current;
+      const nextRange = rangeOverride ?? timeRangeRef.current;
+      const nextDriveOpen =
+        driveOpenOverride !== undefined
+          ? driveOpenOverride
+          : driveOpenRef.current;
+      savePersistedNavigationState(navUserId, {
+        activeTab: nextTab,
+        timeRange: nextRange,
+        isDriveAlignmentOpen: nextTab === 'settings' && nextDriveOpen,
+        scrollByTab: { ...scrollByTabRef.current },
+        updatedAt: Date.now(),
+      });
+    },
+    [navUserId]
+  );
+
+  // Seed browser history entry on initial mount and restore state cleanly on Back/Forward navigation
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!parseHistoryStateSnapshot(window.history.state)) {
+      try {
+        window.history.replaceState(
+          buildHistoryStateSnapshot(
+            activeTabRef.current,
+            timeRangeRef.current,
+            driveOpenRef.current
+          ),
+          ''
+        );
+      } catch {
+        // Ignore restricted history API contexts
+      }
+    }
+
+    const handlePopState = (event: PopStateEvent) => {
+      const snap = parseHistoryStateSnapshot(event.state);
+      if (!snap) return;
+      if (mainScrollRef.current) {
+        scrollByTabRef.current[activeTabRef.current] =
+          mainScrollRef.current.scrollTop;
+      }
+      setActiveTab(snap.activeTab);
+      setTimeRange(snap.timeRange);
+      setIsDriveAlignmentOpen(
+        snap.activeTab === 'settings' && Boolean(snap.isDriveAlignmentOpen)
+      );
+      setIsMenuOpen(false);
+      setIsMobileDateFilterOpen(false);
+      savePersistedNavigationState(navUserId, {
+        activeTab: snap.activeTab,
+        timeRange: snap.timeRange,
+        isDriveAlignmentOpen:
+          snap.activeTab === 'settings' && Boolean(snap.isDriveAlignmentOpen),
+        scrollByTab: { ...scrollByTabRef.current },
+        updatedAt: Date.now(),
+      });
+    };
+
+    const handleVisibilityOrHide = () => {
+      if (
+        document.visibilityState === 'hidden' ||
+        document.visibilityState === undefined
+      ) {
+        flushNavigationState();
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    window.addEventListener('pagehide', handleVisibilityOrHide);
+    document.addEventListener('visibilitychange', handleVisibilityOrHide);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener('pagehide', handleVisibilityOrHide);
+      document.removeEventListener('visibilitychange', handleVisibilityOrHide);
+    };
+  }, [navUserId, flushNavigationState]);
+
+  const navigateToTab = useCallback(
+    (nextTab: ActiveTab) => {
+      if (mainScrollRef.current) {
+        scrollByTabRef.current[activeTabRef.current] =
+          mainScrollRef.current.scrollTop;
+      }
+      const nextDriveOpen = nextTab === 'settings' ? driveOpenRef.current : false;
+      const changed =
+        nextTab !== activeTabRef.current ||
+        nextDriveOpen !== driveOpenRef.current;
+
+      setActiveTab(nextTab);
+      if (nextTab !== 'settings') {
+        setIsDriveAlignmentOpen(false);
+      }
+
+      if (changed && typeof window !== 'undefined') {
+        try {
+          window.history.pushState(
+            buildHistoryStateSnapshot(nextTab, timeRangeRef.current, nextDriveOpen),
+            ''
+          );
+        } catch {
+          // Ignore restricted history contexts
+        }
+      }
+      flushNavigationState(nextTab, timeRangeRef.current, nextDriveOpen);
+    },
+    [flushNavigationState]
+  );
+
+  const selectTimeRange = useCallback(
+    (nextRange: TimeRangePreset) => {
+      const changed = nextRange !== timeRangeRef.current;
+      setTimeRange(nextRange);
+      if (changed && typeof window !== 'undefined') {
+        try {
+          window.history.pushState(
+            buildHistoryStateSnapshot(
+              activeTabRef.current,
+              nextRange,
+              driveOpenRef.current
+            ),
+            ''
+          );
+        } catch {
+          // Ignore restricted history contexts
+        }
+      }
+      flushNavigationState(activeTabRef.current, nextRange, driveOpenRef.current);
+    },
+    [flushNavigationState]
+  );
+
+  const handleDriveAlignmentOpenChange = useCallback(
+    (open: boolean) => {
+      const changed = open !== driveOpenRef.current;
+      setIsDriveAlignmentOpen(open);
+      if (changed && typeof window !== 'undefined') {
+        try {
+          window.history.pushState(
+            buildHistoryStateSnapshot(
+              activeTabRef.current,
+              timeRangeRef.current,
+              open
+            ),
+            ''
+          );
+        } catch {
+          // Ignore restricted history contexts
+        }
+      }
+      flushNavigationState(activeTabRef.current, timeRangeRef.current, open);
+    },
+    [flushNavigationState]
+  );
+
+  // Restore saved scroll position when returning to a previously visited view
+  useEffect(() => {
+    const savedScroll = scrollByTabRef.current[activeTab] ?? 0;
+    const rafId = requestAnimationFrame(() => {
+      if (mainScrollRef.current) {
+        mainScrollRef.current.scrollTop = savedScroll;
+      }
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [activeTab]);
+
+  const handleWorkspaceScroll = useCallback(() => {
+    if (!mainScrollRef.current) return;
+    scrollByTabRef.current[activeTabRef.current] = mainScrollRef.current.scrollTop;
+    if (scrollSaveTimerRef.current !== null) {
+      window.clearTimeout(scrollSaveTimerRef.current);
+    }
+    scrollSaveTimerRef.current = window.setTimeout(() => {
+      flushNavigationState();
+      scrollSaveTimerRef.current = null;
+    }, 250);
+  }, [flushNavigationState]);
 
   const shouldIgnoreWorkspaceSwipe = (
     target: EventTarget | null
@@ -2383,7 +2849,8 @@ export default function App() {
       isMenuOpen ||
       Boolean(editingExpense) ||
       isDeductionAgentOpen ||
-      isCleanSheetModalOpen
+      isCleanSheetModalOpen ||
+      isDriveAlignmentOpen
     ) {
       return true;
     }
@@ -2465,10 +2932,10 @@ export default function App() {
     if (Math.abs(dx) >= 75 && Math.abs(dy) < 48 && Math.abs(dx) > Math.abs(dy) * 1.8) {
       if (activeNavIndex >= 0 && dx < 0 && activeNavIndex < BOTTOM_NAV_ITEMS.length - 1) {
         // Slide left -> next bottom menu option (skips Sidebar-only Budgets/Settings)
-        setActiveTab(BOTTOM_NAV_ITEMS[activeNavIndex + 1].id);
+        navigateToTab(BOTTOM_NAV_ITEMS[activeNavIndex + 1].id);
       } else if (dx > 0 && activeNavIndex > 0) {
         // Slide right -> previous bottom menu option (skips Sidebar-only Budgets/Settings)
-        setActiveTab(BOTTOM_NAV_ITEMS[activeNavIndex - 1].id);
+        navigateToTab(BOTTOM_NAV_ITEMS[activeNavIndex - 1].id);
       }
     }
   };
@@ -2508,11 +2975,11 @@ export default function App() {
         />
         <Header
           activeTab={activeTab}
-          onSelectTab={setActiveTab}
+          onSelectTab={navigateToTab}
           isSidebarOpen={isMenuOpen}
           onToggleSidebar={() => setIsMenuOpen((prev) => !prev)}
           timeRange={timeRange}
-          onSelectTimeRange={setTimeRange}
+          onSelectTimeRange={selectTimeRange}
           isMobileDateFilterOpen={isMobileDateFilterOpen}
           onToggleMobileDateFilter={() =>
             setIsMobileDateFilterOpen((prev) => !prev)
@@ -2522,7 +2989,7 @@ export default function App() {
         <Navigation
           timeRange={timeRange}
           onSelectTimeRange={(range) => {
-            setTimeRange(range);
+            selectTimeRange(range);
             setIsMobileDateFilterOpen(false);
           }}
           isOpenOnMobile={isMobileDateFilterOpen}
@@ -2534,7 +3001,7 @@ export default function App() {
         isOpen={isMenuOpen}
         activeTab={activeTab}
         onSelectTab={(tab) => {
-          setActiveTab(tab);
+          navigateToTab(tab);
           setIsMenuOpen(false);
         }}
         onClose={() => setIsMenuOpen(false)}
@@ -2543,7 +3010,7 @@ export default function App() {
         colorTheme={settings.colorTheme || getPersistedColorTheme()}
         onColorThemeChange={handleColorThemeChange}
         timeRange={timeRange}
-        onSelectTimeRange={setTimeRange}
+        onSelectTimeRange={selectTimeRange}
         accountsCount={activeAccounts.length}
         budgetsCount={
           budgets.filter((b) => !b.isArchivedPeriod && !b.isExpiredDisabled)
@@ -2556,6 +3023,7 @@ export default function App() {
       {/* Scrollable Main Workspace In-Between Static Top Header and Static Bottom Menu Bar */}
       <div
         ref={mainScrollRef}
+        onScroll={handleWorkspaceScroll}
         onTouchStart={handleWorkspaceTouchStart}
         onTouchMove={handleWorkspaceTouchMove}
         onTouchEnd={handleWorkspaceTouchEnd}
@@ -2573,8 +3041,8 @@ export default function App() {
                 settings={settings}
                 currency={settings.currency}
                 timeRange={timeRange}
-                onSelectTimeRange={setTimeRange}
-                onNavigateToTab={setActiveTab}
+                onSelectTimeRange={selectTimeRange}
+                onNavigateToTab={navigateToTab}
                 onEditExpense={(exp) => setEditingExpense(exp)}
                 onDeleteExpense={handleDeleteExpense}
                 onDeleteIncome={handleDeleteIncome}
@@ -2590,7 +3058,7 @@ export default function App() {
                 accounts={filteredAccounts}
                 currency={settings.currency}
                 timeRange={timeRange}
-                onResetTimeRange={() => setTimeRange('all')}
+                onResetTimeRange={() => selectTimeRange('all')}
                 onAddIncome={handleAddIncome}
                 onAddIncomes={handleAddIncomes}
                 onUpdateIncome={handleUpdateIncome}
@@ -2598,7 +3066,7 @@ export default function App() {
                 onAddExpenses={handleAddExpenses}
                 onAddAccount={handleAddAccount}
                 onSaveSettings={handleSaveSettings}
-                onNavigateToSettings={() => setActiveTab('settings')}
+                onNavigateToSettings={() => navigateToTab('settings')}
                 onOpenDeductionAgent={() => setIsDeductionAgentOpen(true)}
                 expandFormTrigger={expandIncomeTrigger}
               />
@@ -2614,13 +3082,13 @@ export default function App() {
                 budgets={budgets}
                 currency={settings.currency}
                 timeRange={timeRange}
-                onResetTimeRange={() => setTimeRange('all')}
+                onResetTimeRange={() => selectTimeRange('all')}
                 onAddExpenses={handleAddExpenses}
                 onUpdateExpense={handleUpdateExpense}
                 onDeleteExpense={handleDeleteExpense}
                 onEditExpense={(exp) => setEditingExpense(exp)}
                 onMoveSubcategory={handleMoveSubcategory}
-                onNavigateToTab={setActiveTab}
+                onNavigateToTab={navigateToTab}
                 expandFormTrigger={expandExpenseTrigger}
               />
             )}
@@ -2638,7 +3106,7 @@ export default function App() {
                 onDeleteBudget={handleDeleteBudget}
                 onEditExpense={(exp) => setEditingExpense(exp)}
                 onDeleteExpense={handleDeleteExpense}
-                onNavigateToTab={setActiveTab}
+                onNavigateToTab={navigateToTab}
               />
             )}
 
@@ -2662,7 +3130,7 @@ export default function App() {
                 onDeleteExpense={handleDeleteExpense}
                 onEditExpense={(exp) => setEditingExpense(exp)}
                 onSaveSettings={handleSaveSettings}
-                onNavigateToTab={setActiveTab}
+                onNavigateToTab={navigateToTab}
                 openTransferTrigger={openTransferTrigger}
               />
             )}
@@ -2676,7 +3144,7 @@ export default function App() {
                 settings={settings}
                 currency={settings.currency}
                 timeRange={timeRange}
-                onNavigateToTab={setActiveTab}
+                onNavigateToTab={navigateToTab}
                 onEditExpense={(exp) => setEditingExpense(exp)}
                 onDeleteExpense={handleDeleteExpense}
               />
@@ -2686,7 +3154,9 @@ export default function App() {
               <SettingsView
                 settings={settings}
                 accounts={accounts}
+                incomes={incomes}
                 expenses={expenses}
+                transfers={transfers}
                 currentUser={currentUser}
                 onSaveSettings={handleSaveSettings}
                 onUpdateSavingsVaultRates={handleUpdateSavingsVaultRates}
@@ -2696,6 +3166,9 @@ export default function App() {
                 isSaving={isSaving}
                 onAddSavingsStructure={handleAddSavingsStructure}
                 onImportRecords={handleImportRecords}
+                onApplyDriveAlignment={handleApplyDriveAlignment}
+                isDriveAlignmentOpen={isDriveAlignmentOpen}
+                onDriveAlignmentOpenChange={handleDriveAlignmentOpenChange}
               />
             )}
           </main>
@@ -2705,7 +3178,7 @@ export default function App() {
       {/* Static Horizontal Menu Options Icon Bar Beneath (Locked at Bottom of Viewport) */}
       <BottomMenuBar
         activeTab={activeTab}
-        onSelectTab={setActiveTab}
+        onSelectTab={navigateToTab}
       />
 
       {/* Floating Bottom-Right + Quick Actions (Transfer Fund, Income, Expense) */}
@@ -2724,7 +3197,7 @@ export default function App() {
         onSaveSettings={handleSaveSettings}
         onOpenDeductionAgent={() => setIsDeductionAgentOpen(true)}
         onNavigateToExpandedForm={(tab, formType) => {
-          setActiveTab(tab);
+          navigateToTab(tab);
           if (formType === 'income') {
             setExpandIncomeTrigger((prev) => prev + 1);
           } else if (formType === 'expense') {

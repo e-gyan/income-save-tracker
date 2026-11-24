@@ -53,6 +53,7 @@ import {
   PlannedSavingsVaultDebit,
 } from '../lib/deductionIntelligence.ts';
 import {
+  formatDateDDMMYYYY,
   formatDateTimeDDMMYYYY,
   sortRecordsByArrivalTime,
   groupRecordsByPeriod,
@@ -2983,7 +2984,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                             {idx + 1}. {item.receipt.clientOrSource}
                           </div>
                           <div className="text-[10px] text-slate-500 truncate">
-                            {item.receipt.date} · {item.accountName}
+                            {formatDateDDMMYYYY(item.receipt.date)} · {item.accountName}
                             {item.vaultDebits.length > 0
                               ? ` · ${item.vaultDebits.length} vault debits`
                               : ''}

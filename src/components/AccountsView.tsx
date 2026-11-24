@@ -687,7 +687,7 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
               fxSnapshot
             ).convertedAmount;
       setCauseAmount(String(amtToShow || ''));
-      setCauseNotes(`Cause ended (${matched.date})`);
+      setCauseNotes(`Cause ended (${formatDateDDMMYYYY(matched.date)})`);
     }
   };
 
@@ -789,8 +789,8 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
               category: itemCat,
               subcategory: itemSub,
               notes: noteLabel
-                ? `${noteLabel} · Principal return (${item.expense.date})`
-                : `Principal return (${item.expense.date})`,
+                ? `${noteLabel} · Principal return (${formatDateDDMMYYYY(item.expense.date)})`
+                : `Principal return (${formatDateDDMMYYYY(item.expense.date)})`,
               description: itemSub,
               currency: selectedCurr,
               originalAmount: allocAmt,

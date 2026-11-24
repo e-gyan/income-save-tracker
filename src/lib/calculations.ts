@@ -704,13 +704,31 @@ export function computeDeductionAmount(
   return Math.round(((gross * cleanVal) / 100) * 100) / 100;
 }
 
-export const APP_VERSION = '4.11.0';
+export const APP_VERSION = '4.14.0';
 
 export const VERSION_RELEASE_LOG: {
   version: string;
   date: string;
   summary: string;
 }[] = [
+  {
+    version: '4.14.0',
+    date: '2026-11-24',
+    summary:
+      'Added an Auto-map subcategories toggle in the Reconciliation Table and automatic subcategory-to-category matching for Settings file imports, standardized displayed dates across the entire app to dd/mm/yyyy, and enabled full state restoration across Back/Forward navigation, tab switches, reloads, and PWA resume.',
+  },
+  {
+    version: '4.13.0',
+    date: '2026-11-24',
+    summary:
+      'Implemented a dedicated side-by-side ReconciliationTable component displayed after selecting a spreadsheet, comparing imported records directly alongside existing app records with highlighted amount, date, and category differences, numeric variance indicators, per-field Keep App reverts, and individual plus select-all approval checkboxes.',
+  },
+  {
+    version: '4.12.0',
+    date: '2026-11-24',
+    summary:
+      'Added read-only Google Drive Spreadsheet Record Alignment & 3-Way Reconciliation beside File Import in Settings, supporting Excel (.xlsx/.xls), CSV, and multi-tab Google Sheets with column mapping, side-by-side difference comparison, inline field adjustment, and explicit batch approval to Firestore.',
+  },
   {
     version: '4.11.0',
     date: '2026-11-23',

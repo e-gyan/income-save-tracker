@@ -49,6 +49,18 @@ import {
   clearBackupPasscode,
   disableBiometricDeviceLock,
 } from '../lib/biometricAuth.ts';
+import { DriveAlignmentModal } from './DriveAlignmentModal.tsx';
+import {
+  DEFAULT_DRIVE_ALIGNMENT_URL,
+  DriveAlignmentApprovalPayload,
+  resolveCategoryFromSubcategory,
+} from '../lib/driveAlignment.ts';
+import { formatDateDDMMYYYY } from '../lib/dateFilters.ts';
+import {
+  loadWorkflowState,
+  saveWorkflowState,
+  clearWorkflowState,
+} from '../lib/appStateRestore.ts';
 
 interface ParsedImportPayload {
   incomes: Omit<IncomeReceipt, 'id' | 'createdAt' | 'updatedAt' | 'userId'>[];
@@ -60,7 +72,9 @@ interface ParsedImportPayload {
 interface SettingsViewProps {
   settings: UserSettings;
   accounts: FinancialAccount[];
+  incomes?: IncomeReceipt[];
   expenses?: FlexibleExpense[];
+  transfers?: AccountTransfer[];
   currentUser: User | null;
   onSaveSettings: (settings: UserSettings) => Promise<void>;
   isSaving: boolean;
@@ -69,6 +83,9 @@ interface SettingsViewProps {
     accountDetails?: { institution?: string; color?: string; initialBalance?: number }
   ) => Promise<void>;
   onImportRecords?: (payload: ParsedImportPayload) => Promise<void>;
+  onApplyDriveAlignment?: (
+    payload: DriveAlignmentApprovalPayload
+  ) => Promise<{ addedCount: number; updatedCount: number }>;
   onMoveSubcategory?: (
     subcategory: string,
     fromCategory: string,
@@ -103,6 +120,14 @@ interface SettingsViewProps {
     };
   }>;
   onLockAppNow?: () => void;
+  isDriveAlignmentOpen?: boolean;
+  onDriveAlignmentOpenChange?: (open: boolean) => void;
+}
+
+interface PersistedSettingsImportSession {
+  driveAlignmentUrl: string;
+  importFileName: string;
+  parsedImport: ParsedImportPayload | null;
 }
 
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'GHS', 'NGN', 'KES', 'ZAR', 'CAD', 'AUD'];
@@ -110,16 +135,44 @@ const CURRENCIES = ['USD', 'EUR', 'GBP', 'GHS', 'NGN', 'KES', 'ZAR', 'CAD', 'AUD
 export const SettingsView: React.FC<SettingsViewProps> = ({
   settings,
   accounts,
+  incomes = [],
   expenses = [],
+  transfers = [],
   currentUser,
   onSaveSettings,
   isSaving,
   onImportRecords,
+  onApplyDriveAlignment,
   onMoveSubcategory,
   onEditCategoryOrSubcategory,
   onUpdateSavingsVaultRates,
   onLockAppNow,
+  isDriveAlignmentOpen: controlledDriveOpen,
+  onDriveAlignmentOpenChange,
 }) => {
+  const workflowUserId = currentUser?.uid || 'guest_user';
+  const savedImportSession = useMemo(
+    () =>
+      loadWorkflowState<PersistedSettingsImportSession>(
+        'settings_import',
+        workflowUserId
+      ),
+    [workflowUserId]
+  );
+
+  const [driveAlignmentUrl, setDriveAlignmentUrl] = useState(
+    () => savedImportSession?.driveAlignmentUrl || DEFAULT_DRIVE_ALIGNMENT_URL
+  );
+  const [internalDriveAlignmentOpen, setInternalDriveAlignmentOpen] =
+    useState(false);
+  const isDriveAlignmentOpen =
+    controlledDriveOpen !== undefined
+      ? controlledDriveOpen
+      : internalDriveAlignmentOpen;
+  const setIsDriveAlignmentOpen = (open: boolean) => {
+    setInternalDriveAlignmentOpen(open);
+    onDriveAlignmentOpenChange?.(open);
+  };
   const [currency, setCurrency] = useState(settings.currency || 'USD');
   const [totalsCurrencyMode, setTotalsCurrencyMode] =
     useState<TotalsCurrencyMode>(settings.totalsCurrencyMode || 'base');
@@ -198,13 +251,29 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [backupPinConfirm, setBackupPinConfirm] = useState('');
   const [isSavingPin, setIsSavingPin] = useState(false);
 
-  // Backend File Import State
-  const [importFileName, setImportFileName] = useState('');
+  // Backend File Import State (persisted so returning to Settings restores parsed preview & removals)
+  const [importFileName, setImportFileName] = useState(
+    () => savedImportSession?.importFileName || ''
+  );
   const [isParsingImport, setIsParsingImport] = useState(false);
   const [isSavingImport, setIsSavingImport] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [importSuccessMsg, setImportSuccessMsg] = useState<string | null>(null);
-  const [parsedImport, setParsedImport] = useState<ParsedImportPayload | null>(null);
+  const [parsedImport, setParsedImport] = useState<ParsedImportPayload | null>(
+    () => savedImportSession?.parsedImport || null
+  );
+
+  useEffect(() => {
+    saveWorkflowState<PersistedSettingsImportSession>(
+      'settings_import',
+      workflowUserId,
+      {
+        driveAlignmentUrl,
+        importFileName,
+        parsedImport,
+      }
+    );
+  }, [workflowUserId, driveAlignmentUrl, importFileName, parsedImport]);
 
   // New Savings Vault Form State (Settings is the exclusive place to add/modify vaults & rates)
   const [newVaultName, setNewVaultName] = useState('');
@@ -556,6 +625,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             name: a.name,
             currency: a.currency || currency,
           })),
+          expenseCategoryPreferences: expensePrefs,
         }),
       });
 
@@ -594,21 +664,34 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       const mappedExpenses: Omit<
         FlexibleExpense,
         'id' | 'createdAt' | 'userId'
-      >[] = (data.expenses || []).map((exp: Record<string, unknown>) => ({
-        date: String(exp.date || new Date().toISOString().slice(0, 10)),
-        accountId: String(exp.accountId || defaultAccId),
-        recipient: exp.recipient ? String(exp.recipient) : undefined,
-        category: String(exp.category || 'General'),
-        subcategory: exp.subcategory ? String(exp.subcategory) : undefined,
-        notes: exp.notes ? String(exp.notes) : undefined,
-        description: String(
-          exp.description || exp.recipient || exp.category || 'Imported Expense'
-        ),
-        currency: String(exp.currency || currency).toUpperCase(),
-        originalAmount: Number(exp.originalAmount ?? exp.amount ?? 0),
-        exchangeRate: Number(exp.exchangeRate ?? 1),
-        amount: Number(exp.amount ?? 0),
-      }));
+      >[] = (data.expenses || []).map((exp: Record<string, unknown>) => {
+        const rawCat = String(exp.category || 'General');
+        const rawSub = exp.subcategory ? String(exp.subcategory) : undefined;
+        const resolved = resolveCategoryFromSubcategory(
+          rawCat,
+          rawSub,
+          expensePrefs
+        );
+        return {
+          date: String(exp.date || new Date().toISOString().slice(0, 10)),
+          accountId: String(exp.accountId || defaultAccId),
+          recipient: exp.recipient ? String(exp.recipient) : undefined,
+          category: resolved.category || rawCat || 'General',
+          subcategory: resolved.subcategory || rawSub || undefined,
+          notes: exp.notes ? String(exp.notes) : undefined,
+          description: String(
+            exp.description ||
+              exp.recipient ||
+              resolved.category ||
+              rawCat ||
+              'Imported Expense'
+          ),
+          currency: String(exp.currency || currency).toUpperCase(),
+          originalAmount: Number(exp.originalAmount ?? exp.amount ?? 0),
+          exchangeRate: Number(exp.exchangeRate ?? 1),
+          amount: Number(exp.amount ?? 0),
+        };
+      });
 
       const mappedAccounts: Omit<
         FinancialAccount,
@@ -697,6 +780,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       );
       setParsedImport(null);
       setImportFileName('');
+      clearWorkflowState('settings_import', workflowUserId);
     } catch (err) {
       setImportError(
         err instanceof Error ? err.message : 'Failed to save imported transactions'
@@ -4554,36 +4638,87 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
         {!isImportCollapsed && (
           <div className="space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-dashed border-slate-300 bg-slate-50/70 p-4">
-              <div className="space-y-1 min-w-0">
-                <div className="text-xs font-semibold text-slate-800">
-                  Select File to Parse & Import
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
+              {/* Local File Import Card */}
+              <div className="flex flex-col justify-between gap-3 rounded-xl border border-dashed border-slate-300 bg-slate-50/70 p-4">
+                <div className="space-y-1 min-w-0">
+                  <div className="text-xs font-semibold text-slate-800">
+                    Select File to Parse & Import
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    Supports .csv, .tsv, .json, .txt, .md, .pdf, and .bak files. Foreign currencies convert automatically to {currency}.
+                  </div>
                 </div>
-                <div className="text-[11px] text-slate-500">
-                  Supports .csv, .tsv, .json, .txt, .md, .pdf, and .bak files. Foreign currencies convert automatically to {currency}.
+
+                <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleDownloadSampleCsv}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 sm:py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 text-center"
+                  >
+                    CSV Template
+                  </button>
+                  <label className="cursor-pointer rounded-lg bg-slate-900 px-3.5 py-2 sm:py-1.5 text-xs font-semibold text-white hover:bg-slate-800 text-center">
+                    <span>{isParsingImport ? 'Parsing File...' : 'Choose File'}</span>
+                    <input
+                      type="file"
+                      accept=".csv,.tsv,.json,.txt,.md,.pdf,.bak"
+                      onChange={handleFileImportSelect}
+                      disabled={isParsingImport || isSavingImport}
+                      className="hidden"
+                    />
+                  </label>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto shrink-0">
-                <button
-                  type="button"
-                  onClick={handleDownloadSampleCsv}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 sm:py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 text-center"
-                >
-                  CSV Template
-                </button>
-                <label className="cursor-pointer rounded-lg bg-slate-900 px-3.5 py-2 sm:py-1.5 text-xs font-semibold text-white hover:bg-slate-800 text-center">
-                  <span>{isParsingImport ? 'Parsing File...' : 'Choose File'}</span>
+              {/* Google Drive Spreadsheet Alignment Card */}
+              <div className="flex flex-col justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+                <div className="space-y-2 min-w-0">
+                  <div className="space-y-0.5">
+                    <div className="text-xs font-semibold text-slate-800">
+                      Google Drive Record Alignment
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      Read-only · Excel, CSV, Google Sheets · Match existing, flag differences, add missing
+                    </div>
+                  </div>
                   <input
-                    type="file"
-                    accept=".csv,.tsv,.json,.txt,.md,.pdf,.bak"
-                    onChange={handleFileImportSelect}
-                    disabled={isParsingImport || isSavingImport}
-                    className="hidden"
+                    type="text"
+                    value={driveAlignmentUrl}
+                    onChange={(e) => setDriveAlignmentUrl(e.target.value)}
+                    placeholder="Google Drive spreadsheet link"
+                    aria-label="Google Drive spreadsheet link"
+                    className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-mono text-slate-700 focus:border-slate-900 focus:outline-none"
                   />
-                </label>
+                </div>
+
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsDriveAlignmentOpen(true)}
+                    style={{ backgroundColor: 'var(--app-accent)' }}
+                    className="w-full sm:w-auto rounded-lg px-3.5 py-2 sm:py-1.5 text-xs font-semibold text-white hover:opacity-90 text-center whitespace-nowrap"
+                  >
+                    Align from Google Drive
+                  </button>
+                </div>
               </div>
             </div>
+
+            {onApplyDriveAlignment && (
+              <DriveAlignmentModal
+                isOpen={isDriveAlignmentOpen}
+                initialUrl={driveAlignmentUrl}
+                userId={workflowUserId}
+                onClose={() => setIsDriveAlignmentOpen(false)}
+                settings={settings}
+                accounts={accounts}
+                incomes={incomes}
+                expenses={expenses}
+                transfers={transfers}
+                onApplyAlignment={onApplyDriveAlignment}
+              />
+            )}
 
             {importError && (
               <div className="rounded-lg border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs text-rose-700">
@@ -4649,7 +4784,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                               {inc.clientOrSource}
                             </span>{' '}
                             <span className="font-mono text-[11px] text-slate-500">
-                              · {inc.date} ({inc.quarter})
+                              · {formatDateDDMMYYYY(inc.date)} ({inc.quarter})
                             </span>
                             {inc.notes && (
                               <span className="text-[11px] text-slate-500">
@@ -4713,7 +4848,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                             <span className="text-[11px] text-slate-500">
                               · {exp.category}
                               {exp.subcategory ? ` / ${exp.subcategory}` : ''} ·{' '}
-                              <span className="font-mono">{exp.date}</span>
+                              <span className="font-mono">
+                                {formatDateDDMMYYYY(exp.date)}
+                              </span>
                             </span>
                           </div>
                           <div className="flex items-center gap-2.5 shrink-0">
@@ -4821,7 +4958,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                               {tr.description || 'Transfer'}
                             </span>{' '}
                             <span className="font-mono text-[11px] text-slate-500">
-                              · {tr.date}
+                              · {formatDateDDMMYYYY(tr.date)}
                             </span>
                           </div>
                           <div className="flex items-center gap-2.5 shrink-0">
@@ -5164,7 +5301,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     )}
                   </div>
                   <span className="font-mono text-[11px] text-slate-400">
-                    {entry.date}
+                    {formatDateDDMMYYYY(entry.date)}
                   </span>
                 </div>
                 <p className="text-xs text-slate-600 break-words">{entry.summary}</p>

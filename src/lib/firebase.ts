@@ -159,8 +159,14 @@ async function testConnection() {
 }
 testConnection();
 
-// Standard Google Sign-In scopes (email & profile only so production domains on Render do not fail restricted scope checks)
-export const SCOPES = ['email', 'profile'];
+// Configured Google OAuth scopes (standard sign-in + opt-in read-only Google Drive alignment)
+export const SCOPES = [
+  'email',
+  'profile',
+  'https://www.googleapis.com/auth/drive.readonly',
+];
+
+export const DRIVE_READONLY_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.addScope('email');
@@ -169,8 +175,17 @@ googleProvider.setCustomParameters({
   prompt: 'select_account',
 });
 
-// In-memory token cache (never stored in localStorage/sessionStorage)
+export const driveReadOnlyProvider = new GoogleAuthProvider();
+driveReadOnlyProvider.addScope('email');
+driveReadOnlyProvider.addScope('profile');
+driveReadOnlyProvider.addScope(DRIVE_READONLY_SCOPE);
+driveReadOnlyProvider.setCustomParameters({
+  prompt: 'consent select_account',
+});
+
+// In-memory token caches (never stored in localStorage/sessionStorage)
 let cachedAccessToken: string | null = null;
+let cachedDriveAccessToken: string | null = null;
 
 export const getAccessToken = (): string | null => {
   return cachedAccessToken;
@@ -178,6 +193,14 @@ export const getAccessToken = (): string | null => {
 
 export const setAccessToken = (token: string | null) => {
   cachedAccessToken = token;
+};
+
+export const getDriveAccessToken = (): string | null => {
+  return cachedDriveAccessToken;
+};
+
+export const clearDriveAccessToken = () => {
+  cachedDriveAccessToken = null;
 };
 
 // Complete any pending OAuth redirect flow on boot
@@ -372,10 +395,28 @@ export async function loginWithGoogle(
   }
 }
 
+export async function connectGoogleDriveReadOnly(): Promise<{
+  user: User;
+  accessToken: string;
+}> {
+  const result = await signInWithPopup(auth, driveReadOnlyProvider);
+  if (result.user) {
+    setPersistedAuthUser(result.user);
+  }
+  const credential = GoogleAuthProvider.credentialFromResult(result);
+  if (!credential?.accessToken) {
+    throw new Error('Could not obtain read-only Google Drive access token.');
+  }
+  cachedAccessToken = credential.accessToken;
+  cachedDriveAccessToken = credential.accessToken;
+  return { user: result.user, accessToken: credential.accessToken };
+}
+
 export async function logoutUser(): Promise<void> {
   clearPersistedAuthUser();
   await signOut(auth);
   cachedAccessToken = null;
+  cachedDriveAccessToken = null;
 }
 
 export function onAuthStateChanged(
@@ -395,6 +436,8 @@ export function onAuthStateChanged(
       callback(persisted);
       return;
     }
+    cachedAccessToken = null;
+    cachedDriveAccessToken = null;
     callback(null);
   });
 }
