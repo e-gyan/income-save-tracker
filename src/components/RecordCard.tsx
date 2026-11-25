@@ -63,7 +63,7 @@ export interface RecordCardProps {
  * - Top Right: Amount (Emerald for Income, Red for Expense, Blue for Transfer)
  * - Bottom Right (beneath Amount): Date only (dd/mm/yyyy; time is shown inside the pop-up modal)
  */
-export const RecordCard: React.FC<RecordCardProps> = ({
+export const RecordCard: React.FC<RecordCardProps> = React.memo(({
   subcategory,
   topLeftSubcategory,
   subcategoryColor,
@@ -140,7 +140,8 @@ export const RecordCard: React.FC<RecordCardProps> = ({
       </div>
     </div>
   );
-};
+});
+RecordCard.displayName = 'RecordCard';
 
 export interface ExpenseDetailPopupModalProps {
   expense: FlexibleExpense | null;

@@ -19,12 +19,18 @@ export type TimeRangePreset =
   | 'this_year'
   | '365d'
   | 'last_year'
+  | 'custom'
   // Legacy compatibility aliases
   | '1d'
   | '14d'
   | '1m'
   | '3m'
   | '1y';
+
+export interface CustomDateRange {
+  startDate: string; // YYYY-MM-DD (empty string = unbounded start)
+  endDate: string; // YYYY-MM-DD (empty string = unbounded end)
+}
 
 export interface TimeRangeOption {
   id: TimeRangePreset;
@@ -49,6 +55,7 @@ export const REDESIGNED_DATE_FILTER_OPTIONS: TimeRangeOption[] = [
 export const TIME_RANGE_OPTIONS: TimeRangeOption[] = [
   { id: 'all', label: 'All Time', shortLabel: 'All' },
   ...REDESIGNED_DATE_FILTER_OPTIONS,
+  { id: 'custom', label: 'Custom', shortLabel: 'Custom' },
 ];
 
 /**
@@ -83,13 +90,34 @@ export function parseLocalCalendarDate(dateString: string): Date | null {
 export function isDateInPreset(
   dateString: string | undefined | null,
   preset: TimeRangePreset,
-  referenceDate: Date = new Date()
+  referenceDate: Date = new Date(),
+  customRange?: CustomDateRange | null
 ): boolean {
   if (preset === 'all') return true;
   if (!dateString) return false;
 
   const itemDay = parseLocalCalendarDate(dateString);
   if (!itemDay) return false;
+
+  if (preset === 'custom') {
+    const startObj = customRange?.startDate
+      ? parseLocalCalendarDate(customRange.startDate)
+      : null;
+    const endObj = customRange?.endDate
+      ? parseLocalCalendarDate(customRange.endDate)
+      : null;
+
+    if (!startObj && !endObj) return true;
+    const itemMs = itemDay.getTime();
+    if (startObj && endObj) {
+      const minMs = Math.min(startObj.getTime(), endObj.getTime());
+      const maxMs = Math.max(startObj.getTime(), endObj.getTime());
+      return itemMs >= minMs && itemMs <= maxMs;
+    }
+    if (startObj) return itemMs >= startObj.getTime();
+    if (endObj) return itemMs <= endObj.getTime();
+    return true;
+  }
 
   const refDay = new Date(
     referenceDate.getFullYear(),
@@ -142,12 +170,44 @@ export function isDateInPreset(
   }
 }
 
-export function getPresetLabel(preset: TimeRangePreset): string {
+export function formatCustomDateRangeLabel(
+  customRange?: CustomDateRange | null
+): string {
+  const start = customRange?.startDate?.trim();
+  const end = customRange?.endDate?.trim();
+  if (start && end) {
+    if (start === end) return formatDateDDMMYYYY(start);
+    const [a, b] = start <= end ? [start, end] : [end, start];
+    return `${formatDateDDMMYYYY(a)} – ${formatDateDDMMYYYY(b)}`;
+  }
+  if (start) return `From ${formatDateDDMMYYYY(start)}`;
+  if (end) return `Up to ${formatDateDDMMYYYY(end)}`;
+  return 'Custom Dates';
+}
+
+export function getPresetLabel(
+  preset: TimeRangePreset,
+  customRange?: CustomDateRange | null
+): string {
+  if (preset === 'custom') {
+    return formatCustomDateRangeLabel(customRange);
+  }
   const match = TIME_RANGE_OPTIONS.find((o) => o.id === preset);
   return match ? match.label : 'All Time';
 }
 
-export function getPresetShortLabel(preset: TimeRangePreset): string {
+export function getPresetShortLabel(
+  preset: TimeRangePreset,
+  customRange?: CustomDateRange | null
+): string {
+  if (preset === 'custom') {
+    if (customRange?.startDate && customRange?.endDate) {
+      return customRange.startDate === customRange.endDate
+        ? formatDateDDMMYYYY(customRange.startDate)
+        : 'Custom';
+    }
+    return 'Custom';
+  }
   const match = TIME_RANGE_OPTIONS.find((o) => o.id === preset);
   return match ? match.shortLabel : 'All';
 }
@@ -265,19 +325,23 @@ export function sortRecordsByArrivalTime<
     timestamp?: string;
   }
 >(records: T[], direction: 'desc' | 'asc' = 'desc'): T[] {
-  return [...records].sort((a, b) => {
-    const timeA = getRecordArrivalTimestamp(a);
-    const timeB = getRecordArrivalTimestamp(b);
-    if (timeA !== timeB) {
-      return direction === 'desc' ? timeB - timeA : timeA - timeB;
+  if (records.length <= 1) return [...records];
+  const decorated = records.map((item) => ({
+    item,
+    time: getRecordArrivalTimestamp(item),
+    created: item.createdAt ? new Date(item.createdAt).getTime() || 0 : 0,
+    id: String(item.id || ''),
+  }));
+  decorated.sort((a, b) => {
+    if (a.time !== b.time) {
+      return direction === 'desc' ? b.time - a.time : a.time - b.time;
     }
-    const createdA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-    const createdB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-    if (createdA !== createdB) {
-      return direction === 'desc' ? createdB - createdA : createdA - createdB;
+    if (a.created !== b.created) {
+      return direction === 'desc' ? b.created - a.created : a.created - b.created;
     }
-    return String(b.id || '').localeCompare(String(a.id || ''));
+    return b.id.localeCompare(a.id);
   });
+  return decorated.map((d) => d.item);
 }
 
 export type RecordGroupPeriod = 'none' | 'week' | 'month' | 'year';
@@ -393,9 +457,11 @@ export function groupRecordsByPeriod<
 
 export function getPresetRangeDescription(
   preset: TimeRangePreset,
-  referenceDate: Date = new Date()
+  referenceDate: Date = new Date(),
+  customRange?: CustomDateRange | null
 ): string {
   if (preset === 'all') return 'All records';
+  if (preset === 'custom') return formatCustomDateRangeLabel(customRange);
 
   const endStr = formatDateDDMMYYYY(referenceDate);
   const start = new Date(referenceDate);

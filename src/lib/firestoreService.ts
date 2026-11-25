@@ -10,6 +10,7 @@ import {
   getDoc,
   setDoc,
   deleteDoc,
+  writeBatch,
   query,
   orderBy,
   onSnapshot,
@@ -79,13 +80,55 @@ export function getLocalData<T>(key: string, defaultValue: T, userId = 'guest_us
   }
 }
 
-export function setLocalData<T>(key: string, value: T, userId = 'guest_user'): void {
+const localWriteTimers = new Map<string, number>();
+const pendingLocalPayloads = new Map<string, unknown>();
+
+function flushSingleLocalWrite(scopedKey: string): void {
+  const timer = localWriteTimers.get(scopedKey);
+  if (timer !== undefined) {
+    window.clearTimeout(timer);
+    localWriteTimers.delete(scopedKey);
+  }
+  if (!pendingLocalPayloads.has(scopedKey)) return;
+  const payload = pendingLocalPayloads.get(scopedKey);
+  pendingLocalPayloads.delete(scopedKey);
   try {
-    const scopedKey = `${LOCAL_STORAGE_KEY_PREFIX}${userId}_${key}`;
-    localStorage.setItem(scopedKey, JSON.stringify(value));
+    localStorage.setItem(scopedKey, JSON.stringify(payload));
   } catch (err) {
     console.error('Local storage write failed:', err);
   }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', () => {
+    for (const key of Array.from(pendingLocalPayloads.keys())) {
+      flushSingleLocalWrite(key);
+    }
+  });
+}
+
+export function setLocalData<T>(key: string, value: T, userId = 'guest_user'): void {
+  const scopedKey = `${LOCAL_STORAGE_KEY_PREFIX}${userId}_${key}`;
+  if (typeof window === 'undefined') {
+    try {
+      localStorage.setItem(scopedKey, JSON.stringify(value));
+    } catch (err) {
+      console.error('Local storage write failed:', err);
+    }
+    return;
+  }
+
+  // Coalesce high-frequency writes for large datasets so main thread remains responsive
+  pendingLocalPayloads.set(scopedKey, value);
+  const existingTimer = localWriteTimers.get(scopedKey);
+  if (existingTimer !== undefined) {
+    window.clearTimeout(existingTimer);
+  }
+  const delay = Array.isArray(value) && value.length > 80 ? 180 : 40;
+  const timerId = window.setTimeout(() => {
+    flushSingleLocalWrite(scopedKey);
+  }, delay);
+  localWriteTimers.set(scopedKey, timerId);
 }
 
 export interface AuthenticatedCloudSnapshot {
@@ -100,21 +143,54 @@ export interface AuthenticatedCloudSnapshot {
   updatedAt?: string;
 }
 
+const cloudSnapshotSyncTimers = new Map<string, number>();
+const pendingCloudSnapshots = new Map<string, Partial<AuthenticatedCloudSnapshot>>();
+
 export async function syncAuthenticatedCloudSnapshotToBackend(
   userId: string,
-  partialSnapshot: Partial<AuthenticatedCloudSnapshot>
+  partialSnapshot: Partial<AuthenticatedCloudSnapshot>,
+  immediate = false
 ): Promise<void> {
   if (!userId || userId === 'default_user' || userId === 'guest_user') return;
   if (typeof navigator !== 'undefined' && !navigator.onLine) return;
-  try {
-    await fetch(`/api/session/cloud-snapshot/${encodeURIComponent(userId)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(partialSnapshot),
-    });
-  } catch {
-    // Non-blocking background sync
+
+  const merged: Partial<AuthenticatedCloudSnapshot> = {
+    ...(pendingCloudSnapshots.get(userId) || {}),
+    ...partialSnapshot,
+  };
+  pendingCloudSnapshots.set(userId, merged);
+
+  const existingTimer = cloudSnapshotSyncTimers.get(userId);
+  if (existingTimer !== undefined) {
+    window.clearTimeout(existingTimer);
+    cloudSnapshotSyncTimers.delete(userId);
   }
+
+  const execute = async () => {
+    const payload = pendingCloudSnapshots.get(userId);
+    pendingCloudSnapshots.delete(userId);
+    if (!payload) return;
+    try {
+      await fetch(`/api/session/cloud-snapshot/${encodeURIComponent(userId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      // Non-blocking background sync
+    }
+  };
+
+  if (immediate || typeof window === 'undefined') {
+    await execute();
+    return;
+  }
+
+  const timerId = window.setTimeout(() => {
+    cloudSnapshotSyncTimers.delete(userId);
+    void execute();
+  }, 320);
+  cloudSnapshotSyncTimers.set(userId, timerId);
 }
 
 export async function hydrateAuthenticatedCloudSnapshotFromBackend(
@@ -1159,6 +1235,55 @@ export async function deleteFinancialBudget(
       return;
     }
     handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+// ==================== BATCH TRANSACTION DELETE (SCALABLE) ====================
+
+export async function batchDeleteTransactions(
+  userId: string,
+  targets: {
+    incomeIds?: string[];
+    expenseIds?: string[];
+    transferIds?: string[];
+  }
+): Promise<number> {
+  if (!userId || userId === 'guest_user') return 0;
+
+  const refs: ReturnType<typeof doc>[] = [];
+  for (const id of targets.incomeIds || []) {
+    if (id) refs.push(doc(db, 'users', userId, 'incomes', id));
+  }
+  for (const id of targets.expenseIds || []) {
+    if (id) refs.push(doc(db, 'users', userId, 'flexible_expenses', id));
+  }
+  for (const id of targets.transferIds || []) {
+    if (id) refs.push(doc(db, 'users', userId, 'transfers', id));
+  }
+
+  if (refs.length === 0) return 0;
+
+  const CHUNK_SIZE = 400;
+  let deleted = 0;
+
+  try {
+    for (let i = 0; i < refs.length; i += CHUNK_SIZE) {
+      const chunk = refs.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      for (const ref of chunk) {
+        batch.delete(ref);
+      }
+      await batch.commit();
+      deleted += chunk.length;
+    }
+    return deleted;
+  } catch (error) {
+    if (isFirestoreOffline(error)) {
+      console.warn('Firestore batch delete offline:', (error as any)?.message || error);
+      return deleted;
+    }
+    handleFirestoreError(error, OperationType.DELETE, `users/${userId}/batch_delete`);
+    return deleted;
   }
 }
 

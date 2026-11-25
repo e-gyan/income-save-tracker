@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useDeferredValue } from 'react';
 import {
   IncomeReceipt,
   IncomeDeductionItem,
@@ -55,10 +55,12 @@ import {
 import {
   formatDateDDMMYYYY,
   formatDateTimeDDMMYYYY,
+  formatCustomDateRangeLabel,
   sortRecordsByArrivalTime,
   groupRecordsByPeriod,
   RecordGroupPeriod,
   TimeRangePreset,
+  CustomDateRange,
   isDateInPreset,
 } from '../lib/dateFilters.ts';
 import { RecordCard } from './RecordCard.tsx';
@@ -78,7 +80,9 @@ interface IncomeLogViewProps {
   accounts: FinancialAccount[];
   currency: string;
   timeRange?: TimeRangePreset;
+  customDateRange?: CustomDateRange;
   onResetTimeRange?: () => void;
+  onOpenCustomDateFilter?: () => void;
   onAddIncome: (
     receipt: Omit<IncomeReceipt, 'id' | 'createdAt' | 'updatedAt' | 'userId'>
   ) => Promise<IncomeReceipt | void>;
@@ -113,7 +117,9 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
   accounts,
   currency,
   timeRange = 'all',
+  customDateRange,
   onResetTimeRange,
+  onOpenCustomDateFilter,
   onAddIncome,
   onAddIncomes,
   onUpdateIncome,
@@ -1425,15 +1431,39 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
   };
 
   const [groupByPeriod, setGroupByPeriod] = useState<RecordGroupPeriod>('none');
+  const [visibleLimit, setVisibleLimit] = useState(40);
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+
+  const accountByIdMap = useMemo(() => {
+    const map = new Map<string, FinancialAccount>();
+    for (const acc of accounts) {
+      map.set(acc.id, acc);
+    }
+    for (const s of summaries) {
+      map.set(s.account.id, s.account);
+    }
+    return map;
+  }, [accounts, summaries]);
+
+  useEffect(() => {
+    setVisibleLimit(40);
+  }, [
+    timeRange,
+    customDateRange?.startDate,
+    customDateRange?.endDate,
+    accountFilter,
+    deferredSearchQuery,
+    groupByPeriod,
+  ]);
 
   const filteredIncomes = useMemo(() => {
+    const q = deferredSearchQuery.trim().toLowerCase();
     const matched = incomes.filter((inc) => {
       if (accountFilter !== 'all') {
         const incAccId = inc.accountId || defaultAccount?.id || '';
         if (incAccId !== accountFilter) return false;
       }
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
+      if (q) {
         const matchSource = inc.clientOrSource.toLowerCase().includes(q);
         const matchNotes = (inc.notes || '').toLowerCase().includes(q);
         const matchCat = (inc.category || '').toLowerCase().includes(q);
@@ -1442,7 +1472,17 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
       return true;
     });
     return sortRecordsByArrivalTime(matched);
-  }, [incomes, accountFilter, searchQuery, defaultAccount]);
+  }, [incomes, accountFilter, deferredSearchQuery, defaultAccount]);
+
+  const visibleIncomesSlice = useMemo(
+    () => filteredIncomes.slice(0, visibleLimit),
+    [filteredIncomes, visibleLimit]
+  );
+
+  const visibleIncomePeriodGroups = useMemo(
+    () => groupRecordsByPeriod(visibleIncomesSlice, groupByPeriod),
+    [visibleIncomesSlice, groupByPeriod]
+  );
 
   const anyFilteredExpanded =
     filteredIncomes.length > 0 &&
@@ -1452,7 +1492,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
     if (anyFilteredExpanded) {
       setExpandedIncomeIds(new Set());
     } else {
-      setExpandedIncomeIds(new Set(filteredIncomes.map((inc) => inc.id)));
+      setExpandedIncomeIds(new Set(visibleIncomesSlice.map((inc) => inc.id)));
     }
   };
 
@@ -3134,6 +3174,23 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                 ))}
               </select>
 
+              {onOpenCustomDateFilter && (
+                <button
+                  type="button"
+                  onClick={onOpenCustomDateFilter}
+                  className={`rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                    timeRange === 'custom'
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                  title="Filter income by custom date range"
+                >
+                  {timeRange === 'custom'
+                    ? formatCustomDateRangeLabel(customDateRange)
+                    : 'Custom Dates'}
+                </button>
+              )}
+
               {filteredIncomes.length > 0 && (
                 <button
                   type="button"
@@ -3155,7 +3212,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
             </div>
           ) : (
             <div className="space-y-4">
-              {groupRecordsByPeriod(filteredIncomes, groupByPeriod).map((periodGroup) => (
+              {visibleIncomePeriodGroups.map((periodGroup) => (
                 <div key={periodGroup.key} className="space-y-3">
                   {groupByPeriod !== 'none' && (
                     <div className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-100/80 px-3.5 py-2">
@@ -3175,9 +3232,7 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                   settings
                 );
                 const targetAccount =
-                  summaries.find((s) => s.account.id === resolvedSourceAccId)?.account ||
-                  accounts.find((a) => a.id === resolvedSourceAccId) ||
-                  defaultAccount;
+                  accountByIdMap.get(resolvedSourceAccId) || defaultAccount;
                 const { nativeGross: incNativeGross, currency: incRecordCurr } =
                   getIncomeNativeGross(inc, settings, accounts);
                 const effectiveNetDestId = getEffectiveNetTransferAccountId(
@@ -3186,42 +3241,48 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
                   accounts
                 );
                 const netDestAccount = effectiveNetDestId
-                  ? summaries.find((s) => s.account.id === effectiveNetDestId)?.account ||
-                    accounts.find((a) => a.id === effectiveNetDestId)
+                  ? accountByIdMap.get(effectiveNetDestId)
                   : undefined;
-                const itemDeductions = getEffectiveIncomeDeductions(
-                  inc,
-                  settings,
-                  expenses
-                );
-                const totalSavingsTrans =
-                  Math.round(
-                    itemDeductions
-                      .filter((d) => isSavingsDeduction(d))
-                      .reduce((sum, d) => sum + d.amount, 0) * 100
-                  ) / 100;
-                const totalExpenseDeds =
-                  Math.round(
-                    itemDeductions
-                      .filter((d) => !isSavingsDeduction(d))
-                      .reduce((sum, d) => sum + d.amount, 0) * 100
-                  ) / 100;
-                const totalDed =
-                  Math.round((totalSavingsTrans + totalExpenseDeds) * 100) / 100;
-                const netRetained =
-                  Math.round((incNativeGross - totalDed) * 100) / 100;
                 const isEditing = editingIncomeId === inc.id;
                 const isAddingDeduction = addingDeductionForIncomeId === inc.id;
                 const isExpanded = expandedIncomeIds.has(inc.id) || isEditing;
 
-                const availableDefinedCutsToAdd = definedCuts.filter(
-                  (c) =>
-                    !itemDeductions.some(
-                      (d) =>
-                        d.id.includes(c.id) ||
-                        d.name.trim().toLowerCase() === c.name.trim().toLowerCase()
+                // Compute heavy deduction breakdowns strictly when modal is expanded
+                const itemDeductions = isExpanded
+                  ? getEffectiveIncomeDeductions(inc, settings, expenses)
+                  : [];
+                const totalSavingsTrans = isExpanded
+                  ? Math.round(
+                      itemDeductions
+                        .filter((d) => isSavingsDeduction(d))
+                        .reduce((sum, d) => sum + d.amount, 0) * 100
+                    ) / 100
+                  : 0;
+                const totalExpenseDeds = isExpanded
+                  ? Math.round(
+                      itemDeductions
+                        .filter((d) => !isSavingsDeduction(d))
+                        .reduce((sum, d) => sum + d.amount, 0) * 100
+                    ) / 100
+                  : 0;
+                const totalDed = isExpanded
+                  ? Math.round((totalSavingsTrans + totalExpenseDeds) * 100) / 100
+                  : 0;
+                const netRetained = isExpanded
+                  ? Math.round((incNativeGross - totalDed) * 100) / 100
+                  : incNativeGross;
+
+                const availableDefinedCutsToAdd = isExpanded
+                  ? definedCuts.filter(
+                      (c) =>
+                        !itemDeductions.some(
+                          (d) =>
+                            d.id.includes(c.id) ||
+                            d.name.trim().toLowerCase() ===
+                              c.name.trim().toLowerCase()
+                        )
                     )
-                );
+                  : [];
 
                 return (
                   <React.Fragment key={inc.id}>
@@ -4072,6 +4133,30 @@ export const IncomeLogView: React.FC<IncomeLogViewProps> = ({
               })}
                 </div>
               ))}
+
+              {filteredIncomes.length > visibleLimit && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs">
+                  <span className="font-mono text-slate-600 tabular-nums">
+                    Showing {visibleIncomesSlice.length} of {filteredIncomes.length} income records
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setVisibleLimit((prev) => prev + 40)}
+                      className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 whitespace-nowrap"
+                    >
+                      Load 40 More
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setVisibleLimit(filteredIncomes.length)}
+                      className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 whitespace-nowrap"
+                    >
+                      Show All
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

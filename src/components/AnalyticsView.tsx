@@ -4,6 +4,7 @@ import {
   FlexibleExpense,
   FinancialAccount,
   AccountTransfer,
+  FinancialBudget,
   UserSettings,
   Quarter,
 } from '../types/finance.ts';
@@ -30,15 +31,20 @@ import {
   getSecondaryCurrencyModeCaption,
   getManualSavingsVaultTransfersBreakdown,
 } from '../lib/calculations.ts';
+import { evaluateAllBudgets } from '../lib/budgetCalculations.ts';
 import {
   fetchMarketExchangeRates,
   getInitialFxSnapshot,
   convertCurrency2dp,
+  getAccountCurrency,
+  getAccountNativeBalance,
+  roundTo2Decimals,
   MarketFxSnapshot,
 } from '../lib/currencyService.ts';
 import { getColorThemeConfig } from '../lib/colorThemes.ts';
 import {
   TimeRangePreset,
+  CustomDateRange,
   getPresetLabel,
   formatDateDDMMYYYY,
   formatDateTimeDDMMYYYY,
@@ -52,9 +58,11 @@ interface AnalyticsViewProps {
   expenses: FlexibleExpense[];
   accounts: FinancialAccount[];
   transfers: AccountTransfer[];
+  budgets?: FinancialBudget[];
   settings: UserSettings;
   currency: string;
   timeRange?: TimeRangePreset;
+  customDateRange?: CustomDateRange;
   onNavigateToTab: (tab: ActiveTab) => void;
   onEditExpense?: (expense: FlexibleExpense) => void;
   onDeleteExpense?: (id: string) => void;
@@ -137,21 +145,26 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   expenses,
   accounts,
   transfers,
+  budgets = [],
   settings,
   currency,
   timeRange = 'all',
+  customDateRange,
   onNavigateToTab,
   onEditExpense,
   onDeleteExpense,
 }) => {
   const [selectedPopupExpense, setSelectedPopupExpense] =
     useState<FlexibleExpense | null>(null);
-  const [isVisualsCollapsed, setIsVisualsCollapsed] = useState(true);
+  const [accountScopeFilter, setAccountScopeFilter] = useState<
+    'all' | 'operating' | 'vaults'
+  >('all');
+  const [isAccountsPerfCollapsed, setIsAccountsPerfCollapsed] = useState(false);
+  const [isKeyMetricsCollapsed, setIsKeyMetricsCollapsed] = useState(false);
   const [isPieSectionCollapsed, setIsPieSectionCollapsed] = useState(true);
   const [selectedPieQuarter, setSelectedPieQuarter] = useState<'ALL' | Quarter>('ALL');
   const [pieDetailMode, setPieDetailMode] = useState<'detailed' | 'summary'>('detailed');
   const [hoveredSliceId, setHoveredSliceId] = useState<string | null>(null);
-  const [trendMode, setTrendMode] = useState<'records' | 'months' | 'quarters'>('records');
   const [expenseFilterMode, setExpenseFilterMode] = useState<'all' | 'recorded' | 'deductions'>('all');
   const [isMoMCategoriesCollapsed, setIsMoMCategoriesCollapsed] = useState(true);
   const [momChartMode, setMomChartMode] = useState<'by_category' | 'by_month'>('by_category');
@@ -167,6 +180,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   const [isSourcesCollapsed, setIsSourcesCollapsed] = useState(true);
   const [isTimelineCollapsed, setIsTimelineCollapsed] = useState(true);
   const [isRecentExpensesCollapsed, setIsRecentExpensesCollapsed] = useState(true);
+  const [visibleRecentCount, setVisibleRecentCount] = useState(30);
 
   const [fxSnapshot, setFxSnapshot] = useState<MarketFxSnapshot>(() =>
     getInitialFxSnapshot(currency)
@@ -963,41 +977,323 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     vaultIdSet,
   ]);
 
-  // SVG Donut math (r = 54, circumference = 339.292)
-  const radius = 54;
-  const circumference = 2 * Math.PI * radius;
-  const savPct = Math.max(0, Math.min(100, analytics.effectiveSavingsRate));
-  const dedExpPct = Math.max(
-    0,
-    Math.min(100 - savPct, analytics.deductionExpenseRate)
-  );
-  const recExpPct = Math.max(
-    0,
-    Math.min(100 - savPct - dedExpPct, analytics.recordedExpenseRate)
-  );
-  const netPct = Math.max(0, 100 - savPct - dedExpPct - recExpPct);
+  const accountByIdMap = useMemo(() => {
+    const map = new Map<string, FinancialAccount>();
+    for (const acc of accounts) {
+      map.set(acc.id, acc);
+    }
+    return map;
+  }, [accounts]);
 
-  const netDash = (netPct / 100) * circumference;
-  const savDash = (savPct / 100) * circumference;
-  const dedExpDash = (dedExpPct / 100) * circumference;
-  const recExpDash = (recExpPct / 100) * circumference;
+  // Accounts Income vs. Expenses Performance (derived strictly from active summaries)
+  const accountPerformance = useMemo(() => {
+    const rows = summaries.map((s) => {
+      const isVault = isSavingsVaultAccount(s.account, settings);
+      const directIncome = roundTo2Decimals(s.grossDeposited || 0);
+      const incomingAllocationsAndTransfers = roundTo2Decimals(
+        (s.incomingDeductionAllocations || 0) +
+          (s.netIncomeTransferredIn || 0) +
+          (s.transfersIn || 0) +
+          (s.vaultCreditsIn || 0)
+      );
+      const totalInflows = roundTo2Decimals(
+        directIncome + incomingAllocationsAndTransfers
+      );
 
-  const maxQuarterGross = Math.max(
-    1,
-    ...analytics.quartersList.map((q) =>
-      Math.max(q.gross, q.recordedExpenses + q.deductionExpenses)
-    )
+      const directExpenses = roundTo2Decimals(
+        (s.expensesPaid || 0) +
+          (s.mandatoryCutsIncurred || 0) +
+          (s.vaultDebitsOut || 0)
+      );
+      const outgoingAllocationsAndTransfers = roundTo2Decimals(
+        (s.savingsAllocatedIncurred || 0) +
+          (s.netIncomeTransferredOut || 0) +
+          (s.transfersOut || 0)
+      );
+      const totalOutflows = roundTo2Decimals(
+        directExpenses + outgoingAllocationsAndTransfers
+      );
+
+      const netFlow = roundTo2Decimals(totalInflows - totalOutflows);
+      const expenseRatio =
+        totalInflows > 0
+          ? roundTo2Decimals((directExpenses / totalInflows) * 100)
+          : directExpenses > 0
+          ? 100
+          : 0;
+      const accCurr = getAccountCurrency(s.account, currency);
+      const nativeBal = getAccountNativeBalance(
+        s.currentCashBalance,
+        s.account,
+        currency,
+        fxSnapshot
+      );
+
+      return {
+        id: s.account.id,
+        name: s.account.name,
+        type: s.account.type || (isVault ? 'Savings' : 'Operating'),
+        isVault,
+        color: s.account.color || colorConfig.primary,
+        currency: accCurr,
+        directIncome,
+        incomingAllocationsAndTransfers,
+        totalInflows,
+        directExpenses,
+        outgoingAllocationsAndTransfers,
+        totalOutflows,
+        netFlow,
+        expenseRatio,
+        currentBalance: roundTo2Decimals(s.currentCashBalance),
+        nativeBalance: nativeBal.amount,
+        nativeCurrency: nativeBal.currency,
+        incomeCount: s.incomeCount || 0,
+      };
+    });
+
+    const filtered = rows
+      .filter((r) => {
+        if (accountScopeFilter === 'operating') return !r.isVault;
+        if (accountScopeFilter === 'vaults') return r.isVault;
+        return true;
+      })
+      .sort(
+        (a, b) =>
+          b.totalInflows +
+          b.totalOutflows -
+          (a.totalInflows + a.totalOutflows)
+      );
+
+    const maxFlow = Math.max(
+      1,
+      ...filtered.map((r) => Math.max(r.totalInflows, r.totalOutflows))
+    );
+    const sumInflows = roundTo2Decimals(
+      filtered.reduce((acc, r) => acc + r.totalInflows, 0)
+    );
+    const sumDirectIncome = roundTo2Decimals(
+      filtered.reduce((acc, r) => acc + r.directIncome, 0)
+    );
+    const sumDirectExpenses = roundTo2Decimals(
+      filtered.reduce((acc, r) => acc + r.directExpenses, 0)
+    );
+    const sumOutflows = roundTo2Decimals(
+      filtered.reduce((acc, r) => acc + r.totalOutflows, 0)
+    );
+    const sumNetFlow = roundTo2Decimals(sumInflows - sumOutflows);
+
+    return {
+      rows: filtered,
+      maxFlow,
+      sumInflows,
+      sumDirectIncome,
+      sumDirectExpenses,
+      sumOutflows,
+      sumNetFlow,
+    };
+  }, [summaries, settings, accountScopeFilter, currency, fxSnapshot, colorConfig.primary]);
+
+  // Key Financial Performance & Efficiency Metrics (derived strictly from active ledger & budgets)
+  const keyMetrics = useMemo(() => {
+    const activeDates = new Set<string>();
+    for (const exp of allCombinedExpenses) {
+      if (exp.date) activeDates.add(exp.date.slice(0, 10));
+    }
+    for (const inc of incomes) {
+      if (inc.date) activeDates.add(inc.date.slice(0, 10));
+    }
+
+    const sortedDates = Array.from(activeDates).sort();
+    let spanDays = 1;
+    if (sortedDates.length >= 2) {
+      const startMs = new Date(`${sortedDates[0]}T00:00:00`).getTime();
+      const endMs = new Date(`${sortedDates[sortedDates.length - 1]}T00:00:00`).getTime();
+      if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs) {
+        spanDays = Math.max(1, Math.round((endMs - startMs) / 86_400_000) + 1);
+      }
+    }
+
+    const activeMonthsCount = Math.max(1, analytics.monthsList.length);
+    const avgDailySpend = roundTo2Decimals(analytics.totalAllExpenses / spanDays);
+    const avgMonthlySpend = roundTo2Decimals(
+      analytics.totalAllExpenses / activeMonthsCount
+    );
+    const avgMonthlyIncome = roundTo2Decimals(
+      analytics.totalGross / activeMonthsCount
+    );
+    const cashRunwayMonths =
+      avgMonthlySpend > 0 && analytics.operatingCashTotal > 0
+        ? roundTo2Decimals(analytics.operatingCashTotal / avgMonthlySpend)
+        : null;
+
+    let largestExpense: {
+      label: string;
+      category: string;
+      amount: number;
+      date: string;
+    } | null = null;
+    for (const exp of allCombinedExpenses) {
+      const { baseAmount } = getExpenseNativeAndBaseAmount(
+        exp,
+        settings,
+        accounts,
+        fxSnapshot
+      );
+      if (!largestExpense || baseAmount > largestExpense.amount) {
+        largestExpense = {
+          label: exp.subcategory || exp.category || 'Expense',
+          category: exp.category || 'Uncategorized',
+          amount: roundTo2Decimals(baseAmount),
+          date: exp.date,
+        };
+      }
+    }
+
+    let largestIncome: {
+      source: string;
+      amount: number;
+      date: string;
+    } | null = null;
+    for (const inc of incomes) {
+      const { baseGross } = getIncomeBaseGross(inc, settings, accounts, fxSnapshot);
+      if (!largestIncome || baseGross > largestIncome.amount) {
+        largestIncome = {
+          source: inc.clientOrSource || 'Income',
+          amount: roundTo2Decimals(baseGross),
+          date: inc.date,
+        };
+      }
+    }
+
+    const topCategory = analytics.expenseCategoriesList[0] || null;
+    const topCategorySharePct =
+      topCategory && analytics.totalAllExpenses > 0
+        ? roundTo2Decimals((topCategory.total / analytics.totalAllExpenses) * 100)
+        : 0;
+
+    const evaluatedBudgets =
+      budgets.length > 0
+        ? evaluateAllBudgets(
+            budgets,
+            expenses,
+            incomes,
+            accounts,
+            settings,
+            fxSnapshot,
+            new Date(),
+            false,
+            transfers
+          )
+        : [];
+    const activeBudgets = evaluatedBudgets.filter(
+      (b) => !b.budget.isExpiredDisabled
+    );
+    const healthyBudgets = activeBudgets.filter(
+      (b) => b.status === 'healthy'
+    ).length;
+    const alertBudgets = activeBudgets.filter(
+      (b) => b.status === 'warning' || b.status === 'at_limit' || b.status === 'exceeded'
+    ).length;
+    const totalBudgetLimitBase = roundTo2Decimals(
+      activeBudgets.reduce((s, b) => s + (b.budgetLimitBase || 0), 0)
+    );
+    const totalBudgetSpentBase = roundTo2Decimals(
+      activeBudgets.reduce((s, b) => s + (b.spentAmountBase || 0), 0)
+    );
+    const budgetUtilizationPct =
+      totalBudgetLimitBase > 0
+        ? roundTo2Decimals((totalBudgetSpentBase / totalBudgetLimitBase) * 100)
+        : 0;
+
+    const vaultDebitsTotal = roundTo2Decimals(
+      savingsSummaries.reduce((s, item) => s + (item.vaultDebitsOut || 0), 0)
+    );
+    const netVaultGrowth = roundTo2Decimals(
+      analytics.totalSavingsSplitRouted - vaultDebitsTotal
+    );
+
+    const manualTransfersCount = transfers.filter(
+      (t) =>
+        !t.id.startsWith('trans_auto_') &&
+        !t.id.startsWith('trans_sav_') &&
+        !t.id.startsWith('trans_net_')
+    ).length;
+    const manualTransfersVolume = roundTo2Decimals(
+      transfers
+        .filter(
+          (t) =>
+            !t.id.startsWith('trans_auto_') &&
+            !t.id.startsWith('trans_sav_') &&
+            !t.id.startsWith('trans_net_')
+        )
+        .reduce((s, t) => s + (t.amount || 0), 0)
+    );
+
+    return {
+      spanDays,
+      activeMonthsCount,
+      avgDailySpend,
+      avgMonthlySpend,
+      avgMonthlyIncome,
+      cashRunwayMonths,
+      largestExpense,
+      largestIncome,
+      topCategory,
+      topCategorySharePct,
+      activeBudgetsCount: activeBudgets.length,
+      healthyBudgets,
+      alertBudgets,
+      totalBudgetLimitBase,
+      totalBudgetSpentBase,
+      budgetUtilizationPct,
+      vaultDebitsTotal,
+      netVaultGrowth,
+      manualTransfersCount,
+      manualTransfersVolume,
+    };
+  }, [
+    allCombinedExpenses,
+    incomes,
+    expenses,
+    accounts,
+    transfers,
+    budgets,
+    settings,
+    fxSnapshot,
+    analytics,
+    savingsSummaries,
+  ]);
+
+  const maxQuarterGross = useMemo(
+    () => Math.max(...analytics.quartersList.map((q) => q.gross), 1),
+    [analytics.quartersList]
   );
-  const maxMonthGross = Math.max(
-    1,
-    ...analytics.monthsList.map((m) =>
-      Math.max(m.gross, m.recordedExpenses + m.deductionExpenses)
-    )
+
+  const recentExpensesSlice = useMemo(
+    () => filteredExpensesForAnalysis.slice(0, visibleRecentCount),
+    [filteredExpensesForAnalysis, visibleRecentCount]
   );
-  const maxRecordGross = Math.max(
-    1,
-    ...analytics.recordSeries.map((r) => r.gross)
-  );
+
+  const recentSubcategoryColorMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const exp of recentExpensesSlice) {
+      const subLabel =
+        exp.subcategory?.trim() || exp.category?.trim() || 'Expense';
+      const key = `${exp.category || ''}::${subLabel}`;
+      if (!map.has(key)) {
+        map.set(
+          key,
+          resolveIntuitiveSubcategoryColor(
+            subLabel,
+            exp.category,
+            settings,
+            expenses
+          )
+        );
+      }
+    }
+    return map;
+  }, [recentExpensesSlice, settings, expenses]);
 
   return (
     <div className="space-y-6">
@@ -1008,7 +1304,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             Analytics & Insights
           </h1>
           <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
-            {getPresetLabel(timeRange)}
+            {getPresetLabel(timeRange, customDateRange)}
           </span>
         </div>
 
@@ -1685,36 +1981,261 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         );
       })()}
 
-      {/* Section 1: Visual Cash Flow & Allocation Ring + Multi-Mode Bar Chart */}
+      {/* Section 1: Accounts Income vs. Expenses Performance */}
       <div className="rounded-xl border border-slate-200/90 bg-white p-4 sm:p-5">
         <div
-          onClick={() => setIsVisualsCollapsed((prev) => !prev)}
-          className={`flex items-center justify-between gap-3 cursor-pointer select-none ${
-            isVisualsCollapsed ? '' : 'border-b border-slate-100 pb-3.5 mb-4'
+          onClick={() => setIsAccountsPerfCollapsed((prev) => !prev)}
+          className={`flex flex-wrap items-center justify-between gap-3 cursor-pointer select-none ${
+            isAccountsPerfCollapsed ? '' : 'border-b border-slate-100 pb-3.5 mb-4'
           }`}
         >
-          <div className="flex items-center gap-2 min-w-0">
-            <span
-              className="h-2.5 w-2.5 rounded-full shrink-0"
-              style={{ backgroundColor: colorConfig.primary }}
-            />
-            <h2 className="font-display text-base font-semibold text-slate-900 break-words">
-              Cash Flow Allocation & Trend Visuals
+          <div className="min-w-0">
+            <h2 className="font-display text-base font-semibold text-slate-900">
+              Accounts: Income &amp; Expenses
             </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Per-account inflows, outflows, net flow, and current balance
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {!isAccountsPerfCollapsed && (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="inline-flex items-center rounded-lg bg-slate-100 p-0.5"
+              >
+                {(
+                  [
+                    { id: 'all', label: 'All' },
+                    { id: 'operating', label: 'Operating' },
+                    { id: 'vaults', label: 'Vaults' },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setAccountScopeFilter(tab.id)}
+                    className={`rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
+                      accountScopeFilter === tab.id
+                        ? 'bg-slate-900 text-white'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsAccountsPerfCollapsed((prev) => !prev);
+              }}
+              className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 shrink-0"
+            >
+              <span>{isAccountsPerfCollapsed ? 'Expand' : 'Collapse'}</span>
+              <svg
+                className={`h-3.5 w-3.5 text-slate-500 transition-transform ${
+                  isAccountsPerfCollapsed ? '' : 'rotate-180'
+                }`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        {!isAccountsPerfCollapsed && (
+          <div className="space-y-4">
+            {/* Compact Totals Strip */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 rounded-xl border border-slate-200/80 bg-slate-50/70 p-3.5">
+              <div>
+                <div className="text-[11px] font-medium text-slate-500">
+                  Account Inflows (Direct Income)
+                </div>
+                <div className="mt-0.5 font-mono text-sm font-bold text-emerald-700 tabular-nums">
+                  +{formatAmount(accountPerformance.sumInflows, currency)}
+                </div>
+                <div className="font-mono text-[11px] text-slate-500 tabular-nums">
+                  Direct income: {formatAmount(accountPerformance.sumDirectIncome, currency)}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium text-slate-500">
+                  Account Outflows (Direct Expenses)
+                </div>
+                <div className="mt-0.5 font-mono text-sm font-bold text-rose-600 tabular-nums">
+                  -{formatAmount(accountPerformance.sumOutflows, currency)}
+                </div>
+                <div className="font-mono text-[11px] text-slate-500 tabular-nums">
+                  Direct expenses: {formatAmount(accountPerformance.sumDirectExpenses, currency)}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium text-slate-500">
+                  Net Account Flow
+                </div>
+                <div
+                  className={`mt-0.5 font-mono text-sm font-bold tabular-nums ${
+                    accountPerformance.sumNetFlow < 0
+                      ? 'text-rose-600'
+                      : 'text-emerald-700'
+                  }`}
+                >
+                  {accountPerformance.sumNetFlow >= 0 ? '+' : ''}
+                  {formatAmount(accountPerformance.sumNetFlow, currency)}
+                </div>
+                <div className="font-mono text-[11px] text-slate-500 tabular-nums">
+                  {accountPerformance.rows.length}{' '}
+                  {accountPerformance.rows.length === 1 ? 'account' : 'accounts'} shown
+                </div>
+              </div>
+            </div>
+
+            {accountPerformance.rows.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-slate-200 py-8 text-center text-xs text-slate-500">
+                No accounts match this filter.
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100 rounded-xl border border-slate-200/80">
+                {accountPerformance.rows.map((acc) => {
+                  const inflowWidthPct = Math.min(
+                    100,
+                    Math.round((acc.totalInflows / accountPerformance.maxFlow) * 100)
+                  );
+                  const outflowWidthPct = Math.min(
+                    100,
+                    Math.round((acc.totalOutflows / accountPerformance.maxFlow) * 100)
+                  );
+                  return (
+                    <div key={acc.id} className="p-3.5 space-y-2.5">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span
+                            className="h-2.5 w-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: acc.color }}
+                          />
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold text-slate-900 truncate">
+                              {acc.name}
+                            </div>
+                            <div className="text-[11px] text-slate-500">
+                              {acc.isVault ? 'Savings Vault' : acc.type} · {acc.currency}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="text-right font-mono tabular-nums shrink-0">
+                          <div
+                            className={`text-sm font-bold ${
+                              acc.currentBalance < 0
+                                ? 'text-rose-600'
+                                : 'text-slate-900'
+                            }`}
+                          >
+                            {formatAmount(acc.currentBalance, currency)}
+                          </div>
+                          {acc.nativeCurrency !== currency && (
+                            <div className="text-[11px] text-slate-500">
+                              {formatAmount(acc.nativeBalance, acc.nativeCurrency)}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Paired Comparative Bars */}
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-2.5">
+                          <span className="w-16 text-[11px] font-medium text-slate-500 shrink-0">
+                            Inflows
+                          </span>
+                          <div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-emerald-600 transition-all"
+                              style={{ width: `${inflowWidthPct}%` }}
+                            />
+                          </div>
+                          <span className="w-28 text-right font-mono text-xs font-semibold text-emerald-700 tabular-nums shrink-0">
+                            +{formatAmount(acc.totalInflows, currency)}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2.5">
+                          <span className="w-16 text-[11px] font-medium text-slate-500 shrink-0">
+                            Outflows
+                          </span>
+                          <div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-rose-500 transition-all"
+                              style={{ width: `${outflowWidthPct}%` }}
+                            />
+                          </div>
+                          <span className="w-28 text-right font-mono text-xs font-semibold text-rose-600 tabular-nums shrink-0">
+                            -{formatAmount(acc.totalOutflows, currency)}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Detail Footer Row */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 font-mono tabular-nums pt-0.5">
+                        <span>
+                          Income: {formatAmount(acc.directIncome, currency)} · Expenses:{' '}
+                          {formatAmount(acc.directExpenses, currency)}
+                        </span>
+                        <span
+                          className={`font-semibold ${
+                            acc.netFlow < 0 ? 'text-rose-600' : 'text-emerald-700'
+                          }`}
+                        >
+                          Net: {acc.netFlow >= 0 ? '+' : ''}
+                          {formatAmount(acc.netFlow, currency)} · Expense Ratio:{' '}
+                          {formatPercent(acc.expenseRatio)}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Section 2: Key Financial Performance & Efficiency Metrics */}
+      <div className="rounded-xl border border-slate-200/90 bg-white p-4 sm:p-5">
+        <div
+          onClick={() => setIsKeyMetricsCollapsed((prev) => !prev)}
+          className={`flex items-center justify-between gap-3 cursor-pointer select-none ${
+            isKeyMetricsCollapsed ? '' : 'border-b border-slate-100 pb-3.5 mb-4'
+          }`}
+        >
+          <div className="min-w-0">
+            <h2 className="font-display text-base font-semibold text-slate-900">
+              Key Financial Performance Metrics
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Efficiency ratios, burn velocity, cash runway, top cost driver, and budget adherence
+            </p>
           </div>
 
           <button
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              setIsVisualsCollapsed((prev) => !prev);
+              setIsKeyMetricsCollapsed((prev) => !prev);
             }}
             className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 shrink-0"
           >
-            <span>{isVisualsCollapsed ? 'Expand' : 'Collapse'}</span>
+            <span>{isKeyMetricsCollapsed ? 'Expand' : 'Collapse'}</span>
             <svg
               className={`h-3.5 w-3.5 text-slate-500 transition-transform ${
-                isVisualsCollapsed ? '' : 'rotate-180'
+                isKeyMetricsCollapsed ? '' : 'rotate-180'
               }`}
               fill="none"
               viewBox="0 0 24 24"
@@ -1726,433 +2247,150 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           </button>
         </div>
 
-        {!isVisualsCollapsed && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
-            {/* LEFT (5 cols): Interactive SVG Ring Chart + 4-Part Allocation Breakdown */}
-            <div className="lg:col-span-5 flex flex-col sm:flex-row items-center gap-5 rounded-xl border border-slate-200/80 bg-slate-50/40 p-4">
-              <div className="relative h-36 w-36 shrink-0 flex items-center justify-center">
-                <svg className="h-36 w-36 -rotate-90" viewBox="0 0 140 140">
-                  <circle
-                    cx="70"
-                    cy="70"
-                    r={radius}
-                    fill="transparent"
-                    stroke="currentColor"
-                    strokeWidth="14"
-                    className="text-slate-200/80"
-                  />
-                  {analytics.totalGross > 0 && (
-                    <>
-                      {/* Net Retained Arc */}
-                      <circle
-                        cx="70"
-                        cy="70"
-                        r={radius}
-                        fill="transparent"
-                        stroke={colorConfig.primary}
-                        strokeWidth="14"
-                        strokeDasharray={`${netDash} ${circumference}`}
-                        strokeDashoffset={0}
-                        strokeLinecap="butt"
-                      />
-                      {/* Savings Transfers Arc */}
-                      <circle
-                        cx="70"
-                        cy="70"
-                        r={radius}
-                        fill="transparent"
-                        stroke={colorConfig.chartSecondary}
-                        strokeWidth="14"
-                        strokeDasharray={`${savDash} ${circumference}`}
-                        strokeDashoffset={-netDash}
-                        strokeLinecap="butt"
-                      />
-                      {/* Income Deduction Expenses Arc */}
-                      <circle
-                        cx="70"
-                        cy="70"
-                        r={radius}
-                        fill="transparent"
-                        stroke={colorConfig.chartTertiary}
-                        strokeWidth="14"
-                        strokeDasharray={`${dedExpDash} ${circumference}`}
-                        strokeDashoffset={-(netDash + savDash)}
-                        strokeLinecap="butt"
-                      />
-                      {/* Recorded Expenses Arc */}
-                      <circle
-                        cx="70"
-                        cy="70"
-                        r={radius}
-                        fill="transparent"
-                        stroke={colorConfig.chartPalette[0]}
-                        strokeWidth="14"
-                        strokeDasharray={`${recExpDash} ${circumference}`}
-                        strokeDashoffset={-(netDash + savDash + dedExpDash)}
-                        strokeLinecap="butt"
-                      />
-                    </>
-                  )}
-                </svg>
-                <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-2">
-                  <span
-                    className="font-mono text-base font-bold tabular-nums"
-                    style={{ color: colorConfig.primary }}
-                  >
-                    {formatPercent(netPct)}
-                  </span>
-                  <span className="text-[10px] font-medium text-slate-500">
-                    Retained
-                  </span>
-                </div>
+        {!isKeyMetricsCollapsed && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+            {/* Metric 1: Savings & Expense Ratios */}
+            <div className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-3.5 space-y-2">
+              <div className="text-xs font-semibold text-slate-800">
+                Efficiency &amp; Retention
               </div>
-
-              <div className="flex-1 w-full space-y-2 text-xs min-w-0">
+              <div className="space-y-1.5 text-xs font-mono tabular-nums">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span
-                      className="h-2.5 w-2.5 rounded-full shrink-0"
-                      style={{ backgroundColor: colorConfig.primary }}
-                    />
-                    <span className="font-medium text-slate-700 break-words">
-                      Net Retained
-                    </span>
-                  </div>
-                  <span className="font-mono font-semibold text-slate-900 tabular-nums shrink-0">
-                    {formatPercent(netPct)}
+                  <span className="font-sans text-slate-500">Savings Rate</span>
+                  <span className="font-semibold text-emerald-700">
+                    {formatPercent(analytics.effectiveSavingsRate)}
                   </span>
                 </div>
-
                 <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span
-                      className="h-2.5 w-2.5 rounded-full shrink-0"
-                      style={{ backgroundColor: colorConfig.chartSecondary }}
-                    />
-                    <span className="font-medium text-slate-700 break-words">
-                      Savings Splits
-                    </span>
-                  </div>
-                  <span className="font-mono font-semibold text-slate-900 tabular-nums shrink-0">
-                    {formatPercent(savPct)}
+                  <span className="font-sans text-slate-500">Expense / Income</span>
+                  <span className="font-semibold text-rose-600">
+                    {formatPercent(analytics.totalExpenseRate)}
                   </span>
                 </div>
-
                 <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span
-                      className="h-2.5 w-2.5 rounded-full shrink-0"
-                      style={{ backgroundColor: colorConfig.chartTertiary }}
-                    />
-                    <span className="font-medium text-slate-700 break-words">
-                      Deduction Expenses
-                    </span>
-                  </div>
-                  <span className="font-mono font-semibold text-slate-900 tabular-nums shrink-0">
-                    {formatPercent(dedExpPct)}
+                  <span className="font-sans text-slate-500">Net Retention</span>
+                  <span className="font-semibold text-slate-900">
+                    {formatPercent(analytics.netRetentionRate)}
                   </span>
-                </div>
-
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span
-                      className="h-2.5 w-2.5 rounded-full shrink-0"
-                      style={{ backgroundColor: colorConfig.chartPalette[0] }}
-                    />
-                    <span className="font-medium text-slate-700 break-words">
-                      Recorded Expenses
-                    </span>
-                  </div>
-                  <span className="font-mono font-semibold text-slate-900 tabular-nums shrink-0">
-                    {formatPercent(recExpPct)}
-                  </span>
-                </div>
-
-                {/* Stacked Bar */}
-                <div className="pt-1">
-                  <div className="flex h-2 w-full overflow-hidden rounded-full bg-slate-200/80">
-                    <div
-                      style={{
-                        width: `${netPct}%`,
-                        backgroundColor: colorConfig.primary,
-                      }}
-                    />
-                    <div
-                      style={{
-                        width: `${savPct}%`,
-                        backgroundColor: colorConfig.chartSecondary,
-                      }}
-                    />
-                    <div
-                      style={{
-                        width: `${dedExpPct}%`,
-                        backgroundColor: colorConfig.chartTertiary,
-                      }}
-                    />
-                    <div
-                      style={{
-                        width: `${recExpPct}%`,
-                        backgroundColor: colorConfig.chartPalette[0],
-                      }}
-                    />
-                  </div>
                 </div>
               </div>
             </div>
 
-            {/* RIGHT (7 cols): Interactive Bar Chart (Records / Months / Quarters) */}
-            <div className="lg:col-span-7 rounded-xl border border-slate-200/80 bg-slate-50/40 p-4 space-y-3 min-w-0">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <span className="font-display text-xs font-semibold text-slate-900 break-words">
-                  {trendMode === 'records'
-                    ? 'Income Records vs Savings & Expenses'
-                    : trendMode === 'months'
-                    ? 'Monthly Inflow vs Outflow'
-                    : 'Quarterly Inflow vs Outflow'}
-                </span>
-
-                <div className="grid grid-cols-3 sm:flex items-center gap-1 rounded-lg bg-slate-200/70 p-0.5 w-full sm:w-auto">
-                  {(['records', 'months', 'quarters'] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => setTrendMode(mode)}
-                      className={`rounded-md px-2 py-1 text-[11px] font-medium capitalize transition-colors text-center ${
-                        trendMode === mode
-                          ? 'bg-slate-900 text-white'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      {mode}
-                    </button>
-                  ))}
+            {/* Metric 2: Spending Velocity & Cash Runway */}
+            <div className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-3.5 space-y-2">
+              <div className="text-xs font-semibold text-slate-800">
+                Burn Velocity &amp; Runway
+              </div>
+              <div className="space-y-1.5 text-xs font-mono tabular-nums">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-sans text-slate-500">Avg Daily Spend</span>
+                  <span className="font-semibold text-slate-900">
+                    {formatAmount(keyMetrics.avgDailySpend, currency)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-sans text-slate-500">Avg Monthly Spend</span>
+                  <span className="font-semibold text-rose-600">
+                    {formatAmount(keyMetrics.avgMonthlySpend, currency)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-sans text-slate-500">Operating Runway</span>
+                  <span className="font-semibold text-emerald-700">
+                    {keyMetrics.cashRunwayMonths !== null
+                      ? `${keyMetrics.cashRunwayMonths} mo`
+                      : '—'}
+                  </span>
                 </div>
               </div>
+            </div>
 
-              {trendMode === 'records' && (
-                <>
-                  {analytics.recordSeries.length === 0 ? (
-                    <div className="flex h-32 items-center justify-center text-xs text-slate-400">
-                      No income records in selected range
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
-                      {analytics.recordSeries.slice(-4).map((rec) => {
-                        const grossHeightPct = Math.max(
-                          8,
-                          Math.round((rec.gross / maxRecordGross) * 100)
-                        );
-                        const netHeightPct =
-                          rec.gross > 0
-                            ? Math.max(6, Math.round((rec.net / maxRecordGross) * 100))
-                            : 4;
-                        const savHeightPct =
-                          rec.gross > 0
-                            ? Math.max(4, Math.round((rec.savings / maxRecordGross) * 100))
-                            : 4;
-                        const expHeightPct =
-                          rec.gross > 0
-                            ? Math.max(
-                                4,
-                                Math.round((rec.deductionExp / maxRecordGross) * 100)
-                              )
-                            : 4;
-
-                        return (
-                          <div
-                            key={rec.id}
-                            className="rounded-lg border border-slate-200/70 bg-white p-2.5 space-y-2"
-                          >
-                            <div className="flex items-end gap-1.5 h-16 px-1.5 pt-2 bg-slate-50 rounded-md">
-                              <div className="flex-1 flex flex-col justify-end h-full">
-                                <div
-                                  className="w-full rounded-t opacity-35 transition-all"
-                                  style={{
-                                    height: `${grossHeightPct}%`,
-                                    backgroundColor: colorConfig.primary,
-                                  }}
-                                  title={`Gross: ${formatAmount(rec.gross, currency)}`}
-                                />
-                              </div>
-                              <div className="flex-1 flex flex-col justify-end h-full">
-                                <div
-                                  className="w-full rounded-t transition-all"
-                                  style={{
-                                    height: `${netHeightPct}%`,
-                                    backgroundColor: colorConfig.primary,
-                                  }}
-                                  title={`Net: ${formatAmount(rec.net, currency)}`}
-                                />
-                              </div>
-                              <div className="flex-1 flex flex-col justify-end h-full">
-                                <div
-                                  className="w-full rounded-t transition-all"
-                                  style={{
-                                    height: `${savHeightPct}%`,
-                                    backgroundColor: colorConfig.chartSecondary,
-                                  }}
-                                  title={`Savings: ${formatAmount(rec.savings, currency)}`}
-                                />
-                              </div>
-                              <div className="flex-1 flex flex-col justify-end h-full">
-                                <div
-                                  className="w-full rounded-t transition-all"
-                                  style={{
-                                    height: `${expHeightPct}%`,
-                                    backgroundColor: colorConfig.chartTertiary,
-                                  }}
-                                  title={`Deduction Expenses: ${formatAmount(rec.deductionExp, currency)}`}
-                                />
-                              </div>
-                            </div>
-
-                            <div className="min-w-0">
-                              <div className="font-display text-[11px] font-semibold text-slate-900 break-words">
-                                {rec.label}
-                              </div>
-                              <div className="font-mono text-[10px] text-slate-500 tabular-nums break-words">
-                                Net: {formatAmount(rec.net, currency)}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </>
-              )}
-
-              {trendMode === 'months' && (
-                <>
-                  {analytics.monthsList.length === 0 ? (
-                    <div className="flex h-32 items-center justify-center text-xs text-slate-400">
-                      No monthly activity in selected range
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
-                      {analytics.monthsList.slice(-4).map((m) => {
-                        const totalOut = m.deductionExpenses + m.recordedExpenses;
-                        const grossPct =
-                          m.gross > 0
-                            ? Math.max(8, Math.round((m.gross / maxMonthGross) * 100))
-                            : 4;
-                        const savPctM =
-                          m.savings > 0
-                            ? Math.max(6, Math.round((m.savings / maxMonthGross) * 100))
-                            : 4;
-                        const outPctM =
-                          totalOut > 0
-                            ? Math.max(6, Math.round((totalOut / maxMonthGross) * 100))
-                            : 4;
-
-                        return (
-                          <div
-                            key={m.month}
-                            className="rounded-lg border border-slate-200/70 bg-white p-2.5 space-y-2"
-                          >
-                            <div className="flex items-end justify-center gap-1.5 h-16 px-2 pt-2 bg-slate-50 rounded-md">
-                              <div
-                                className="w-3 rounded-t transition-all"
-                                style={{
-                                  height: `${grossPct}%`,
-                                  backgroundColor: colorConfig.primary,
-                                }}
-                                title={`Gross: ${formatAmount(m.gross, currency)}`}
-                              />
-                              <div
-                                className="w-3 rounded-t transition-all"
-                                style={{
-                                  height: `${savPctM}%`,
-                                  backgroundColor: colorConfig.chartSecondary,
-                                }}
-                                title={`Savings: ${formatAmount(m.savings, currency)}`}
-                              />
-                              <div
-                                className="w-3 rounded-t transition-all"
-                                style={{
-                                  height: `${outPctM}%`,
-                                  backgroundColor: colorConfig.chartTertiary,
-                                }}
-                                title={`Expenses: ${formatAmount(totalOut, currency)}`}
-                              />
-                            </div>
-                            <div className="text-center">
-                              <div className="font-mono text-xs font-bold text-slate-900">
-                                {m.month}
-                              </div>
-                              <div className="font-mono text-[10px] text-slate-500 tabular-nums break-words">
-                                Exp: -{formatAmount(totalOut, currency)}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </>
-              )}
-
-              {trendMode === 'quarters' && (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
-                  {analytics.quartersList.map((q) => {
-                    const totalOut = q.deductionExpenses + q.recordedExpenses;
-                    const grossPct =
-                      q.gross > 0
-                        ? Math.max(10, Math.round((q.gross / maxQuarterGross) * 100))
-                        : 4;
-                    const savPctQ =
-                      q.savings > 0
-                        ? Math.max(6, Math.round((q.savings / maxQuarterGross) * 100))
-                        : 4;
-                    const expPctQ =
-                      totalOut > 0
-                        ? Math.max(6, Math.round((totalOut / maxQuarterGross) * 100))
-                        : 4;
-
-                    return (
-                      <div
-                        key={q.quarter}
-                        className="rounded-lg border border-slate-200/70 bg-white p-2.5 space-y-2 text-center"
-                      >
-                        <div className="flex items-end justify-center gap-1.5 h-16 px-2 pt-2 bg-slate-50 rounded-md">
-                          <div
-                            className="w-3 rounded-t transition-all"
-                            style={{
-                              height: `${grossPct}%`,
-                              backgroundColor: colorConfig.primary,
-                            }}
-                            title={`Gross: ${formatAmount(q.gross, currency)}`}
-                          />
-                          <div
-                            className="w-3 rounded-t transition-all"
-                            style={{
-                              height: `${savPctQ}%`,
-                              backgroundColor: colorConfig.chartSecondary,
-                            }}
-                            title={`Savings: ${formatAmount(q.savings, currency)}`}
-                          />
-                          <div
-                            className="w-3 rounded-t transition-all"
-                            style={{
-                              height: `${expPctQ}%`,
-                              backgroundColor: colorConfig.chartTertiary,
-                            }}
-                            title={`Expenses: ${formatAmount(totalOut, currency)}`}
-                          />
-                        </div>
-                        <div>
-                          <div className="font-display text-xs font-bold text-slate-900">
-                            {q.quarter}
-                          </div>
-                          <div className="font-mono text-[10px] text-slate-500 tabular-nums break-words">
-                            Net: {formatAmount(q.net, currency)}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
+            {/* Metric 3: Top Cost Driver & Peak Transactions */}
+            <div className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-3.5 space-y-2">
+              <div className="text-xs font-semibold text-slate-800">
+                Top Driver &amp; Peaks
+              </div>
+              <div className="space-y-1.5 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-500 truncate">
+                    Top: {keyMetrics.topCategory?.category || '—'}
+                  </span>
+                  <span className="font-mono font-semibold text-slate-900 tabular-nums shrink-0">
+                    {keyMetrics.topCategory
+                      ? `${formatPercent(keyMetrics.topCategorySharePct)}`
+                      : '—'}
+                  </span>
                 </div>
-              )}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-500 truncate">
+                    Peak Exp:{' '}
+                    {keyMetrics.largestExpense
+                      ? `${keyMetrics.largestExpense.label} (${formatDateDDMMYYYY(
+                          keyMetrics.largestExpense.date
+                        )})`
+                      : '—'}
+                  </span>
+                  <span className="font-mono font-semibold text-rose-600 tabular-nums shrink-0">
+                    {keyMetrics.largestExpense
+                      ? formatAmount(keyMetrics.largestExpense.amount, currency)
+                      : '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-500 truncate">
+                    Peak Inc:{' '}
+                    {keyMetrics.largestIncome
+                      ? `${keyMetrics.largestIncome.source} (${formatDateDDMMYYYY(
+                          keyMetrics.largestIncome.date
+                        )})`
+                      : '—'}
+                  </span>
+                  <span className="font-mono font-semibold text-emerald-700 tabular-nums shrink-0">
+                    {keyMetrics.largestIncome
+                      ? formatAmount(keyMetrics.largestIncome.amount, currency)
+                      : '—'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Metric 4: Budget Adherence & Vault Growth */}
+            <div className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-3.5 space-y-2">
+              <div className="text-xs font-semibold text-slate-800">
+                Budgets &amp; Vault Growth
+              </div>
+              <div className="space-y-1.5 text-xs font-mono tabular-nums">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-sans text-slate-500">Active Budgets</span>
+                  <span className="font-semibold text-slate-900">
+                    {keyMetrics.activeBudgetsCount > 0
+                      ? `${keyMetrics.healthyBudgets}/${keyMetrics.activeBudgetsCount} on track (${formatPercent(
+                          keyMetrics.budgetUtilizationPct
+                        )})`
+                      : 'None active'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-sans text-slate-500">Net Vault Growth</span>
+                  <span
+                    className={`font-semibold ${
+                      keyMetrics.netVaultGrowth < 0
+                        ? 'text-rose-600'
+                        : 'text-emerald-700'
+                    }`}
+                  >
+                    {keyMetrics.netVaultGrowth >= 0 ? '+' : ''}
+                    {formatAmount(keyMetrics.netVaultGrowth, currency)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-sans text-slate-500">Account Transfers</span>
+                  <span className="font-semibold text-blue-600">
+                    {keyMetrics.manualTransfersCount} ·{' '}
+                    {formatAmount(keyMetrics.manualTransfersVolume, currency)}
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -3415,8 +3653,10 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
 
         {!isRecentExpensesCollapsed && (
           <div className="space-y-2">
-            {filteredExpensesForAnalysis.slice(0, 20).map((exp) => {
-              const acc = accounts.find((a) => a.id === exp.accountId);
+            {recentExpensesSlice.map((exp) => {
+              const acc = exp.accountId
+                ? accountByIdMap.get(exp.accountId)
+                : undefined;
               const { baseAmount } = getExpenseNativeAndBaseAmount(
                 exp,
                 settings,
@@ -3427,12 +3667,10 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                 exp.subcategory?.trim() ||
                 exp.category?.trim() ||
                 'Expense';
-              const subColor = resolveIntuitiveSubcategoryColor(
-                subLabel,
-                exp.category,
-                settings,
-                expenses
-              );
+              const subColor =
+                recentSubcategoryColorMap.get(
+                  `${exp.category || ''}::${subLabel}`
+                ) || '#e11d48';
               return (
                 <RecordCard
                   key={exp.id}
@@ -3446,6 +3684,33 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                 />
               );
             })}
+
+            {filteredExpensesForAnalysis.length > visibleRecentCount && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs">
+                <span className="font-mono text-slate-600 tabular-nums">
+                  Showing {recentExpensesSlice.length} of{' '}
+                  {filteredExpensesForAnalysis.length} expenses
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setVisibleRecentCount((prev) => prev + 30)}
+                    className="rounded-lg bg-slate-900 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-800 whitespace-nowrap"
+                  >
+                    Load 30 More
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setVisibleRecentCount(filteredExpensesForAnalysis.length)
+                    }
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 whitespace-nowrap"
+                  >
+                    Show All
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

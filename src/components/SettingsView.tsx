@@ -61,6 +61,12 @@ import {
   saveWorkflowState,
   clearWorkflowState,
 } from '../lib/appStateRestore.ts';
+import {
+  Nov24ImportedSummary,
+  RESTORE_TARGET_DATE_LABEL,
+  IMPORT_PURGE_DATE_LABEL,
+  findNov24ImportedTransactions,
+} from '../lib/nov24Restore.ts';
 
 interface ParsedImportPayload {
   incomes: Omit<IncomeReceipt, 'id' | 'createdAt' | 'updatedAt' | 'userId'>[];
@@ -122,6 +128,13 @@ interface SettingsViewProps {
   onLockAppNow?: () => void;
   isDriveAlignmentOpen?: boolean;
   onDriveAlignmentOpenChange?: (open: boolean) => void;
+  nov24Imported?: Nov24ImportedSummary;
+  onRestoreToNov23?: () => Promise<{
+    removedIncomes: number;
+    removedExpenses: number;
+    removedTransfers: number;
+    totalRemoved: number;
+  }>;
 }
 
 interface PersistedSettingsImportSession {
@@ -149,6 +162,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onLockAppNow,
   isDriveAlignmentOpen: controlledDriveOpen,
   onDriveAlignmentOpenChange,
+  nov24Imported: propNov24Imported,
+  onRestoreToNov23,
 }) => {
   const workflowUserId = currentUser?.uid || 'guest_user';
   const savedImportSession = useMemo(
@@ -165,6 +180,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   );
   const [internalDriveAlignmentOpen, setInternalDriveAlignmentOpen] =
     useState(false);
+  const [isConfirmingNov23Restore, setIsConfirmingNov23Restore] = useState(false);
+  const [isExecutingNov23Restore, setIsExecutingNov23Restore] = useState(false);
+  const [showNov24Preview, setShowNov24Preview] = useState(false);
+  const [nov23RestoreStatus, setNov23RestoreStatus] = useState<string | null>(null);
+
+  const nov24Detected = useMemo(
+    () =>
+      propNov24Imported ||
+      findNov24ImportedTransactions({ incomes, expenses, transfers }),
+    [propNov24Imported, incomes, expenses, transfers]
+  );
+
   const isDriveAlignmentOpen =
     controlledDriveOpen !== undefined
       ? controlledDriveOpen
@@ -4704,6 +4731,168 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* Restore Transactions to 23/11/2026 (Remove ONLY 24/11/2026 Imported Records) */}
+            {onRestoreToNov23 && (
+              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 space-y-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="space-y-0.5 min-w-0">
+                    <div className="text-xs font-semibold text-slate-900">
+                      Restore Transactions to {RESTORE_TARGET_DATE_LABEL}
+                    </div>
+                    <p className="text-[11px] text-slate-600">
+                      Removes only transactions imported on {IMPORT_PURGE_DATE_LABEL} (Google Drive Alignment or File Import). Manual entries and records from {RESTORE_TARGET_DATE_LABEL} or earlier remain untouched.
+                    </p>
+                  </div>
+
+                  {nov24Detected.totalCount > 0 ? (
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setShowNov24Preview((prev) => !prev)}
+                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 whitespace-nowrap"
+                      >
+                        {showNov24Preview
+                          ? 'Hide Records'
+                          : `Review (${nov24Detected.totalCount})`}
+                      </button>
+
+                      {isConfirmingNov23Restore ? (
+                        <>
+                          <button
+                            type="button"
+                            disabled={isExecutingNov23Restore}
+                            onClick={async () => {
+                              setIsExecutingNov23Restore(true);
+                              try {
+                                const res = await onRestoreToNov23();
+                                setNov23RestoreStatus(
+                                  `Removed ${res.totalRemoved} imported ${
+                                    res.totalRemoved === 1 ? 'record' : 'records'
+                                  } (${res.removedIncomes} income, ${res.removedExpenses} expenses, ${res.removedTransfers} transfers). Ledger restored to ${RESTORE_TARGET_DATE_LABEL}.`
+                                );
+                                setIsConfirmingNov23Restore(false);
+                                setShowNov24Preview(false);
+                              } finally {
+                                setIsExecutingNov23Restore(false);
+                              }
+                            }}
+                            className="rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-50 whitespace-nowrap"
+                          >
+                            {isExecutingNov23Restore
+                              ? 'Restoring...'
+                              : 'Confirm Restore'}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isExecutingNov23Restore}
+                            onClick={() => setIsConfirmingNov23Restore(false)}
+                            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 whitespace-nowrap"
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setIsConfirmingNov23Restore(true)}
+                          className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 whitespace-nowrap"
+                        >
+                          Restore to {RESTORE_TARGET_DATE_LABEL}
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="font-mono text-[11px] font-semibold text-emerald-700 shrink-0">
+                      0 records imported on {IMPORT_PURGE_DATE_LABEL}
+                    </span>
+                  )}
+                </div>
+
+                {nov24Detected.totalCount > 0 && (
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] text-slate-600 tabular-nums">
+                    <span>Incomes: {nov24Detected.incomeIds.length}</span>
+                    <span>Expenses: {nov24Detected.expenseIds.length}</span>
+                    <span>Transfers: {nov24Detected.transferIds.length}</span>
+                    <span>
+                      Sources: {nov24Detected.driveCount} Drive ·{' '}
+                      {nov24Detected.fileCount} File Import
+                    </span>
+                  </div>
+                )}
+
+                {nov23RestoreStatus && (
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800">
+                    {nov23RestoreStatus}
+                  </div>
+                )}
+
+                {showNov24Preview && nov24Detected.totalCount > 0 && (
+                  <div className="max-h-56 overflow-y-auto rounded-lg border border-slate-200 bg-white divide-y divide-slate-100 text-xs">
+                    {nov24Detected.incomes.slice(0, 25).map((inc) => (
+                      <div
+                        key={inc.id}
+                        className="flex items-center justify-between gap-2 px-3 py-2"
+                      >
+                        <div className="min-w-0">
+                          <span className="font-semibold text-slate-900">
+                            {inc.clientOrSource || 'Income'}
+                          </span>
+                          <span className="ml-2 text-[11px] text-slate-500">
+                            Income · {formatDateDDMMYYYY(inc.date)}
+                          </span>
+                        </div>
+                        <span className="font-mono font-semibold text-emerald-700 tabular-nums shrink-0">
+                          +{formatAmount(inc.grossAmount, inc.currency || currency)}
+                        </span>
+                      </div>
+                    ))}
+                    {nov24Detected.expenses.slice(0, 40).map((exp) => (
+                      <div
+                        key={exp.id}
+                        className="flex items-center justify-between gap-2 px-3 py-2"
+                      >
+                        <div className="min-w-0">
+                          <span className="font-semibold text-slate-900">
+                            {exp.subcategory || exp.category || 'Expense'}
+                          </span>
+                          <span className="ml-2 text-[11px] text-slate-500">
+                            Expense · {formatDateDDMMYYYY(exp.date)}
+                          </span>
+                        </div>
+                        <span className="font-mono font-semibold text-rose-600 tabular-nums shrink-0">
+                          -{formatAmount(exp.originalAmount || exp.amount, exp.currency || currency)}
+                        </span>
+                      </div>
+                    ))}
+                    {nov24Detected.transfers.slice(0, 25).map((tr) => (
+                      <div
+                        key={tr.id}
+                        className="flex items-center justify-between gap-2 px-3 py-2"
+                      >
+                        <div className="min-w-0">
+                          <span className="font-semibold text-slate-900">
+                            {tr.description || 'Transfer'}
+                          </span>
+                          <span className="ml-2 text-[11px] text-slate-500">
+                            Transfer · {formatDateDDMMYYYY(tr.date)}
+                          </span>
+                        </div>
+                        <span className="font-mono font-semibold text-blue-600 tabular-nums shrink-0">
+                          {formatAmount(tr.amount, currency)}
+                        </span>
+                      </div>
+                    ))}
+                    {nov24Detected.totalCount > 90 && (
+                      <div className="px-3 py-2 text-[11px] text-slate-500">
+                        Showing first 90 of {nov24Detected.totalCount} records imported on{' '}
+                        {IMPORT_PURGE_DATE_LABEL}.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             {onApplyDriveAlignment && (
               <DriveAlignmentModal

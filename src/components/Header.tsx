@@ -2,12 +2,13 @@ import React from 'react';
 import { ActiveTab, NAV_ITEMS } from './Navigation.tsx';
 import {
   TimeRangePreset,
+  CustomDateRange,
   TIME_RANGE_OPTIONS,
   getPresetLabel,
 } from '../lib/dateFilters.ts';
 import { PWAInstallButton } from './PWAInstallButton.tsx';
 
-export const APP_VERSION = '4.14.0';
+export const APP_VERSION = '4.15.0';
 
 interface HeaderProps {
   activeTab?: ActiveTab;
@@ -15,6 +16,7 @@ interface HeaderProps {
   isSidebarOpen?: boolean;
   onToggleSidebar?: () => void;
   timeRange?: TimeRangePreset;
+  customDateRange?: CustomDateRange;
   onSelectTimeRange?: (range: TimeRangePreset) => void;
   isMobileDateFilterOpen?: boolean;
   onToggleMobileDateFilter?: () => void;
@@ -25,6 +27,7 @@ export const Header: React.FC<HeaderProps> = ({
   isSidebarOpen = false,
   onToggleSidebar,
   timeRange = 'all',
+  customDateRange,
   onSelectTimeRange,
   isMobileDateFilterOpen = false,
   onToggleMobileDateFilter,
@@ -57,6 +60,10 @@ export const Header: React.FC<HeaderProps> = ({
             <div className="hidden xl:flex items-center gap-0.5 rounded-lg border border-slate-200/90 bg-slate-100/80 p-0.5">
               {TIME_RANGE_OPTIONS.map((opt) => {
                 const isSelected = timeRange === opt.id;
+                const displayLabel =
+                  opt.id === 'custom' && isSelected
+                    ? getPresetLabel('custom', customDateRange)
+                    : opt.label;
                 return (
                   <button
                     key={opt.id}
@@ -67,9 +74,9 @@ export const Header: React.FC<HeaderProps> = ({
                         ? 'bg-slate-900 text-white shadow-2xs'
                         : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
                     }`}
-                    title={`Filter by ${opt.label}`}
+                    title={`Filter by ${displayLabel}`}
                   >
-                    {opt.label}
+                    {displayLabel}
                   </button>
                 );
               })}
@@ -89,7 +96,9 @@ export const Header: React.FC<HeaderProps> = ({
               >
                 {TIME_RANGE_OPTIONS.map((opt) => (
                   <option key={opt.id} value={opt.id}>
-                    {opt.label}
+                    {opt.id === 'custom' && timeRange === 'custom'
+                      ? getPresetLabel('custom', customDateRange)
+                      : opt.label}
                   </option>
                 ))}
               </select>
@@ -122,8 +131,8 @@ export const Header: React.FC<HeaderProps> = ({
                   d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
                 />
               </svg>
-              <span className="max-w-[96px] truncate">
-                {getPresetLabel(timeRange)}
+              <span className="max-w-[110px] truncate">
+                {getPresetLabel(timeRange, customDateRange)}
               </span>
               <svg
                 className={`h-3 w-3 shrink-0 transition-transform ${

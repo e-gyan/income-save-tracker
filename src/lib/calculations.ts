@@ -704,13 +704,19 @@ export function computeDeductionAmount(
   return Math.round(((gross * cleanVal) / 100) * 100) / 100;
 }
 
-export const APP_VERSION = '4.14.0';
+export const APP_VERSION = '4.15.0';
 
 export const VERSION_RELEASE_LOG: {
   version: string;
   date: string;
   summary: string;
 }[] = [
+  {
+    version: '4.15.0',
+    date: '2026-11-25',
+    summary:
+      'Engineered high-volume scalability and responsiveness (React.memo cards, O(1) lookup maps, deferred search, progressive pagination, coalesced storage/snapshot sync, and chunked Firestore batches), added one-click Restore Transactions to 23/11/2026 removing only records imported on 24/11/2026, added Custom Date Range filtering (dd/mm/yyyy) across transactions and navigation, and redesigned Analytics to replace Cash Flow Allocation & Trend Visuals with Accounts Income vs. Expenses and Key Financial Performance Metrics.',
+  },
   {
     version: '4.14.0',
     date: '2026-11-24',

@@ -1,7 +1,9 @@
 import React, { useRef } from 'react';
 import {
   TimeRangePreset,
+  CustomDateRange,
   TIME_RANGE_OPTIONS,
+  formatDateDDMMYYYY,
 } from '../lib/dateFilters.ts';
 
 export type ActiveTab =
@@ -186,43 +188,148 @@ export function renderNavIcon(id: ActiveTab, className = 'h-4 w-4'): React.React
 
 interface NavigationProps {
   timeRange: TimeRangePreset;
+  customDateRange?: CustomDateRange;
   onSelectTimeRange: (range: TimeRangePreset) => void;
+  onCustomDateRangeChange?: (range: CustomDateRange) => void;
+  recordCounts?: {
+    incomes: number;
+    expenses: number;
+    transfers: number;
+  };
   isOpenOnMobile?: boolean;
 }
 
 export const Navigation: React.FC<NavigationProps> = ({
   timeRange,
+  customDateRange,
   onSelectTimeRange,
+  onCustomDateRangeChange,
+  recordCounts,
   isOpenOnMobile = true,
 }) => {
-  if (!isOpenOnMobile) {
+  const showCustomBar = timeRange === 'custom' && Boolean(onCustomDateRangeChange);
+
+  if (!isOpenOnMobile && !showCustomBar) {
     return null;
   }
 
+  const startDate = customDateRange?.startDate || '';
+  const endDate = customDateRange?.endDate || '';
+  const todayYmd = new Date().toISOString().substring(0, 10);
+
   return (
-    <div className="md:hidden border-b border-slate-200/80 bg-slate-50/95">
-      <div className="mx-auto max-w-7xl px-3 py-2">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 rounded-xl border border-slate-200/90 bg-white p-1.5">
-          {TIME_RANGE_OPTIONS.map((opt) => {
-            const isSelected = timeRange === opt.id;
-            return (
-              <button
-                key={opt.id}
-                type="button"
-                onClick={() => onSelectTimeRange(opt.id)}
-                className={`rounded-lg px-2 py-1.5 text-[11px] font-bold text-center transition-colors truncate ${
-                  isSelected
-                    ? 'bg-slate-900 text-white shadow-2xs'
-                    : 'text-slate-700 bg-slate-50/80 hover:bg-slate-100 hover:text-slate-900'
-                }`}
-                title={opt.label}
-              >
-                {opt.label}
-              </button>
-            );
-          })}
+    <div className="border-b border-slate-200/80 bg-slate-50/95">
+      {isOpenOnMobile && (
+        <div className="md:hidden mx-auto max-w-7xl px-3 py-2">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 rounded-xl border border-slate-200/90 bg-white p-1.5">
+            {TIME_RANGE_OPTIONS.map((opt) => {
+              const isSelected = timeRange === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => onSelectTimeRange(opt.id)}
+                  className={`rounded-lg px-2 py-1.5 text-[11px] font-bold text-center transition-colors truncate ${
+                    isSelected
+                      ? 'bg-slate-900 text-white shadow-2xs'
+                      : 'text-slate-700 bg-slate-50/80 hover:bg-slate-100 hover:text-slate-900'
+                  }`}
+                  title={opt.label}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
+
+      {showCustomBar && onCustomDateRangeChange && (
+        <div className="mx-auto max-w-7xl px-3 sm:px-6 lg:px-8 py-2 border-t border-slate-200/70 bg-white/95">
+          <div className="flex flex-wrap items-center justify-between gap-2.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                Custom Dates
+              </span>
+
+              <label className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs">
+                <span className="text-[11px] font-semibold text-slate-500">From</span>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) =>
+                    onCustomDateRangeChange({
+                      startDate: e.target.value,
+                      endDate:
+                        endDate && e.target.value && e.target.value > endDate
+                          ? e.target.value
+                          : endDate,
+                    })
+                  }
+                  aria-label="Custom filter start date"
+                  className="bg-transparent font-mono text-xs font-semibold text-slate-900 focus:outline-none"
+                />
+                {startDate && (
+                  <span className="hidden sm:inline font-mono text-[10px] text-slate-500 tabular-nums">
+                    ({formatDateDDMMYYYY(startDate)})
+                  </span>
+                )}
+              </label>
+
+              <label className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs">
+                <span className="text-[11px] font-semibold text-slate-500">To</span>
+                <input
+                  type="date"
+                  value={endDate}
+                  min={startDate || undefined}
+                  onChange={(e) =>
+                    onCustomDateRangeChange({
+                      startDate:
+                        startDate && e.target.value && e.target.value < startDate
+                          ? e.target.value
+                          : startDate,
+                      endDate: e.target.value,
+                    })
+                  }
+                  aria-label="Custom filter end date"
+                  className="bg-transparent font-mono text-xs font-semibold text-slate-900 focus:outline-none"
+                />
+                {endDate && (
+                  <span className="hidden sm:inline font-mono text-[10px] text-slate-500 tabular-nums">
+                    ({formatDateDDMMYYYY(endDate)})
+                  </span>
+                )}
+              </label>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const target = startDate || endDate || todayYmd;
+                  onCustomDateRangeChange({ startDate: target, endDate: target });
+                }}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 whitespace-nowrap"
+              >
+                Single Day
+              </button>
+
+              <button
+                type="button"
+                onClick={() => onSelectTimeRange('all')}
+                className="rounded-lg border border-slate-200 bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-200 whitespace-nowrap"
+              >
+                Reset
+              </button>
+            </div>
+
+            {recordCounts && (
+              <div className="font-mono text-[11px] font-semibold text-slate-600 tabular-nums">
+                {recordCounts.incomes} income · {recordCounts.expenses} expenses ·{' '}
+                {recordCounts.transfers} transfers
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

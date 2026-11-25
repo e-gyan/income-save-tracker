@@ -8,7 +8,9 @@ import {
 import { APP_COLOR_THEMES } from '../lib/colorThemes.ts';
 import {
   TimeRangePreset,
+  CustomDateRange,
   TIME_RANGE_OPTIONS,
+  formatDateDDMMYYYY,
 } from '../lib/dateFilters.ts';
 import {
   auth,
@@ -32,7 +34,9 @@ interface SidebarProps {
   colorTheme: AppColorTheme;
   onColorThemeChange: (theme: AppColorTheme) => void;
   timeRange: TimeRangePreset;
+  customDateRange?: CustomDateRange;
   onSelectTimeRange: (range: TimeRangePreset) => void;
+  onCustomDateRangeChange?: (range: CustomDateRange) => void;
   accountsCount?: number;
   budgetsCount?: number;
   budgetAlertsCount?: number;
@@ -49,7 +53,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   colorTheme,
   onColorThemeChange,
   timeRange,
+  customDateRange,
   onSelectTimeRange,
+  onCustomDateRangeChange,
   accountsCount = 0,
   budgetsCount = 0,
   budgetAlertsCount = 0,
@@ -345,6 +351,67 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     );
                   })}
                 </div>
+
+                {timeRange === 'custom' && onCustomDateRangeChange && (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-2.5 space-y-2">
+                    <div className="grid grid-cols-1 gap-2">
+                      <label className="space-y-0.5">
+                        <span className="flex items-center justify-between text-[10px] font-semibold uppercase text-slate-500">
+                          <span>From</span>
+                          {customDateRange?.startDate && (
+                            <span className="font-mono text-slate-600 tabular-nums">
+                              {formatDateDDMMYYYY(customDateRange.startDate)}
+                            </span>
+                          )}
+                        </span>
+                        <input
+                          type="date"
+                          value={customDateRange?.startDate || ''}
+                          onChange={(e) =>
+                            onCustomDateRangeChange({
+                              startDate: e.target.value,
+                              endDate:
+                                customDateRange?.endDate &&
+                                e.target.value &&
+                                e.target.value > customDateRange.endDate
+                                  ? e.target.value
+                                  : customDateRange?.endDate || '',
+                            })
+                          }
+                          className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
+                        />
+                      </label>
+
+                      <label className="space-y-0.5">
+                        <span className="flex items-center justify-between text-[10px] font-semibold uppercase text-slate-500">
+                          <span>To</span>
+                          {customDateRange?.endDate && (
+                            <span className="font-mono text-slate-600 tabular-nums">
+                              {formatDateDDMMYYYY(customDateRange.endDate)}
+                            </span>
+                          )}
+                        </span>
+                        <input
+                          type="date"
+                          value={customDateRange?.endDate || ''}
+                          min={customDateRange?.startDate || undefined}
+                          onChange={(e) =>
+                            onCustomDateRangeChange({
+                              startDate:
+                                customDateRange?.startDate &&
+                                e.target.value &&
+                                e.target.value < customDateRange.startDate
+                                  ? e.target.value
+                                  : customDateRange?.startDate || '',
+                              endDate: e.target.value,
+                            })
+                          }
+                          className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* 5. Color Theme & Appearance Mode */}

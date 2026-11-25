@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useDeferredValue } from 'react';
 import {
   FlexibleExpense,
   IncomeReceipt,
@@ -42,10 +42,12 @@ import { ConfirmDeleteModal } from './ConfirmDeleteModal.tsx';
 import { ActiveTab } from './Navigation.tsx';
 import {
   formatDateDDMMYYYY,
+  formatCustomDateRangeLabel,
   sortRecordsByArrivalTime,
   groupRecordsByPeriod,
   RecordGroupPeriod,
   TimeRangePreset,
+  CustomDateRange,
   isDateInPreset,
 } from '../lib/dateFilters.ts';
 import {
@@ -77,7 +79,9 @@ interface FlexibleExpensesViewProps {
   budgets?: FinancialBudget[];
   currency: string;
   timeRange?: TimeRangePreset;
+  customDateRange?: CustomDateRange;
   onResetTimeRange?: () => void;
+  onOpenCustomDateFilter?: () => void;
   onAddExpenses: (
     items: Omit<FlexibleExpense, 'id' | 'createdAt' | 'userId'>[]
   ) => Promise<void>;
@@ -102,7 +106,9 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
   budgets = [],
   currency,
   timeRange = 'all',
+  customDateRange,
   onResetTimeRange,
+  onOpenCustomDateFilter,
   onAddExpenses,
   onDeleteExpense,
   onEditExpense,
@@ -193,13 +199,36 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
 
   // Filters, search & presentation mode
   const [searchTerm, setSearchTerm] = useState('');
+  const deferredSearchTerm = useDeferredValue(searchTerm);
   const [selectedAccountFilter, setSelectedAccountFilter] = useState('all');
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState('all');
   const [presentationMode, setPresentationMode] = useState<'cards' | 'grouped'>('cards');
   const [groupByPeriod, setGroupByPeriod] = useState<RecordGroupPeriod>('none');
+  const [visibleLimit, setVisibleLimit] = useState(50);
   const [selectedPopupExpense, setSelectedPopupExpense] = useState<FlexibleExpense | null>(null);
   const [expandedCategoryGroups, setExpandedCategoryGroups] = useState<Set<string>>(new Set());
   const [pendingDeleteExpense, setPendingDeleteExpense] = useState<FlexibleExpense | null>(null);
+
+  const accountByIdMap = useMemo(() => {
+    const map = new Map<string, FinancialAccount>();
+    for (const acc of accounts) {
+      map.set(acc.id, acc);
+    }
+    return map;
+  }, [accounts]);
+
+  useEffect(() => {
+    setVisibleLimit(50);
+  }, [
+    timeRange,
+    customDateRange?.startDate,
+    customDateRange?.endDate,
+    selectedAccountFilter,
+    selectedCategoryFilter,
+    deferredSearchTerm,
+    groupByPeriod,
+    presentationMode,
+  ]);
 
   const { summaries } = useMemo(
     () =>
@@ -476,7 +505,9 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
         });
 
       await onAddExpenses(payloads);
-      const anyOutsideRange = payloads.some((p) => !isDateInPreset(p.date, timeRange));
+      const anyOutsideRange = payloads.some(
+        (p) => !isDateInPreset(p.date, timeRange, undefined, customDateRange)
+      );
       const count = payloads.length;
       setRows([createEmptyRow(batchDate, defaultAcc?.id || '')]);
       setBatchFeedback({
@@ -492,8 +523,9 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
   };
 
   const filteredExpenses = useMemo(() => {
+    const q = deferredSearchTerm.trim().toLowerCase();
     const matched = allCombinedExpenses.filter((exp) => {
-      if (!isDateInPreset(exp.date, timeRange)) {
+      if (!isDateInPreset(exp.date, timeRange, undefined, customDateRange)) {
         return false;
       }
       if (selectedAccountFilter !== 'all' && exp.accountId !== selectedAccountFilter) {
@@ -502,10 +534,9 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
       if (selectedCategoryFilter !== 'all' && exp.category !== selectedCategoryFilter) {
         return false;
       }
-      if (searchTerm.trim()) {
-        const q = searchTerm.toLowerCase();
+      if (q) {
         const accName =
-          accounts.find((a) => a.id === exp.accountId)?.name.toLowerCase() || '';
+          (exp.accountId ? accountByIdMap.get(exp.accountId)?.name : '')?.toLowerCase() || '';
         const match =
           (exp.recipient || '').toLowerCase().includes(q) ||
           (exp.category || '').toLowerCase().includes(q) ||
@@ -521,11 +552,50 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
   }, [
     allCombinedExpenses,
     timeRange,
+    customDateRange,
     selectedAccountFilter,
     selectedCategoryFilter,
-    searchTerm,
-    accounts,
+    deferredSearchTerm,
+    accountByIdMap,
   ]);
+
+  // Precompute subcategory colors once per unique (category, subcategory) pair to avoid O(N²) scans
+  const subcategoryColorMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const exp of filteredExpenses) {
+      const key = `${exp.category || ''}::${exp.subcategory || ''}`;
+      if (!map.has(key)) {
+        map.set(
+          key,
+          resolveIntuitiveSubcategoryColor(
+            exp.subcategory,
+            exp.category,
+            settings,
+            expenses
+          )
+        );
+      }
+    }
+    return map;
+  }, [filteredExpenses, settings, expenses]);
+
+  const visibleExpensesSlice = useMemo(
+    () => filteredExpenses.slice(0, visibleLimit),
+    [filteredExpenses, visibleLimit]
+  );
+
+  const visibleCardPeriodGroups = useMemo(
+    () => groupRecordsByPeriod(visibleExpensesSlice, groupByPeriod),
+    [visibleExpensesSlice, groupByPeriod]
+  );
+
+  const categoryPeriodGroups = useMemo(
+    () =>
+      presentationMode === 'grouped'
+        ? groupRecordsByPeriod(filteredExpenses, groupByPeriod)
+        : [],
+    [presentationMode, filteredExpenses, groupByPeriod]
+  );
 
   // Keep backend category breakdown synchronized when toggled to By Category or date filters change
   const [backendByCategoryTotals, setBackendByCategoryTotals] = useState<
@@ -1484,6 +1554,23 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
               </option>
             ))}
           </select>
+
+          {onOpenCustomDateFilter && (
+            <button
+              type="button"
+              onClick={onOpenCustomDateFilter}
+              className={`rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                timeRange === 'custom'
+                  ? 'border-slate-900 bg-slate-900 text-white'
+                  : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+              }`}
+              title="Filter expenses by custom date range"
+            >
+              {timeRange === 'custom'
+                ? formatCustomDateRangeLabel(customDateRange)
+                : 'Custom Dates'}
+            </button>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -1549,7 +1636,7 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
         </div>
       ) : presentationMode === 'cards' ? (
         <div className="space-y-4">
-          {groupRecordsByPeriod(filteredExpenses, groupByPeriod).map((periodGroup) => {
+          {visibleCardPeriodGroups.map((periodGroup) => {
             const periodTotal = roundTo2Decimals(
               periodGroup.items.reduce(
                 (sum, e) =>
@@ -1579,15 +1666,14 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
                 <div className="space-y-2">
                   {periodGroup.items.map((exp) => {
                     const acc =
-                      accounts.find((a) => a.id === exp.accountId) || defaultAcc;
+                      (exp.accountId ? accountByIdMap.get(exp.accountId) : undefined) ||
+                      defaultAcc;
                     const subLabel =
                       exp.subcategory || exp.category || 'Expense';
-                    const subColor = resolveIntuitiveSubcategoryColor(
-                      exp.subcategory,
-                      exp.category,
-                      settings,
-                      expenses
-                    );
+                    const subColor =
+                      subcategoryColorMap.get(
+                        `${exp.category || ''}::${exp.subcategory || ''}`
+                      ) || '#e11d48';
                     const expCurr = (
                       exp.currency || getAccountCurrency(acc, currency)
                     ).toUpperCase();
@@ -1613,11 +1699,35 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
               </div>
             );
           })}
+
+          {filteredExpenses.length > visibleLimit && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs">
+              <span className="font-mono text-slate-600 tabular-nums">
+                Showing {visibleExpensesSlice.length} of {filteredExpenses.length} expenses
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setVisibleLimit((prev) => prev + 50)}
+                  className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 whitespace-nowrap"
+                >
+                  Load 50 More
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setVisibleLimit(filteredExpenses.length)}
+                  className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 whitespace-nowrap"
+                >
+                  Show All
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         /* Grouped by Category & Subcategory Presentation (Responsive to TimeRange & Period Filters) */
         <div className="space-y-4">
-          {groupRecordsByPeriod(filteredExpenses, groupByPeriod).map((periodGroup) => {
+          {categoryPeriodGroups.map((periodGroup) => {
             const catGroups = new Map<
               string,
               {
@@ -1780,16 +1890,14 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
                         <div className="border-t border-slate-100 p-3 space-y-2 bg-slate-50/40">
                           {group.items.map((exp) => {
                             const acc =
-                              accounts.find((a) => a.id === exp.accountId) ||
+                              (exp.accountId ? accountByIdMap.get(exp.accountId) : undefined) ||
                               defaultAcc;
                             const subLabel =
                               exp.subcategory || exp.category || 'Expense';
-                            const itemSubColor = resolveIntuitiveSubcategoryColor(
-                              exp.subcategory,
-                              exp.category,
-                              settings,
-                              expenses
-                            );
+                            const itemSubColor =
+                              subcategoryColorMap.get(
+                                `${exp.category || ''}::${exp.subcategory || ''}`
+                              ) || '#e11d48';
                             const expCurr = (
                               exp.currency || getAccountCurrency(acc, currency)
                             ).toUpperCase();

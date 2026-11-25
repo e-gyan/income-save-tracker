@@ -208,12 +208,25 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
     null
   );
   const [historyGroupBy, setHistoryGroupBy] = useState<RecordGroupPeriod>('none');
+  const [historyVisibleLimit, setHistoryVisibleLimit] = useState(40);
   const [selectedPopupIncome, setSelectedPopupIncome] =
     useState<IncomeReceipt | null>(null);
   const [selectedPopupExpense, setSelectedPopupExpense] =
     useState<FlexibleExpense | null>(null);
   const [selectedPopupTransfer, setSelectedPopupTransfer] =
     useState<AccountTransfer | null>(null);
+
+  useEffect(() => {
+    setHistoryVisibleLimit(40);
+  }, [historyModalAccountId, historyGroupBy]);
+
+  const accountByIdMap = useMemo(() => {
+    const map = new Map<string, FinancialAccount>();
+    for (const acc of accounts) {
+      map.set(acc.id, acc);
+    }
+    return map;
+  }, [accounts]);
 
   // Editing Account Pop-up Modal State
   const [editingAccount, setEditingAccount] = useState<FinancialAccount | null>(null);
@@ -1012,6 +1025,55 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
     });
     return sortRecordsByArrivalTime(matched);
   }, [expenses, incomes, settings, accounts, historyModalAccountId]);
+
+  const historySubcategoryColorMap = useMemo(() => {
+    const map = new Map<string, string>();
+    if (!historyModalAccountId) return map;
+    for (const exp of selectedAccountExpenses) {
+      const subLabel =
+        exp.subcategory?.trim() || exp.category?.trim() || 'Expense';
+      const key = `${exp.category || ''}::${subLabel}`;
+      if (!map.has(key)) {
+        map.set(
+          key,
+          resolveIntuitiveSubcategoryColor(
+            subLabel,
+            exp.category,
+            settings,
+            expenses
+          )
+        );
+      }
+    }
+    return map;
+  }, [historyModalAccountId, selectedAccountExpenses, settings, expenses]);
+
+  const groupedHistoryIncomes = useMemo(
+    () =>
+      groupRecordsByPeriod(
+        selectedAccountIncomes.slice(0, historyVisibleLimit),
+        historyGroupBy
+      ),
+    [selectedAccountIncomes, historyVisibleLimit, historyGroupBy]
+  );
+
+  const groupedHistoryExpenses = useMemo(
+    () =>
+      groupRecordsByPeriod(
+        selectedAccountExpenses.slice(0, historyVisibleLimit),
+        historyGroupBy
+      ),
+    [selectedAccountExpenses, historyVisibleLimit, historyGroupBy]
+  );
+
+  const groupedHistoryTransfers = useMemo(
+    () =>
+      groupRecordsByPeriod(
+        selectedAccountTransfers.slice(0, historyVisibleLimit),
+        historyGroupBy
+      ),
+    [selectedAccountTransfers, historyVisibleLimit, historyGroupBy]
+  );
 
   const handleSaveNewCreateType = async () => {
     const saved = await persistNewAccountTypeOption(newCreateTypeInput);
@@ -3534,60 +3596,47 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                         Income Transactions Deposited ({selectedAccountIncomes.length})
                       </div>
                       <div className="space-y-3">
-                        {groupRecordsByPeriod(selectedAccountIncomes, historyGroupBy).map(
-                          (group) => (
-                            <div key={group.key} className="space-y-2">
-                              {historyGroupBy !== 'none' && (
-                                <div className="rounded bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-700">
-                                  {group.label} ({group.items.length})
-                                </div>
-                              )}
-                                {group.items.map((inc) => {
-                                  const {
-                                    nativeGross: incNativeGross,
-                                    currency: incRecordCurr,
-                                  } = getIncomeNativeGross(inc, settings, accounts);
-                                  const depAccId = resolveValidAccountId(
-                                    inc.accountId,
-                                    accounts,
-                                    settings
-                                  );
-                                  const depAcc = accounts.find(
-                                    (a) => a.id === depAccId
-                                  );
-                                  const subLabel =
-                                    inc.clientOrSource?.trim() || 'Income';
-                                  const subColor =
-                                    resolveIntuitiveSubcategoryColor(
-                                      subLabel,
-                                      'Income',
-                                      settings,
-                                      expenses
-                                    );
-                                  return (
-                                    <RecordCard
-                                      key={inc.id}
-                                      topLeftSubcategory={subLabel}
-                                      subcategoryColor={subColor}
-                                      bottomLeftAccount={
-                                        depAcc?.name ||
-                                        selectedHistorySummary.account.name
-                                      }
-                                      topRightAmount={`+${formatAmount(
-                                        incNativeGross,
-                                        incRecordCurr
-                                      )}`}
-                                      recordType="income"
-                                      bottomRightDate={formatDateDDMMYYYY(
-                                        inc.date
-                                      )}
-                                      onClick={() => setSelectedPopupIncome(inc)}
-                                    />
-                                  );
-                                })}
-                            </div>
-                          )
-                        )}
+                        {groupedHistoryIncomes.map((group) => (
+                          <div key={group.key} className="space-y-2">
+                            {historyGroupBy !== 'none' && (
+                              <div className="rounded bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-700">
+                                {group.label} ({group.items.length})
+                              </div>
+                            )}
+                            {group.items.map((inc) => {
+                              const {
+                                nativeGross: incNativeGross,
+                                currency: incRecordCurr,
+                              } = getIncomeNativeGross(inc, settings, accounts);
+                              const depAccId = resolveValidAccountId(
+                                inc.accountId,
+                                accounts,
+                                settings
+                              );
+                              const depAcc = accountByIdMap.get(depAccId);
+                              const subLabel =
+                                inc.clientOrSource?.trim() || 'Income';
+                              return (
+                                <RecordCard
+                                  key={inc.id}
+                                  topLeftSubcategory={subLabel}
+                                  subcategoryColor="#059669"
+                                  bottomLeftAccount={
+                                    depAcc?.name ||
+                                    selectedHistorySummary.account.name
+                                  }
+                                  topRightAmount={`+${formatAmount(
+                                    incNativeGross,
+                                    incRecordCurr
+                                  )}`}
+                                  recordType="income"
+                                  bottomRightDate={formatDateDDMMYYYY(inc.date)}
+                                  onClick={() => setSelectedPopupIncome(inc)}
+                                />
+                              );
+                            })}
+                          </div>
+                        ))}
                       </div>
                     </div>
                   )}
@@ -3601,72 +3650,65 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                           : `Expenses Deducted (${selectedAccountExpenses.length})`}
                       </div>
                       <div className="space-y-2.5">
-                        {groupRecordsByPeriod(selectedAccountExpenses, historyGroupBy).map(
-                          (group) => (
-                            <div key={group.key} className="space-y-1.5">
-                              {historyGroupBy !== 'none' && (
-                                <div className="rounded bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-700">
-                                  {group.label} ({group.items.length})
-                                </div>
-                              )}
-                              <div className="space-y-2">
-                                {group.items.map((exp) => {
-                                  const isCredit = exp.vaultAction === 'credit';
-                                  const expAccId = resolveValidAccountId(
-                                    exp.accountId,
-                                    accounts,
-                                    settings
-                                  );
-                                  const expAcc = accounts.find(
-                                    (a) => a.id === expAccId
-                                  );
-                                  const subLabel =
-                                    exp.subcategory?.trim() ||
-                                    exp.category?.trim() ||
-                                    'Expense';
-                                  const subColor =
-                                    resolveIntuitiveSubcategoryColor(
-                                      subLabel,
-                                      exp.category,
-                                      settings,
-                                      expenses
-                                    );
-                                  const expRecordCurr = (
-                                    exp.currency || currency
-                                  ).toUpperCase();
-                                  const expNativeAmt =
-                                    exp.originalAmount !== undefined &&
-                                    exp.originalAmount > 0
-                                      ? exp.originalAmount
-                                      : exp.amount;
-
-                                  return (
-                                    <RecordCard
-                                      key={exp.id}
-                                      topLeftSubcategory={subLabel}
-                                      subcategoryColor={subColor}
-                                      bottomLeftAccount={
-                                        expAcc?.name ||
-                                        selectedHistorySummary.account.name
-                                      }
-                                      topRightAmount={`${
-                                        isCredit ? '+' : '-'
-                                      }${formatAmount(
-                                        expNativeAmt,
-                                        expRecordCurr
-                                      )}`}
-                                      recordType={isCredit ? 'income' : 'expense'}
-                                      bottomRightDate={formatDateDDMMYYYY(
-                                        exp.date
-                                      )}
-                                      onClick={() => setSelectedPopupExpense(exp)}
-                                    />
-                                  );
-                                })}
+                        {groupedHistoryExpenses.map((group) => (
+                          <div key={group.key} className="space-y-1.5">
+                            {historyGroupBy !== 'none' && (
+                              <div className="rounded bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-700">
+                                {group.label} ({group.items.length})
                               </div>
+                            )}
+                            <div className="space-y-2">
+                              {group.items.map((exp) => {
+                                const isCredit = exp.vaultAction === 'credit';
+                                const expAccId = resolveValidAccountId(
+                                  exp.accountId,
+                                  accounts,
+                                  settings
+                                );
+                                const expAcc = accountByIdMap.get(expAccId);
+                                const subLabel =
+                                  exp.subcategory?.trim() ||
+                                  exp.category?.trim() ||
+                                  'Expense';
+                                const subColor =
+                                  historySubcategoryColorMap.get(
+                                    `${exp.category || ''}::${subLabel}`
+                                  ) || '#e11d48';
+                                const expRecordCurr = (
+                                  exp.currency || currency
+                                ).toUpperCase();
+                                const expNativeAmt =
+                                  exp.originalAmount !== undefined &&
+                                  exp.originalAmount > 0
+                                    ? exp.originalAmount
+                                    : exp.amount;
+
+                                return (
+                                  <RecordCard
+                                    key={exp.id}
+                                    topLeftSubcategory={subLabel}
+                                    subcategoryColor={subColor}
+                                    bottomLeftAccount={
+                                      expAcc?.name ||
+                                      selectedHistorySummary.account.name
+                                    }
+                                    topRightAmount={`${
+                                      isCredit ? '+' : '-'
+                                    }${formatAmount(
+                                      expNativeAmt,
+                                      expRecordCurr
+                                    )}`}
+                                    recordType={isCredit ? 'income' : 'expense'}
+                                    bottomRightDate={formatDateDDMMYYYY(
+                                      exp.date
+                                    )}
+                                    onClick={() => setSelectedPopupExpense(exp)}
+                                  />
+                                );
+                              })}
                             </div>
-                          )
-                        )}
+                          </div>
+                        ))}
                       </div>
                     </div>
                   )}
@@ -3678,55 +3720,87 @@ export const AccountsView: React.FC<AccountsViewProps> = ({
                         Savings Split, Net Income & Account Transfers ({selectedAccountTransfers.length})
                       </div>
                       <div className="space-y-2.5">
-                        {groupRecordsByPeriod(selectedAccountTransfers, historyGroupBy).map(
-                          (group) => (
-                            <div key={group.key} className="space-y-1.5">
-                              {historyGroupBy !== 'none' && (
-                                <div className="rounded bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-700">
-                                  {group.label} ({group.items.length})
-                                </div>
-                              )}
-                              <div className="space-y-2">
-                                {group.items.map((t) => {
-                                  const isOut =
-                                    t.sourceAccountId === historyModalAccountId;
-                                  const isSavingsSplitTransfer =
-                                    t.id.startsWith('trans_sav_');
-                                  const isNetIncomeTransfer =
-                                    t.id.startsWith('trans_net_');
-                                  const sourceAcc = accounts.find(
-                                    (a) => a.id === t.sourceAccountId
-                                  );
-                                  const destAcc = accounts.find(
-                                    (a) => a.id === t.destinationAccountId
-                                  );
-                                  const transferSubLabel = isSavingsSplitTransfer
-                                    ? 'Savings Allocation'
-                                    : isNetIncomeTransfer
-                                    ? 'Net Income Transfer'
-                                    : 'Fund Transfer';
-
-                                  return (
-                                    <RecordCard
-                                      key={t.id}
-                                      topLeftSubcategory={transferSubLabel}
-                                      subcategoryColor="#2563EB"
-                                      bottomLeftAccount={`${
-                                        sourceAcc?.name || 'Source'
-                                      } → ${destAcc?.name || 'Destination'}`}
-                                      topRightAmount={`${
-                                        isOut ? '-' : '+'
-                                      }${formatAmount(t.amount, currency)}`}
-                                      recordType="transfer"
-                                      bottomRightDate={formatDateDDMMYYYY(t.date)}
-                                      onClick={() => setSelectedPopupTransfer(t)}
-                                    />
-                                  );
-                                })}
+                        {groupedHistoryTransfers.map((group) => (
+                          <div key={group.key} className="space-y-1.5">
+                            {historyGroupBy !== 'none' && (
+                              <div className="rounded bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-700">
+                                {group.label} ({group.items.length})
                               </div>
+                            )}
+                            <div className="space-y-2">
+                              {group.items.map((t) => {
+                                const isOut =
+                                  t.sourceAccountId === historyModalAccountId;
+                                const isSavingsSplitTransfer =
+                                  t.id.startsWith('trans_sav_');
+                                const isNetIncomeTransfer =
+                                  t.id.startsWith('trans_net_');
+                                const sourceAcc = accountByIdMap.get(
+                                  t.sourceAccountId
+                                );
+                                const destAcc = accountByIdMap.get(
+                                  t.destinationAccountId
+                                );
+                                const transferSubLabel = isSavingsSplitTransfer
+                                  ? 'Savings Allocation'
+                                  : isNetIncomeTransfer
+                                  ? 'Net Income Transfer'
+                                  : 'Fund Transfer';
+
+                                return (
+                                  <RecordCard
+                                    key={t.id}
+                                    topLeftSubcategory={transferSubLabel}
+                                    subcategoryColor="#2563EB"
+                                    bottomLeftAccount={`${
+                                      sourceAcc?.name || 'Source'
+                                    } → ${destAcc?.name || 'Destination'}`}
+                                    topRightAmount={`${
+                                      isOut ? '-' : '+'
+                                    }${formatAmount(t.amount, currency)}`}
+                                    recordType="transfer"
+                                    bottomRightDate={formatDateDDMMYYYY(t.date)}
+                                    onClick={() => setSelectedPopupTransfer(t)}
+                                  />
+                                );
+                              })}
                             </div>
-                          )
-                        )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {(selectedAccountIncomes.length > historyVisibleLimit ||
+                    selectedAccountExpenses.length > historyVisibleLimit ||
+                    selectedAccountTransfers.length > historyVisibleLimit) && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs">
+                      <span className="font-mono text-slate-600 tabular-nums">
+                        Showing up to {historyVisibleLimit} records per section
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setHistoryVisibleLimit((prev) => prev + 40)}
+                          className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 whitespace-nowrap"
+                        >
+                          Load 40 More
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setHistoryVisibleLimit(
+                              Math.max(
+                                selectedAccountIncomes.length,
+                                selectedAccountExpenses.length,
+                                selectedAccountTransfers.length
+                              )
+                            )
+                          }
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 whitespace-nowrap"
+                        >
+                          Show All
+                        </button>
                       </div>
                     </div>
                   )}

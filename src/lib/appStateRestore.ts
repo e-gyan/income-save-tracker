@@ -5,7 +5,7 @@
  * Back/Forward navigation, tab switches, reloads, and PWA resume.
  */
 
-import { TimeRangePreset } from './dateFilters.ts';
+import { CustomDateRange, TimeRangePreset } from './dateFilters.ts';
 import type { ActiveTab } from '../components/Navigation.tsx';
 
 export type RestorableTab = ActiveTab;
@@ -13,6 +13,7 @@ export type RestorableTab = ActiveTab;
 export interface RestorableNavigationState {
   activeTab: RestorableTab;
   timeRange: TimeRangePreset;
+  customDateRange?: CustomDateRange;
   isDriveAlignmentOpen?: boolean;
   scrollByTab?: Partial<Record<RestorableTab, number>>;
   updatedAt: number;
@@ -22,6 +23,7 @@ export interface BrowserHistoryNavSnapshot {
   __savenknowNav: true;
   activeTab: RestorableTab;
   timeRange: TimeRangePreset;
+  customDateRange?: CustomDateRange;
   isDriveAlignmentOpen?: boolean;
 }
 
@@ -47,6 +49,7 @@ const VALID_RANGES: Set<string> = new Set([
   'this_year',
   '365d',
   'last_year',
+  'custom',
   '1d',
   '14d',
   '1m',
@@ -70,15 +73,28 @@ export function isValidTimeRange(range: unknown): range is TimeRangePreset {
   return typeof range === 'string' && VALID_RANGES.has(range);
 }
 
+function sanitizeCustomDateRange(raw: unknown): CustomDateRange | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const candidate = raw as Partial<CustomDateRange>;
+  const startDate =
+    typeof candidate.startDate === 'string' ? candidate.startDate.slice(0, 10) : '';
+  const endDate =
+    typeof candidate.endDate === 'string' ? candidate.endDate.slice(0, 10) : '';
+  if (!startDate && !endDate) return undefined;
+  return { startDate, endDate };
+}
+
 export function buildHistoryStateSnapshot(
   activeTab: RestorableTab,
   timeRange: TimeRangePreset,
-  isDriveAlignmentOpen = false
+  isDriveAlignmentOpen = false,
+  customDateRange?: CustomDateRange
 ): BrowserHistoryNavSnapshot {
   return {
     __savenknowNav: true,
     activeTab,
     timeRange,
+    customDateRange: sanitizeCustomDateRange(customDateRange),
     isDriveAlignmentOpen: Boolean(isDriveAlignmentOpen),
   };
 }
@@ -97,6 +113,7 @@ export function parseHistoryStateSnapshot(
     timeRange: isValidTimeRange(candidate.timeRange)
       ? candidate.timeRange
       : 'all',
+    customDateRange: sanitizeCustomDateRange(candidate.customDateRange),
     isDriveAlignmentOpen: Boolean(candidate.isDriveAlignmentOpen),
   };
 }
@@ -119,6 +136,7 @@ export function loadPersistedNavigationState(
     return {
       activeTab: parsed.activeTab,
       timeRange,
+      customDateRange: sanitizeCustomDateRange(parsed.customDateRange),
       isDriveAlignmentOpen: Boolean(parsed.isDriveAlignmentOpen),
       scrollByTab: parsed.scrollByTab || {},
       updatedAt: Number(parsed.updatedAt) || Date.now(),
