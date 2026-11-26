@@ -1,4 +1,4 @@
-# Save N Know: Financial Allocation and Multi-Account Ledger (`v4.16.0`)
+# Save N Know: Financial Allocation and Multi-Account Ledger (`v4.17.0`)
 
 **Save N Know** is an installable Progressive Web App (PWA) for personal and business capital allocation, multi-account ledger tracking, expense budgeting and savings goal management, account-driven FX currency conversion, Google Drive spreadsheet alignment and side-by-side reconciliation, file import and ingestion, expense intelligence, biometric app security, and automated savings vaults. Built with React 19, TypeScript, Tailwind CSS v4, Express, and Firebase (Authentication and Cloud Firestore).
 
@@ -6,6 +6,9 @@
 
 ## 1. Core Product Capabilities
 
+- **App Assistant Agent with Live Database and Occurrence Intelligence (`appAssistantIntelligence.ts`, `DeductionAgentModal.tsx`, `server.ts`, `App.tsx`)**:
+  - Accessible from Quick Record as the primary agent of the app with a minimalist three-tab workspace (**Assistant**, **Insights**, and **Actions**) and live KPI strip (Operating Cash, Savings Vaults, 30-Day Spend, and Budget Health).
+  - Evaluates live account balances, budget limits, recurring expense and income occurrences, spending drivers, and deduction patterns to inform, guide, navigate directly to app views, and record entries in one click, with deterministic local database fallback when offline.
 - **Accurate Expense Category and Subcategory Synchronization (`calculations.ts`, `server.ts`, `App.tsx`, `SettingsView.tsx`)**:
   - Renaming or merging an expense category or subcategory updates all existing flexible expenses, income allocated deductions, defined deduction rules, and budgets using normalized label matching (`and`, spacing, punctuation) and unique subcategory ownership.
   - Prevents phantom duplicate categories from being recreated from historical transactions whose subcategories already belong to a user-defined category in Settings.
@@ -50,6 +53,7 @@
 │   │   ├── biometricAuth.ts            # WebAuthn platform biometric enrollment, verification, and backup passcode
 │   │   ├── colorThemes.ts              # 11 color palettes, blended light canvas tints, and schedule helper
 │   │   ├── deductionIntelligence.ts    # Full-vault debit planning, expense learning, and deduction rule suggestions
+│   │   ├── appAssistantIntelligence.ts # Live database snapshot, occurrence detection, proactive insights, and local App Assistant engine
 │   │   ├── budgetCalculations.ts       # Multi-purpose Budgets and Goals evaluation, FX conversion rates, and recurring period creation
 │   │   └── nov24Restore.ts             # Detector for 24/11/2026 Drive and File imported transactions
 │   └── components/
@@ -63,7 +67,8 @@
 │       ├── SavingsDetailView.tsx       # Savings pillars and sub-bucket distribution across deductions and manual vault transfers
 │       ├── RecordCard.tsx              # Memoized transaction card rendering dd/mm/yyyy dates and detail pop-up modals
 │       ├── EditExpenseModal.tsx        # Standalone expense editing modal
-│       ├── FloatingQuickActions.tsx    # Quick-add modals (Automated All-Vault Transfer, Income, Quick Expense)
+│       ├── FloatingQuickActions.tsx    # Quick-add modals (Transfer Fund, Income, Expense) and App Assistant launcher
+│       ├── DeductionAgentModal.tsx     # Redesigned minimalist App Assistant workspace (Assistant chat, Insights, and Actions)
 │       ├── Header.tsx                  # Static top navigation bar with clickable Overview brand, active date label, and drawer trigger
 │       ├── Navigation.tsx              # Mobile date presets, Custom Date Range Bar (dd/mm/yyyy), and 5-item BottomMenuBar
 │       ├── Sidebar.tsx                 # Collapsible top-right drawer with Date Filter, Display Mode, Color Themes, and navigation views
@@ -79,15 +84,15 @@
 
 ---
 
-## 3. GitHub File Change Summary (`v4.16.0`)
+## 3. GitHub File Change Summary (`v4.17.0`)
 
 Brief summary of changes per file for GitHub commit and release notes:
 
 | File Path | Summary of Changes for GitHub |
 | :--- | :--- |
-| `src/lib/calculations.ts` | Updated `getEffectiveExpenseCategoryPreferences` to index subcategories explicitly owned by user-defined categories in Settings so legacy or mismatched expense category labels no longer create phantom duplicate categories; bumped `APP_VERSION` to `4.16.0` and prepended the `v4.16.0` release log entry. |
-| `src/components/Header.tsx` | Re-exported `APP_VERSION` directly from `src/lib/calculations.ts` so version control stays synchronized across Header, Sidebar, Settings, and Revision History from a single source of truth. |
-| `server.ts` | Enhanced `POST /api/categories/edit` with normalized label matching (`and`, punctuation, whitespace) and unique subcategory ownership checks so renaming or merging a category updates all matching and orphaned expenses, income allocated deductions, deduction rules, and budgets accurately. |
-| `src/App.tsx` | Aligned offline category edit fallback with normalized matching, duplicate category merging, and unique subcategory ownership; updated `handleEditCategoryOrSubcategory` and `handleMoveSubcategory` to await persisting affected records to Firestore before saving settings, preventing listener race conditions. |
-| `src/components/SettingsView.tsx` | Updated the Expense Categories and Subcategories section heading to use `and` for consistent minimalist copy. |
-| `README.md` | Updated enterprise product documentation, system architecture overview, and `v4.16.0` per-file GitHub commit change summary using `and` consistently. |
+| `src/lib/appAssistantIntelligence.ts` | Added live database and occurrence intelligence engine computing account balances, budget health, top spending categories, recurring expense and income cadences, proactive insight cards, structured AI context, and deterministic local fallback answers. |
+| `src/components/DeductionAgentModal.tsx` | Redesigned the Quick Record App Assistant into a minimalist three-tab agent workspace (Assistant, Insights, Actions) with live KPI bar, database-grounded chat, direct in-app view navigation, and one-click recording. |
+| `server.ts` | Added `POST /api/ai/app-assistant` powered by Gemini with full live database and occurrence context, minimalist professional response rules, and structured navigation and record action suggestions. |
+| `src/App.tsx` | Wired live `transfers`, `budgets`, `activeTab`, and `onNavigateToTab` props into the App Assistant modal so the agent has complete database visibility and direct navigation control. |
+| `src/lib/calculations.ts` | Bumped `APP_VERSION` to `4.17.0` and prepended the `v4.17.0` release log entry. |
+| `README.md` | Updated enterprise architecture documentation, component inventory, and `v4.17.0` per-file GitHub commit change summary using `and` consistently. |

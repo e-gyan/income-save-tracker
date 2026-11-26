@@ -3645,18 +3645,22 @@ export default function App() {
         onMoveSubcategory={handleMoveSubcategory}
       />
 
-      {/* Deduction & Record Intelligence Assistant Modal */}
+      {/* Save N Know App Assistant Modal */}
       <DeductionAgentModal
         isOpen={isDeductionAgentOpen}
         onClose={() => setIsDeductionAgentOpen(false)}
         incomes={incomes}
         expenses={expenses}
         accounts={activeAccounts}
+        transfers={transfers}
+        budgets={budgets}
+        activeTab={activeTab}
         settings={settings}
         currency={settings.currency}
         onSaveSettings={handleSaveSettings}
         onAddIncome={handleAddIncome}
         onAddExpenses={handleAddExpenses}
+        onNavigateToTab={navigateToTab}
       />
 
       {/* Reset Data Modal */}

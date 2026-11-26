@@ -344,6 +344,156 @@ ${JSON.stringify(financialContext, null, 2)}
 });
 
 /**
+ * Full-App Database and Occurrence Intelligence Assistant Route (`POST /api/ai/app-assistant`)
+ */
+app.post('/api/ai/app-assistant', async (req: Request, res: Response) => {
+  try {
+    const ai = getAiClient();
+    const { messages = [], modelTier = 'general', assistantContext = {} } = req.body;
+
+    const selectedModel =
+      modelTier === 'fast' ? 'gemini-3.1-flash-lite' : 'gemini-3.8-flash';
+
+    const systemInstruction = `
+You are the App Assistant and primary agent for Save N Know.
+Your job is to guide, inform, and assist the user using their live database snapshot, account balances, budgets and goals, recurring transaction occurrences, defined deductions, and app capabilities.
+Rules:
+1. Keep every response simple, clear, brief, and minimalist in a professional tone.
+2. Never use emojis or the "&" character (always write "and").
+3. Ground all figures strictly in the live database context below. Format dates as dd/mm/yyyy.
+4. When guiding the user to a screen or suggesting a direct action, include concise actionable items in "suggestions" using kind "navigate", "record_expense", "record_income", or "apply_deduction_rule".
+5. Valid targetTab values for "navigate" are: "dashboard", "income_log", "flexible_expenses", "accounts", "budgets", "analytics", "settings".
+
+Live Database and Occurrence Snapshot:
+${JSON.stringify(assistantContext, null, 2)}
+`;
+
+    const formattedHistory = Array.isArray(messages)
+      ? messages
+          .slice(0, -1)
+          .filter((m: any) => m && typeof m.content === 'string' && m.content.trim())
+          .map((m: any) => ({
+            role: m.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: m.content }],
+          }))
+      : [];
+
+    const latestUserMessage =
+      Array.isArray(messages) && messages.length > 0
+        ? String(messages[messages.length - 1]?.content || '')
+        : 'Give me a concise brief of my ledger, budgets, and recent occurrences.';
+
+    const chat = ai.chats.create({
+      model: selectedModel,
+      history: formattedHistory,
+      config: {
+        systemInstruction,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            reply: {
+              type: Type.STRING,
+              description:
+                'Simple, clear, brief professional answer grounded in the live database and occurrences. Never use emojis or "&".',
+            },
+            suggestions: {
+              type: Type.ARRAY,
+              description:
+                'Optional actionable next steps: navigate to a screen, record an expense or income, or apply a deduction rule.',
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  kind: {
+                    type: Type.STRING,
+                    description:
+                      'One of: navigate, record_expense, record_income, apply_deduction_rule',
+                  },
+                  title: {
+                    type: Type.STRING,
+                    description: 'Short action title.',
+                  },
+                  summary: {
+                    type: Type.STRING,
+                    description: 'Brief amount, category, or screen summary.',
+                  },
+                  reason: {
+                    type: Type.STRING,
+                    description: 'Short explanation grounded in database occurrences.',
+                  },
+                  actionLabel: {
+                    type: Type.STRING,
+                    description: 'Short button label such as Open Budgets or Record.',
+                  },
+                  targetTab: {
+                    type: Type.STRING,
+                    description:
+                      'For navigate: dashboard, income_log, flexible_expenses, accounts, budgets, analytics, or settings.',
+                  },
+                  name: {
+                    type: Type.STRING,
+                    description: 'Deduction name, income source, or expense recipient.',
+                  },
+                  deductionType: {
+                    type: Type.STRING,
+                    description: 'percentage or fixed',
+                  },
+                  amount: {
+                    type: Type.NUMBER,
+                    description: 'Numeric percentage rate or amount.',
+                  },
+                  routeTo: {
+                    type: Type.STRING,
+                    description: 'expense or savings_split',
+                  },
+                  expenseCategory: {
+                    type: Type.STRING,
+                    description: 'Matched expense category name.',
+                  },
+                  expenseSubcategory: {
+                    type: Type.STRING,
+                    description: 'Matched expense subcategory name.',
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const response = await chat.sendMessage({
+      message: latestUserMessage,
+    });
+
+    const rawText = (response.text ?? '{}').trim();
+    let parsed: { reply?: string; suggestions?: any[] } = {};
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      parsed = { reply: rawText, suggestions: [] };
+    }
+
+    res.json({
+      success: true,
+      reply:
+        parsed.reply ||
+        'I have reviewed your ledger and prepared next steps below.',
+      suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : [],
+      modelUsed: selectedModel,
+    });
+  } catch (error: any) {
+    console.error('App Assistant Error:', error);
+    res.status(500).json({
+      success: false,
+      error:
+        error.message ||
+        'Live AI service is unavailable. Local database intelligence remains active.',
+    });
+  }
+});
+
+/**
  * Intelligent Financial Advisor Route
  */
 app.post('/api/ai/advisor', async (req: Request, res: Response) => {
