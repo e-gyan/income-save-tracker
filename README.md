@@ -1,4 +1,4 @@
-# Save N Know: Enterprise Financial Allocation and Multi-Account Ledger (`v4.15.0`)
+# Save N Know: Financial Allocation and Multi-Account Ledger (`v4.15.0`)
 
 **Save N Know** is an installable Progressive Web App (PWA) and enterprise-grade personal and business capital allocation, multi-account ledger, multi-purpose expense budgeting & savings/transfer goal tracking, account-driven FX currency conversion, Google Drive spreadsheet alignment & side-by-side reconciliation, file import & ingestion, expense intelligence, biometric app security, and automated savings vault platform built with React 19, TypeScript, Tailwind CSS v4, Express, and Firebase (Authentication and Cloud Firestore).
 
