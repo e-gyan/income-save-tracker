@@ -3044,9 +3044,18 @@ app.post('/api/categories/edit', (req: Request, res: Response) => {
       budgets = [],
     } = req.body || {};
 
+    const normalizeLabelKey = (val: unknown): string =>
+      String(val || '')
+        .toLowerCase()
+        .replace(/&/g, ' and ')
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
     const cleanCatId = String(categoryId || '').trim();
     const cleanOldCat = String(oldCategoryName || '').trim();
     const cleanNewCatInput = String(newCategoryName || '').trim();
+    const cleanOldCatKey = normalizeLabelKey(cleanOldCat);
 
     let workingPrefs = normalizeCategoryPrefsBackend(
       settings.expenseCategoryPreferences || [],
@@ -3056,8 +3065,7 @@ app.post('/api/categories/edit', (req: Request, res: Response) => {
     const targetIdx = workingPrefs.findIndex(
       (p: any) =>
         (cleanCatId && String(p?.id || '') === cleanCatId) ||
-        (cleanOldCat &&
-          String(p?.name || '').trim().toLowerCase() === cleanOldCat.toLowerCase())
+        (cleanOldCatKey && normalizeLabelKey(p?.name) === cleanOldCatKey)
     );
 
     const resolvedOldCat =
@@ -3072,8 +3080,8 @@ app.post('/api/categories/edit', (req: Request, res: Response) => {
       });
     }
 
-    const oldCatKey = resolvedOldCat.toLowerCase();
-    const newCatKey = resolvedNewCat.toLowerCase();
+    const oldCatKey = normalizeLabelKey(resolvedOldCat);
+    const newCatKey = normalizeLabelKey(resolvedNewCat);
     const categoryChanged =
       Boolean(resolvedOldCat) &&
       Boolean(resolvedNewCat) &&
@@ -3095,7 +3103,7 @@ app.post('/api/categories/edit', (req: Request, res: Response) => {
         if (o && n && o !== n) {
           if (
             !rawRenames.some(
-              (r) => r.oldName.toLowerCase() === o.toLowerCase()
+              (r) => normalizeLabelKey(r.oldName) === normalizeLabelKey(o)
             )
           ) {
             rawRenames.push({ oldName: o, newName: n });
@@ -3108,23 +3116,44 @@ app.post('/api/categories/edit', (req: Request, res: Response) => {
     );
     const subRenameLookup = new Map<string, string>();
     for (const r of activeSubRenames) {
-      subRenameLookup.set(r.oldName.toLowerCase(), r.newName);
+      const k = normalizeLabelKey(r.oldName);
+      if (k) subRenameLookup.set(k, r.newName);
     }
 
-    // Track whether any OTHER category also uses a renamed subcategory name
+    // Track other categories and subcategories used outside the edited category
     const subNamesInOtherCategories = new Set<string>();
+    const otherCategoryKeys = new Set<string>();
     workingPrefs.forEach((p: any, idx: number) => {
       if (idx === targetIdx) return;
-      if (
-        String(p?.name || '').trim().toLowerCase() === oldCatKey
-      ) {
-        return;
-      }
+      const pKey = normalizeLabelKey(p?.name);
+      if (pKey === oldCatKey) return;
+      if (pKey) otherCategoryKeys.add(pKey);
       for (const s of p.subcategories || []) {
-        const clean = String(s || '').trim().toLowerCase();
+        const clean = normalizeLabelKey(s);
         if (clean) subNamesInOtherCategories.add(clean);
       }
     });
+
+    // Subcategories uniquely owned by the edited category (before or after rename)
+    const targetUniqueSubKeys = new Set<string>();
+    if (targetIdx >= 0) {
+      for (const s of workingPrefs[targetIdx]?.subcategories || []) {
+        const k = normalizeLabelKey(s);
+        if (k && !subNamesInOtherCategories.has(k)) {
+          targetUniqueSubKeys.add(k);
+        }
+      }
+    }
+    for (const r of activeSubRenames) {
+      const oldK = normalizeLabelKey(r.oldName);
+      const newK = normalizeLabelKey(r.newName);
+      if (oldK && !subNamesInOtherCategories.has(oldK)) {
+        targetUniqueSubKeys.add(oldK);
+      }
+      if (newK && !subNamesInOtherCategories.has(newK)) {
+        targetUniqueSubKeys.add(newK);
+      }
+    }
 
     // Helper: deduplicate string array case-insensitively while preserving order
     const dedupePreserveOrder = (list: string[]): string[] => {
@@ -3133,8 +3162,8 @@ app.post('/api/categories/edit', (req: Request, res: Response) => {
       for (const item of list) {
         const clean = String(item || '').trim();
         if (!clean) continue;
-        const key = clean.toLowerCase();
-        if (!seen.has(key)) {
+        const key = normalizeLabelKey(clean);
+        if (key && !seen.has(key)) {
           seen.add(key);
           out.push(clean);
         }
@@ -3150,7 +3179,7 @@ app.post('/api/categories/edit', (req: Request, res: Response) => {
             const target = workingPrefs[targetIdx];
             const nextSubs = dedupePreserveOrder(
               (target.subcategories || []).map((s: string) => {
-                const mapped = subRenameLookup.get(String(s || '').trim().toLowerCase());
+                const mapped = subRenameLookup.get(normalizeLabelKey(s));
                 return mapped || s;
               })
             );
@@ -3158,13 +3187,13 @@ app.post('/api/categories/edit', (req: Request, res: Response) => {
             const oldColors = target.subcategoryColors || {};
             for (const [k, v] of Object.entries(oldColors)) {
               if (!v) continue;
-              const mapped = subRenameLookup.get(String(k).trim().toLowerCase());
+              const mapped = subRenameLookup.get(normalizeLabelKey(k));
               const finalKey = mapped || k;
               if (!nextColors[finalKey]) {
                 nextColors[finalKey] = String(v);
               }
               if (mapped) {
-                renamedSubColorMap.set(mapped.toLowerCase(), String(v));
+                renamedSubColorMap.set(normalizeLabelKey(mapped), String(v));
               }
             }
             return {
@@ -3187,7 +3216,7 @@ app.post('/api/categories/edit', (req: Request, res: Response) => {
     for (let idx = 0; idx < workingPrefs.length; idx++) {
       if (idx === targetIdx) continue;
       const pref = workingPrefs[idx];
-      const pKey = String(pref?.name || '').trim().toLowerCase();
+      const pKey = normalizeLabelKey(pref?.name);
       if (pKey === newCatKey && categoryChanged) {
         // Merge target category into existing category with the new name
         mergedIntoExisting = true;
@@ -3227,21 +3256,28 @@ app.post('/api/categories/edit', (req: Request, res: Response) => {
       if (!cut || typeof cut !== 'object') return cut;
       const curCat = String(cut.expenseCategory || '').trim();
       const curSub = String(cut.expenseSubcategory || '').trim();
-      const curCatKey = curCat.toLowerCase();
-      const curSubKey = curSub.toLowerCase();
+      const curCatKey = normalizeLabelKey(curCat);
+      const curSubKey = normalizeLabelKey(curSub);
 
       const matchesCat = Boolean(oldCatKey) && curCatKey === oldCatKey;
+      const ownedSubOrphanCat =
+        categoryChanged &&
+        Boolean(curSubKey) &&
+        targetUniqueSubKeys.has(curSubKey) &&
+        (!curCatKey || curCatKey === 'uncategorized' || !otherCategoryKeys.has(curCatKey));
       const mappedSub = subRenameLookup.get(curSubKey);
       const subMatchesScope =
         Boolean(mappedSub) &&
         (matchesCat ||
+          ownedSubOrphanCat ||
           curCatKey === newCatKey ||
           !curCatKey ||
           !subNamesInOtherCategories.has(curSubKey));
 
-      if (!matchesCat && !subMatchesScope) return cut;
+      if (!matchesCat && !ownedSubOrphanCat && !subMatchesScope) return cut;
 
-      const updatedCat = matchesCat ? resolvedNewCat : curCat || resolvedNewCat;
+      const updatedCat =
+        matchesCat || ownedSubOrphanCat ? resolvedNewCat : curCat || resolvedNewCat;
       const updatedSub = subMatchesScope && mappedSub ? mappedSub : curSub;
       if (updatedCat !== curCat || updatedSub !== curSub) {
         deductionRulesUpdated++;
@@ -3271,35 +3307,44 @@ app.post('/api/categories/edit', (req: Request, res: Response) => {
         const curCat = String(exp.category || '').trim();
         const curSub = String(exp.subcategory || '').trim();
         const curDesc = String(exp.description || '').trim();
-        const curCatKey = curCat.toLowerCase();
-        const curSubKey = curSub.toLowerCase();
+        const curCatKey = normalizeLabelKey(curCat);
+        const curSubKey = normalizeLabelKey(curSub);
 
         const matchesCat = Boolean(oldCatKey) && curCatKey === oldCatKey;
+        const ownedSubOrphanCat =
+          categoryChanged &&
+          Boolean(curSubKey) &&
+          targetUniqueSubKeys.has(curSubKey) &&
+          (!curCatKey ||
+            curCatKey === 'uncategorized' ||
+            !otherCategoryKeys.has(curCatKey));
         const mappedSub = subRenameLookup.get(curSubKey);
         const subMatchesScope =
           Boolean(mappedSub) &&
           (matchesCat ||
+            ownedSubOrphanCat ||
             curCatKey === newCatKey ||
             !curCatKey ||
             curCatKey === 'uncategorized' ||
             !subNamesInOtherCategories.has(curSubKey));
 
-        if (!matchesCat && !subMatchesScope) return exp;
+        if (!matchesCat && !ownedSubOrphanCat && !subMatchesScope) return exp;
 
-        const nextCat = matchesCat
-          ? resolvedNewCat
-          : curCat || resolvedNewCat;
+        const nextCat =
+          matchesCat || ownedSubOrphanCat
+            ? resolvedNewCat
+            : curCat || resolvedNewCat;
         const nextSub = subMatchesScope && mappedSub ? mappedSub : curSub;
         const nextDesc =
           subMatchesScope &&
           mappedSub &&
           curDesc &&
-          curDesc.toLowerCase() === curSubKey
+          normalizeLabelKey(curDesc) === curSubKey
             ? mappedSub
             : exp.description;
         const nextColor =
           subMatchesScope && mappedSub
-            ? renamedSubColorMap.get(mappedSub.toLowerCase()) ||
+            ? renamedSubColorMap.get(normalizeLabelKey(mappedSub)) ||
               exp.subcategoryColor
             : exp.subcategoryColor;
 
@@ -3333,21 +3378,32 @@ app.post('/api/categories/edit', (req: Request, res: Response) => {
           if (!d || typeof d !== 'object') return d;
           const curCat = String(d.expenseCategory || '').trim();
           const curSub = String(d.expenseSubcategory || '').trim();
-          const curCatKey = curCat.toLowerCase();
-          const curSubKey = curSub.toLowerCase();
+          const curCatKey = normalizeLabelKey(curCat);
+          const curSubKey = normalizeLabelKey(curSub);
 
           const matchesCat = Boolean(oldCatKey) && curCatKey === oldCatKey;
+          const ownedSubOrphanCat =
+            categoryChanged &&
+            Boolean(curSubKey) &&
+            targetUniqueSubKeys.has(curSubKey) &&
+            (!curCatKey ||
+              curCatKey === 'uncategorized' ||
+              !otherCategoryKeys.has(curCatKey));
           const mappedSub = subRenameLookup.get(curSubKey);
           const subMatchesScope =
             Boolean(mappedSub) &&
             (matchesCat ||
+              ownedSubOrphanCat ||
               curCatKey === newCatKey ||
               !curCatKey ||
               !subNamesInOtherCategories.has(curSubKey));
 
-          if (!matchesCat && !subMatchesScope) return d;
+          if (!matchesCat && !ownedSubOrphanCat && !subMatchesScope) return d;
 
-          const nextCat = matchesCat ? resolvedNewCat : curCat || resolvedNewCat;
+          const nextCat =
+            matchesCat || ownedSubOrphanCat
+              ? resolvedNewCat
+              : curCat || resolvedNewCat;
           const nextSub = subMatchesScope && mappedSub ? mappedSub : curSub;
           if (nextCat !== curCat || nextSub !== curSub) {
             incChanged = true;
@@ -3385,7 +3441,7 @@ app.post('/api/categories/edit', (req: Request, res: Response) => {
           : [];
         const nextSubs = dedupePreserveOrder(
           origSubs.map((s) => {
-            const mapped = subRenameLookup.get(String(s || '').trim().toLowerCase());
+            const mapped = subRenameLookup.get(normalizeLabelKey(s));
             if (mapped && mapped !== s) {
               bChanged = true;
               return mapped;
@@ -3399,10 +3455,7 @@ app.post('/api/categories/edit', (req: Request, res: Response) => {
           : [];
         const nextCats = dedupePreserveOrder(
           origCats.map((c) => {
-            if (
-              categoryChanged &&
-              String(c || '').trim().toLowerCase() === oldCatKey
-            ) {
+            if (categoryChanged && normalizeLabelKey(c) === oldCatKey) {
               bChanged = true;
               return resolvedNewCat;
             }

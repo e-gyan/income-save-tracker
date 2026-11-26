@@ -1275,6 +1275,20 @@ export function getEffectiveExpenseCategoryPreferences(
     subcategoryColors: { ...(p.subcategoryColors || {}) },
   }));
 
+  // Index subcategories explicitly owned by user-defined categories in Settings
+  // so legacy or slightly mismatched expense category labels never recreate a
+  // phantom duplicate category containing only those subcategories.
+  const explicitSubOwners = new Map<string, ExpenseCategoryPreference[]>();
+  for (const pref of prefs) {
+    for (const sub of pref.subcategories) {
+      const normSub = normalizeText(sub);
+      if (!normSub) continue;
+      const list = explicitSubOwners.get(normSub) || [];
+      list.push(pref);
+      explicitSubOwners.set(normSub, list);
+    }
+  }
+
   // Merge any legacy string categories from settings.expenseCategories
   for (const legacyCat of settings.expenseCategories || []) {
     const cleanCat = (legacyCat || '').trim();
@@ -1292,7 +1306,7 @@ export function getEffectiveExpenseCategoryPreferences(
     }
   }
 
-  // Learn categories & subcategories from existing recorded expenses
+  // Learn categories and subcategories from existing recorded expenses
   for (const exp of existingExpenses) {
     if (!exp || exp.id?.startsWith('exp_ded_') || exp.id?.startsWith('exp_cut_')) {
       continue;
@@ -1301,12 +1315,28 @@ export function getEffectiveExpenseCategoryPreferences(
     const subName = (exp.subcategory || '').trim();
     if (!catName || normalizeText(catName) === 'uncategorized') continue;
 
-    let catEntry = prefs.find(
-      (p) => normalizeText(p.name) === normalizeText(catName)
-    );
+    const normCat = normalizeText(catName);
+    const normSub = normalizeText(subName);
+
+    let catEntry = prefs.find((p) => normalizeText(p.name) === normCat);
     if (!catEntry) {
+      const explicitOwners = normSub ? explicitSubOwners.get(normSub) : undefined;
+      if (explicitOwners && explicitOwners.length > 0) {
+        const primaryOwner = explicitOwners[0];
+        if (
+          subName &&
+          exp.subcategoryColor &&
+          exp.subcategoryColor.startsWith('#') &&
+          primaryOwner.subcategoryColors &&
+          !primaryOwner.subcategoryColors[subName]
+        ) {
+          primaryOwner.subcategoryColors[subName] = exp.subcategoryColor;
+        }
+        continue;
+      }
+
       catEntry = {
-        id: `exp_cat_learned_${normalizeText(catName).replace(/\s+/g, '_')}`,
+        id: `exp_cat_learned_${normCat.replace(/\s+/g, '_')}`,
         name: catName,
         subcategories: [],
         subcategoryColors: {},

@@ -2259,7 +2259,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         >
           <div className="min-w-0">
             <h2 className="font-display text-base font-semibold text-slate-900 break-words">
-              Expense Categories & Subcategories ({expensePrefs.length})
+              Expense Categories and Subcategories ({expensePrefs.length})
             </h2>
             <p className="text-xs text-slate-500 mt-0.5 break-words">
               Define categories and subcategories used by Expenses and Income Deduction Expenses

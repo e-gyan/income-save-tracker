@@ -1470,25 +1470,36 @@ export default function App() {
       }),
     }).catch(() => {});
 
-    (async () => {
+    if (currentUser) {
+      const uid = currentUser.uid;
       try {
-        if (currentUser) {
-          const uid = currentUser.uid;
-          await saveUserSettings(uid, updatedSettings);
-          for (const exp of changedExpenses) {
-            await saveFlexibleExpense(uid, exp);
-          }
-          for (const inc of changedIncomes) {
-            await saveIncomeReceipt(uid, inc);
-          }
-          for (const bgt of changedBudgets) {
-            await saveFinancialBudget(uid, bgt);
-          }
+        const chunkSize = 10;
+        for (let i = 0; i < changedExpenses.length; i += chunkSize) {
+          await Promise.all(
+            changedExpenses
+              .slice(i, i + chunkSize)
+              .map((exp) => saveFlexibleExpense(uid, exp))
+          );
         }
+        for (let i = 0; i < changedIncomes.length; i += chunkSize) {
+          await Promise.all(
+            changedIncomes
+              .slice(i, i + chunkSize)
+              .map((inc) => saveIncomeReceipt(uid, inc))
+          );
+        }
+        for (let i = 0; i < changedBudgets.length; i += chunkSize) {
+          await Promise.all(
+            changedBudgets
+              .slice(i, i + chunkSize)
+              .map((bgt) => saveFinancialBudget(uid, bgt))
+          );
+        }
+        await saveUserSettings(uid, updatedSettings);
       } catch (err) {
         console.error('Move subcategory persistence error:', err);
       }
-    })();
+    }
   };
 
   const handleEditCategoryOrSubcategory = async (payload: {
@@ -1577,9 +1588,17 @@ export default function App() {
 
     // 2. Deterministic offline fallback when backend is unreachable
     if (!updatedSettings || !nextExpenses || !nextIncomes || !nextBudgets) {
+      const normalizeLabelKey = (val?: string) =>
+        (val || '')
+          .toLowerCase()
+          .replace(/&/g, ' and ')
+          .replace(/[^a-z0-9\s]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+
       const nowIso = new Date().toISOString();
-      const oldCatKey = cleanOldCat.toLowerCase();
-      const newCatKey = cleanNewCat.toLowerCase();
+      const oldCatKey = normalizeLabelKey(cleanOldCat);
+      const newCatKey = normalizeLabelKey(cleanNewCat);
       const categoryChanged =
         Boolean(cleanOldCat) && Boolean(cleanNewCat) && cleanOldCat !== cleanNewCat;
 
@@ -1593,14 +1612,22 @@ export default function App() {
       for (const item of payload.subcategoryRenames || []) {
         const o = (item.oldName || '').trim();
         const n = (item.newName || '').trim();
-        if (o && n && o !== n && !renameList.some((r) => r.oldName.toLowerCase() === o.toLowerCase())) {
+        if (
+          o &&
+          n &&
+          o !== n &&
+          !renameList.some(
+            (r) => normalizeLabelKey(r.oldName) === normalizeLabelKey(o)
+          )
+        ) {
           renameList.push({ oldName: o, newName: n });
         }
       }
       const subRenameLookup = new Map<string, string>();
       for (const r of renameList) {
         if (r.oldName && r.newName && r.oldName !== r.newName) {
-          subRenameLookup.set(r.oldName.toLowerCase(), r.newName);
+          const k = normalizeLabelKey(r.oldName);
+          if (k) subRenameLookup.set(k, r.newName);
         }
       }
 
@@ -1610,8 +1637,8 @@ export default function App() {
         for (const item of list) {
           const clean = (item || '').trim();
           if (!clean) continue;
-          const k = clean.toLowerCase();
-          if (!seen.has(k)) {
+          const k = normalizeLabelKey(clean);
+          if (k && !seen.has(k)) {
             seen.add(k);
             out.push(clean);
           }
@@ -1622,59 +1649,130 @@ export default function App() {
       const targetIdx = currentEffectivePrefs.findIndex(
         (p) =>
           (payload.categoryId && p.id === payload.categoryId) ||
-          (cleanOldCat && p.name.trim().toLowerCase() === oldCatKey)
+          (oldCatKey && normalizeLabelKey(p.name) === oldCatKey)
       );
 
       const subNamesInOtherCats = new Set<string>();
+      const otherCategoryKeys = new Set<string>();
       currentEffectivePrefs.forEach((p, idx) => {
-        if (idx === targetIdx || p.name.trim().toLowerCase() === oldCatKey) return;
+        if (idx === targetIdx) return;
+        const pKey = normalizeLabelKey(p.name);
+        if (pKey === oldCatKey) return;
+        if (pKey) otherCategoryKeys.add(pKey);
         for (const s of p.subcategories || []) {
-          const clean = (s || '').trim().toLowerCase();
+          const clean = normalizeLabelKey(s);
           if (clean) subNamesInOtherCats.add(clean);
         }
       });
 
-      const renamedColorMap = new Map<string, string>();
-      const nextPrefs = currentEffectivePrefs.map((pref, idx) => {
-        if (idx !== targetIdx) return pref;
-        const nextSubs = dedupeList(
-          (pref.subcategories || []).map(
-            (s) => subRenameLookup.get(s.trim().toLowerCase()) || s
-          )
-        );
-        const nextColors: Record<string, string> = {};
-        for (const [k, v] of Object.entries(pref.subcategoryColors || {})) {
-          const mapped = subRenameLookup.get(k.trim().toLowerCase());
-          const finalKey = mapped || k;
-          if (v && !nextColors[finalKey]) {
-            nextColors[finalKey] = v;
-          }
-          if (mapped && v) {
-            renamedColorMap.set(mapped.toLowerCase(), v);
+      const targetUniqueSubKeys = new Set<string>();
+      if (targetIdx >= 0) {
+        for (const s of currentEffectivePrefs[targetIdx]?.subcategories || []) {
+          const k = normalizeLabelKey(s);
+          if (k && !subNamesInOtherCats.has(k)) {
+            targetUniqueSubKeys.add(k);
           }
         }
-        return {
-          ...pref,
-          name: cleanNewCat,
-          subcategories: nextSubs,
-          subcategoryColors: nextColors,
-        };
-      });
+      }
+      for (const r of renameList) {
+        const oldK = normalizeLabelKey(r.oldName);
+        const newK = normalizeLabelKey(r.newName);
+        if (oldK && !subNamesInOtherCats.has(oldK)) targetUniqueSubKeys.add(oldK);
+        if (newK && !subNamesInOtherCats.has(newK)) targetUniqueSubKeys.add(newK);
+      }
+
+      const renamedColorMap = new Map<string, string>();
+      const updatedTargetPref =
+        targetIdx >= 0
+          ? (() => {
+              const pref = currentEffectivePrefs[targetIdx];
+              const nextSubs = dedupeList(
+                (pref.subcategories || []).map(
+                  (s) => subRenameLookup.get(normalizeLabelKey(s)) || s
+                )
+              );
+              const nextColors: Record<string, string> = {};
+              for (const [k, v] of Object.entries(pref.subcategoryColors || {})) {
+                const mapped = subRenameLookup.get(normalizeLabelKey(k));
+                const finalKey = mapped || k;
+                if (v && !nextColors[finalKey]) {
+                  nextColors[finalKey] = v;
+                }
+                if (mapped && v) {
+                  renamedColorMap.set(normalizeLabelKey(mapped), v);
+                }
+              }
+              return {
+                ...pref,
+                name: cleanNewCat,
+                subcategories: nextSubs,
+                subcategoryColors: nextColors,
+              };
+            })()
+          : {
+              id: payload.categoryId || `exp_cat_${Date.now()}`,
+              name: cleanNewCat,
+              subcategories: dedupeList(renameList.map((r) => r.newName)),
+              subcategoryColors: {} as Record<string, string>,
+            };
+
+      const nextPrefs: typeof currentEffectivePrefs = [];
+      let mergedIntoExisting = false;
+      for (let idx = 0; idx < currentEffectivePrefs.length; idx++) {
+        if (idx === targetIdx) continue;
+        const pref = currentEffectivePrefs[idx];
+        const pKey = normalizeLabelKey(pref.name);
+        if (pKey === newCatKey && categoryChanged) {
+          mergedIntoExisting = true;
+          nextPrefs.push({
+            ...pref,
+            name: cleanNewCat,
+            subcategories: dedupeList([
+              ...(pref.subcategories || []),
+              ...(updatedTargetPref.subcategories || []),
+            ]),
+            subcategoryColors: {
+              ...(updatedTargetPref.subcategoryColors || {}),
+              ...(pref.subcategoryColors || {}),
+            },
+          });
+        } else {
+          nextPrefs.push(pref);
+        }
+      }
+      if (!mergedIntoExisting) {
+        if (targetIdx >= 0) {
+          nextPrefs.splice(Math.min(targetIdx, nextPrefs.length), 0, updatedTargetPref);
+        } else {
+          nextPrefs.push(updatedTargetPref);
+        }
+      }
 
       let deductionRulesUpdated = 0;
       const nextCuts = (settings.customCuts || []).map((cut) => {
         const curCat = (cut.expenseCategory || '').trim();
         const curSub = (cut.expenseSubcategory || '').trim();
-        const matchesCat = Boolean(oldCatKey) && curCat.toLowerCase() === oldCatKey;
-        const mappedSub = subRenameLookup.get(curSub.toLowerCase());
+        const curCatKey = normalizeLabelKey(curCat);
+        const curSubKey = normalizeLabelKey(curSub);
+        const matchesCat = Boolean(oldCatKey) && curCatKey === oldCatKey;
+        const ownedSubOrphanCat =
+          categoryChanged &&
+          Boolean(curSubKey) &&
+          targetUniqueSubKeys.has(curSubKey) &&
+          (!curCatKey ||
+            curCatKey === 'uncategorized' ||
+            !otherCategoryKeys.has(curCatKey));
+        const mappedSub = subRenameLookup.get(curSubKey);
         const subMatchesScope =
           Boolean(mappedSub) &&
           (matchesCat ||
-            curCat.toLowerCase() === newCatKey ||
-            !curCat ||
-            !subNamesInOtherCats.has(curSub.toLowerCase()));
-        if (!matchesCat && !subMatchesScope) return cut;
-        const updatedCat = matchesCat ? cleanNewCat : curCat || cleanNewCat;
+            ownedSubOrphanCat ||
+            curCatKey === newCatKey ||
+            !curCatKey ||
+            !subNamesInOtherCats.has(curSubKey));
+        if (!matchesCat && !ownedSubOrphanCat && !subMatchesScope) return cut;
+        const updatedCat =
+          matchesCat || ownedSubOrphanCat ? cleanNewCat : curCat || cleanNewCat;
         const updatedSub = subMatchesScope && mappedSub ? mappedSub : curSub;
         if (updatedCat !== curCat || updatedSub !== curSub) {
           deductionRulesUpdated++;
@@ -1700,28 +1798,39 @@ export default function App() {
         const curCat = (exp.category || '').trim();
         const curSub = (exp.subcategory || '').trim();
         const curDesc = (exp.description || '').trim();
-        const matchesCat = Boolean(oldCatKey) && curCat.toLowerCase() === oldCatKey;
-        const mappedSub = subRenameLookup.get(curSub.toLowerCase());
+        const curCatKey = normalizeLabelKey(curCat);
+        const curSubKey = normalizeLabelKey(curSub);
+        const matchesCat = Boolean(oldCatKey) && curCatKey === oldCatKey;
+        const ownedSubOrphanCat =
+          categoryChanged &&
+          Boolean(curSubKey) &&
+          targetUniqueSubKeys.has(curSubKey) &&
+          (!curCatKey ||
+            curCatKey === 'uncategorized' ||
+            !otherCategoryKeys.has(curCatKey));
+        const mappedSub = subRenameLookup.get(curSubKey);
         const subMatchesScope =
           Boolean(mappedSub) &&
           (matchesCat ||
-            curCat.toLowerCase() === newCatKey ||
-            !curCat ||
-            curCat.toLowerCase() === 'uncategorized' ||
-            !subNamesInOtherCats.has(curSub.toLowerCase()));
-        if (!matchesCat && !subMatchesScope) return exp;
-        const nextCat = matchesCat ? cleanNewCat : curCat || cleanNewCat;
+            ownedSubOrphanCat ||
+            curCatKey === newCatKey ||
+            !curCatKey ||
+            curCatKey === 'uncategorized' ||
+            !subNamesInOtherCats.has(curSubKey));
+        if (!matchesCat && !ownedSubOrphanCat && !subMatchesScope) return exp;
+        const nextCat =
+          matchesCat || ownedSubOrphanCat ? cleanNewCat : curCat || cleanNewCat;
         const nextSub = subMatchesScope && mappedSub ? mappedSub : curSub;
         const nextDesc =
           subMatchesScope &&
           mappedSub &&
           curDesc &&
-          curDesc.toLowerCase() === curSub.toLowerCase()
+          normalizeLabelKey(curDesc) === curSubKey
             ? mappedSub
             : exp.description;
         const nextColor =
           subMatchesScope && mappedSub
-            ? renamedColorMap.get(mappedSub.toLowerCase()) || exp.subcategoryColor
+            ? renamedColorMap.get(normalizeLabelKey(mappedSub)) || exp.subcategoryColor
             : exp.subcategoryColor;
         if (
           nextCat !== curCat ||
@@ -1749,16 +1858,27 @@ export default function App() {
         const nextDeds = inc.allocatedDeductions.map((d) => {
           const curCat = (d.expenseCategory || '').trim();
           const curSub = (d.expenseSubcategory || '').trim();
-          const matchesCat = Boolean(oldCatKey) && curCat.toLowerCase() === oldCatKey;
-          const mappedSub = subRenameLookup.get(curSub.toLowerCase());
+          const curCatKey = normalizeLabelKey(curCat);
+          const curSubKey = normalizeLabelKey(curSub);
+          const matchesCat = Boolean(oldCatKey) && curCatKey === oldCatKey;
+          const ownedSubOrphanCat =
+            categoryChanged &&
+            Boolean(curSubKey) &&
+            targetUniqueSubKeys.has(curSubKey) &&
+            (!curCatKey ||
+              curCatKey === 'uncategorized' ||
+              !otherCategoryKeys.has(curCatKey));
+          const mappedSub = subRenameLookup.get(curSubKey);
           const subMatchesScope =
             Boolean(mappedSub) &&
             (matchesCat ||
-              curCat.toLowerCase() === newCatKey ||
-              !curCat ||
-              !subNamesInOtherCats.has(curSub.toLowerCase()));
-          if (!matchesCat && !subMatchesScope) return d;
-          const nextCat = matchesCat ? cleanNewCat : curCat || cleanNewCat;
+              ownedSubOrphanCat ||
+              curCatKey === newCatKey ||
+              !curCatKey ||
+              !subNamesInOtherCats.has(curSubKey));
+          if (!matchesCat && !ownedSubOrphanCat && !subMatchesScope) return d;
+          const nextCat =
+            matchesCat || ownedSubOrphanCat ? cleanNewCat : curCat || cleanNewCat;
           const nextSub = subMatchesScope && mappedSub ? mappedSub : curSub;
           if (nextCat !== curCat || nextSub !== curSub) {
             changed = true;
@@ -1787,7 +1907,7 @@ export default function App() {
         let bChanged = false;
         const nextSubs = dedupeList(
           (b.subcategories || []).map((s) => {
-            const mapped = subRenameLookup.get(s.trim().toLowerCase());
+            const mapped = subRenameLookup.get(normalizeLabelKey(s));
             if (mapped && mapped !== s) {
               bChanged = true;
               return mapped;
@@ -1797,7 +1917,7 @@ export default function App() {
         );
         const nextCats = dedupeList(
           (b.categories || []).map((c) => {
-            if (categoryChanged && c.trim().toLowerCase() === oldCatKey) {
+            if (categoryChanged && normalizeLabelKey(c) === oldCatKey) {
               bChanged = true;
               return cleanNewCat;
             }
@@ -1841,7 +1961,8 @@ export default function App() {
     setLocalData('incomes', nextIncomes, effectiveUserId);
     setLocalData('budgets', nextBudgets, effectiveUserId);
 
-    // 4. Persist to Firestore & authenticated cloud snapshot
+    // 4. Persist affected records before settings so Firestore listeners never pair
+    // updated categories with stale expense records
     if (currentUser) {
       const uid = currentUser.uid;
       syncAuthenticatedCloudSnapshotToBackend(uid, {
@@ -1850,35 +1971,33 @@ export default function App() {
         incomes: nextIncomes,
         budgets: nextBudgets,
       });
-      (async () => {
-        try {
-          await saveUserSettings(uid, updatedSettings!);
-          const chunkSize = 10;
-          for (let i = 0; i < changedExpenses.length; i += chunkSize) {
-            await Promise.all(
-              changedExpenses
-                .slice(i, i + chunkSize)
-                .map((exp) => saveFlexibleExpense(uid, exp))
-            );
-          }
-          for (let i = 0; i < changedIncomes.length; i += chunkSize) {
-            await Promise.all(
-              changedIncomes
-                .slice(i, i + chunkSize)
-                .map((inc) => saveIncomeReceipt(uid, inc))
-            );
-          }
-          for (let i = 0; i < changedBudgets.length; i += chunkSize) {
-            await Promise.all(
-              changedBudgets
-                .slice(i, i + chunkSize)
-                .map((bgt) => saveFinancialBudget(uid, bgt))
-            );
-          }
-        } catch (err) {
-          console.error('Category edit cascade persistence error:', err);
+      try {
+        const chunkSize = 10;
+        for (let i = 0; i < changedExpenses.length; i += chunkSize) {
+          await Promise.all(
+            changedExpenses
+              .slice(i, i + chunkSize)
+              .map((exp) => saveFlexibleExpense(uid, exp))
+          );
         }
-      })();
+        for (let i = 0; i < changedIncomes.length; i += chunkSize) {
+          await Promise.all(
+            changedIncomes
+              .slice(i, i + chunkSize)
+              .map((inc) => saveIncomeReceipt(uid, inc))
+          );
+        }
+        for (let i = 0; i < changedBudgets.length; i += chunkSize) {
+          await Promise.all(
+            changedBudgets
+              .slice(i, i + chunkSize)
+              .map((bgt) => saveFinancialBudget(uid, bgt))
+          );
+        }
+        await saveUserSettings(uid, updatedSettings!);
+      } catch (err) {
+        console.error('Category edit cascade persistence error:', err);
+      }
     }
 
     return {
