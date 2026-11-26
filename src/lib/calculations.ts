@@ -704,13 +704,19 @@ export function computeDeductionAmount(
   return Math.round(((gross * cleanVal) / 100) * 100) / 100;
 }
 
-export const APP_VERSION = '4.15.0';
+export const APP_VERSION = '4.16.0';
 
 export const VERSION_RELEASE_LOG: {
   version: string;
   date: string;
   summary: string;
 }[] = [
+  {
+    version: '4.16.0',
+    date: '2026-11-26',
+    summary:
+      'Fixed expense category and subcategory updates so renaming or merging a category updates all matching and orphaned transactions without recreating duplicate phantom categories, aligned normalized matching across backend and offline fallback paths, ordered Firestore writes so records persist before settings, and unified APP_VERSION across the app.',
+  },
   {
     version: '4.15.0',
     date: '2026-11-25',

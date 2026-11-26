@@ -1,4 +1,4 @@
-# Save N Know: Financial Allocation and Multi-Account Ledger
+# Save N Know: Financial Allocation and Multi-Account Ledger (`v4.16.0`)
 
 **Save N Know** is an installable Progressive Web App (PWA) for personal and business capital allocation, multi-account ledger tracking, expense budgeting and savings goal management, account-driven FX currency conversion, Google Drive spreadsheet alignment and side-by-side reconciliation, file import and ingestion, expense intelligence, biometric app security, and automated savings vaults. Built with React 19, TypeScript, Tailwind CSS v4, Express, and Firebase (Authentication and Cloud Firestore).
 
@@ -79,14 +79,15 @@
 
 ---
 
-## 3. GitHub File Change Summary
+## 3. GitHub File Change Summary (`v4.16.0`)
 
 Brief summary of changes per file for GitHub commit and release notes:
 
 | File Path | Summary of Changes for GitHub |
 | :--- | :--- |
-| `src/lib/calculations.ts` | Updated `getEffectiveExpenseCategoryPreferences` to index subcategories explicitly owned by user-defined categories in Settings so legacy or mismatched expense category labels no longer create phantom duplicate categories containing only those subcategories. |
+| `src/lib/calculations.ts` | Updated `getEffectiveExpenseCategoryPreferences` to index subcategories explicitly owned by user-defined categories in Settings so legacy or mismatched expense category labels no longer create phantom duplicate categories; bumped `APP_VERSION` to `4.16.0` and prepended the `v4.16.0` release log entry. |
+| `src/components/Header.tsx` | Re-exported `APP_VERSION` directly from `src/lib/calculations.ts` so version control stays synchronized across Header, Sidebar, Settings, and Revision History from a single source of truth. |
 | `server.ts` | Enhanced `POST /api/categories/edit` with normalized label matching (`and`, punctuation, whitespace) and unique subcategory ownership checks so renaming or merging a category updates all matching and orphaned expenses, income allocated deductions, deduction rules, and budgets accurately. |
 | `src/App.tsx` | Aligned offline category edit fallback with normalized matching, duplicate category merging, and unique subcategory ownership; updated `handleEditCategoryOrSubcategory` and `handleMoveSubcategory` to await persisting affected records to Firestore before saving settings, preventing listener race conditions. |
 | `src/components/SettingsView.tsx` | Updated the Expense Categories and Subcategories section heading to use `and` for consistent minimalist copy. |
-| `README.md` | Updated enterprise product documentation, system architecture overview, and per-file GitHub commit change summary using `and` consistently. |
+| `README.md` | Updated enterprise product documentation, system architecture overview, and `v4.16.0` per-file GitHub commit change summary using `and` consistently. |

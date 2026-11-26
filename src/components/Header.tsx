@@ -8,7 +8,7 @@ import {
 } from '../lib/dateFilters.ts';
 import { PWAInstallButton } from './PWAInstallButton.tsx';
 
-export const APP_VERSION = '4.15.0';
+export { APP_VERSION } from '../lib/calculations.ts';
 
 interface HeaderProps {
   activeTab?: ActiveTab;
