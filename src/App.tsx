@@ -633,21 +633,20 @@ export default function App() {
     setLocalData('accounts', nextAccounts, effectiveUserId);
 
     (async () => {
-      setIsSaving(true);
       try {
         if (currentUser) {
-          await saveUserSettings(currentUser.uid, updatedSettings);
-          for (const va of syncedVaultAccounts) {
-            await saveFinancialAccount(currentUser.uid, va);
-          }
-          for (const delVa of deletedVaultAccounts) {
-            await deleteFinancialAccount(currentUser.uid, delVa.id);
-          }
+          await Promise.all([
+            saveUserSettings(currentUser.uid, updatedSettings),
+            ...syncedVaultAccounts.map((va) =>
+              saveFinancialAccount(currentUser.uid, va)
+            ),
+            ...deletedVaultAccounts.map((delVa) =>
+              deleteFinancialAccount(currentUser.uid, delVa.id)
+            ),
+          ]);
         }
       } catch (err) {
         console.error('Background settings save error:', err);
-      } finally {
-        setIsSaving(false);
       }
     })();
   };
@@ -1037,14 +1036,17 @@ export default function App() {
     });
 
     if (currentUser) {
-      try {
-        await saveIncomeReceipt(currentUser.uid, newReceipt);
-        syncAuthenticatedCloudSnapshotToBackend(currentUser.uid, {
-          incomes: persistedIncomes,
-        });
-      } catch (err) {
-        console.error('Income save error:', err);
-      }
+      const uid = currentUser.uid;
+      void (async () => {
+        try {
+          await saveIncomeReceipt(uid, newReceipt);
+          syncAuthenticatedCloudSnapshotToBackend(uid, {
+            incomes: persistedIncomes,
+          });
+        } catch (err) {
+          console.error('Income save error:', err);
+        }
+      })();
     }
 
     return newReceipt;
@@ -1068,16 +1070,19 @@ export default function App() {
     });
 
     if (currentUser) {
-      try {
-        await Promise.all(
-          newReceipts.map((rec) => saveIncomeReceipt(currentUser.uid, rec))
-        );
-        syncAuthenticatedCloudSnapshotToBackend(currentUser.uid, {
-          incomes: persistedIncomes,
-        });
-      } catch (err) {
-        console.error('Batch income save error:', err);
-      }
+      const uid = currentUser.uid;
+      void (async () => {
+        try {
+          await Promise.all(
+            newReceipts.map((rec) => saveIncomeReceipt(uid, rec))
+          );
+          syncAuthenticatedCloudSnapshotToBackend(uid, {
+            incomes: persistedIncomes,
+          });
+        } catch (err) {
+          console.error('Batch income save error:', err);
+        }
+      })();
     }
 
     return newReceipts;
@@ -1233,16 +1238,19 @@ export default function App() {
     });
 
     if (currentUser) {
-      try {
-        await Promise.all(
-          newRecords.map((rec) => saveFlexibleExpense(currentUser.uid, rec))
-        );
-        syncAuthenticatedCloudSnapshotToBackend(currentUser.uid, {
-          expenses: persistedExpenses,
-        });
-      } catch (err) {
-        console.error('Expense save error:', err);
-      }
+      const uid = currentUser.uid;
+      void (async () => {
+        try {
+          await Promise.all(
+            newRecords.map((rec) => saveFlexibleExpense(uid, rec))
+          );
+          syncAuthenticatedCloudSnapshotToBackend(uid, {
+            expenses: persistedExpenses,
+          });
+        } catch (err) {
+          console.error('Expense save error:', err);
+        }
+      })();
     }
   };
 
@@ -2199,9 +2207,9 @@ export default function App() {
     (async () => {
       try {
         if (currentUser) {
-          for (const rec of newRecords) {
-            await saveAccountTransfer(effectiveUserId, rec);
-          }
+          await Promise.all(
+            newRecords.map((rec) => saveAccountTransfer(effectiveUserId, rec))
+          );
         }
       } catch (err) {
         console.error('Batch transfer save error:', err);
@@ -3632,44 +3640,50 @@ export default function App() {
         }}
       />
 
-      {/* Global Edit Expense Modal across All Boards */}
-      <EditExpenseModal
-        isOpen={Boolean(editingExpense)}
-        expense={editingExpense}
-        expenses={expenses}
-        accounts={activeAccounts}
-        settings={settings}
-        currency={settings.currency}
-        onClose={() => setEditingExpense(null)}
-        onSaveExpense={handleUpdateExpense}
-        onMoveSubcategory={handleMoveSubcategory}
-      />
+      {/* Global Edit Expense Modal across All Boards (Mounted Only When Open) */}
+      {Boolean(editingExpense) && (
+        <EditExpenseModal
+          isOpen={Boolean(editingExpense)}
+          expense={editingExpense}
+          expenses={expenses}
+          accounts={activeAccounts}
+          settings={settings}
+          currency={settings.currency}
+          onClose={() => setEditingExpense(null)}
+          onSaveExpense={handleUpdateExpense}
+          onMoveSubcategory={handleMoveSubcategory}
+        />
+      )}
 
-      {/* Save N Know App Assistant Modal */}
-      <DeductionAgentModal
-        isOpen={isDeductionAgentOpen}
-        onClose={() => setIsDeductionAgentOpen(false)}
-        incomes={incomes}
-        expenses={expenses}
-        accounts={activeAccounts}
-        transfers={transfers}
-        budgets={budgets}
-        activeTab={activeTab}
-        settings={settings}
-        currency={settings.currency}
-        onSaveSettings={handleSaveSettings}
-        onAddIncome={handleAddIncome}
-        onAddExpenses={handleAddExpenses}
-        onNavigateToTab={navigateToTab}
-      />
+      {/* Save N Know App Assistant Modal (Mounted Only When Open) */}
+      {isDeductionAgentOpen && (
+        <DeductionAgentModal
+          isOpen={isDeductionAgentOpen}
+          onClose={() => setIsDeductionAgentOpen(false)}
+          incomes={incomes}
+          expenses={expenses}
+          accounts={activeAccounts}
+          transfers={transfers}
+          budgets={budgets}
+          activeTab={activeTab}
+          settings={settings}
+          currency={settings.currency}
+          onSaveSettings={handleSaveSettings}
+          onAddIncome={handleAddIncome}
+          onAddExpenses={handleAddExpenses}
+          onNavigateToTab={navigateToTab}
+        />
+      )}
 
-      {/* Reset Data Modal */}
-      <CleanSheetModal
-        isOpen={Boolean(isCleanSheetModalOpen)}
-        isClearing={isClearingSheet}
-        onClose={() => setIsCleanSheetModalOpen(false)}
-        onConfirm={handleConfirmCleanSheet}
-      />
+      {/* Reset Data Modal (Mounted Only When Open) */}
+      {Boolean(isCleanSheetModalOpen) && (
+        <CleanSheetModal
+          isOpen={Boolean(isCleanSheetModalOpen)}
+          isClearing={isClearingSheet}
+          onClose={() => setIsCleanSheetModalOpen(false)}
+          onConfirm={handleConfirmCleanSheet}
+        />
+      )}
 
       {/* Offline Mode Connectivity Banner */}
       <OfflineIndicator />

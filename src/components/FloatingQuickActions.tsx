@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useDeferredValue } from 'react';
 import {
   IncomeReceipt,
   IncomeDeductionItem,
@@ -203,18 +203,21 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
 
   const transferVaultShares = useMemo(
     () =>
-      buildManualTransferSavingsVaultPlan({
-        amountInSourceCurr: numericTransferAmt,
-        sourceAccountId: transferSourceId,
-        sourceCurrency: transferSourceCurr,
-        date: transferDate,
-        description: transferDesc,
-        expenses,
-        accounts,
-        settings,
-        fxSnapshot,
-      }),
+      activeModal !== 'transfer' || numericTransferAmt <= 0
+        ? []
+        : buildManualTransferSavingsVaultPlan({
+            amountInSourceCurr: numericTransferAmt,
+            sourceAccountId: transferSourceId,
+            sourceCurrency: transferSourceCurr,
+            date: transferDate,
+            description: transferDesc,
+            expenses,
+            accounts,
+            settings,
+            fxSnapshot,
+          }),
     [
+      activeModal,
       numericTransferAmt,
       transferSourceId,
       transferSourceCurr,
@@ -946,30 +949,73 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
     return matched?.subcategories || [];
   }, [expenseCategories, expCategory]);
 
+  const deferredExpAmount = useDeferredValue(expAmount);
+  const deferredExpRecipient = useDeferredValue(expRecipient);
+
   const learnedExpVaultDebit = useMemo(
     () =>
-      learnSavingsVaultDebitAccount({
-        expenses,
-        accounts,
-        settings,
-        recipient: expRecipient,
-        category: expCategory,
-        subcategory: expSubcategory,
-      }),
-    [expenses, accounts, settings, expRecipient, expCategory, expSubcategory]
+      activeModal !== 'expense'
+        ? null
+        : learnSavingsVaultDebitAccount({
+            expenses,
+            accounts,
+            settings,
+            recipient: deferredExpRecipient,
+            category: expCategory,
+            subcategory: expSubcategory,
+          }),
+    [activeModal, expenses, accounts, settings, deferredExpRecipient, expCategory, expSubcategory]
   );
 
   const topFrequentExpenses = useMemo(
     () =>
-      learnTopFrequentExpenses({
-        expenses,
-        accounts,
-        settings,
-        currency,
-        limit: 5,
-      }),
-    [expenses, accounts, settings, currency]
+      activeModal !== 'expense'
+        ? []
+        : learnTopFrequentExpenses({
+            expenses,
+            accounts,
+            settings,
+            currency,
+            limit: 5,
+          }),
+    [activeModal, expenses, accounts, settings, currency]
   );
+
+  const quickExpenseSpendEval = useMemo(() => {
+    if (activeModal !== 'expense') return null;
+    const rawExpAmt = parseFloat(deferredExpAmount) || 0;
+    if (rawExpAmt <= 0) return null;
+    return checkSpendAgainstBudgetsAndAccount({
+      date: expDate,
+      accountId: expAccountId,
+      category: expCategory,
+      subcategory: expSubcategory,
+      amount: rawExpAmt,
+      currency: expCurrency,
+      budgets,
+      expenses,
+      incomes,
+      accounts,
+      transfers,
+      settings,
+      fxSnapshot,
+    });
+  }, [
+    activeModal,
+    deferredExpAmount,
+    expDate,
+    expAccountId,
+    expCategory,
+    expSubcategory,
+    expCurrency,
+    budgets,
+    expenses,
+    incomes,
+    accounts,
+    transfers,
+    settings,
+    fxSnapshot,
+  ]);
 
   const handleApplyFrequentExpense = (sug: FrequentExpenseSuggestion) => {
     setExpManualAccountOverride(Boolean(sug.accountId));
@@ -2711,25 +2757,10 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
                 );
               })()}
 
-              {/* Real-Time Budget & Account Spend Check in Quick Record */}
-              {(() => {
-                const rawExpAmt = parseFloat(expAmount) || 0;
-                if (rawExpAmt <= 0) return null;
-                const spendEval = checkSpendAgainstBudgetsAndAccount({
-                  date: expDate,
-                  accountId: expAccountId,
-                  category: expCategory,
-                  subcategory: expSubcategory,
-                  amount: rawExpAmt,
-                  currency: expCurrency,
-                  budgets,
-                  expenses,
-                  incomes,
-                  accounts,
-                  transfers,
-                  settings,
-                  fxSnapshot,
-                });
+              {/* Real-Time Budget and Account Spend Check in Quick Record */}
+              {quickExpenseSpendEval &&
+                (() => {
+                  const spendEval = quickExpenseSpendEval;
 
                 return (
                   <div className="space-y-2">

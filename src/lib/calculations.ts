@@ -704,13 +704,19 @@ export function computeDeductionAmount(
   return Math.round(((gross * cleanVal) / 100) * 100) / 100;
 }
 
-export const APP_VERSION = '4.17.0';
+export const APP_VERSION = '4.18.0';
 
 export const VERSION_RELEASE_LOG: {
   version: string;
   date: string;
   summary: string;
 }[] = [
+  {
+    version: '4.18.0',
+    date: '2026-11-27',
+    summary:
+      'Engineered seamless app-wide responsiveness with optimistic non-blocking saves, parallel Firestore persistence, conditional mounting of closed modals, deferred budget and account spend checks eliminating textbox input lag in Expenses and Quick Record, mobile tap and horizontal scroll responsiveness, default-collapsed Analytics sections including Financial Summary, and a Today option in the Date Filter.',
+  },
   {
     version: '4.17.0',
     date: '2026-11-26',

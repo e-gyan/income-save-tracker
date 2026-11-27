@@ -12,6 +12,7 @@
 
 export type TimeRangePreset =
   | 'all'
+  | 'today'
   | '7d'
   | 'this_month'
   | '31d'
@@ -43,6 +44,7 @@ export interface TimeRangeOption {
  * The 7 primary redesigned date filters requested by the user.
  */
 export const REDESIGNED_DATE_FILTER_OPTIONS: TimeRangeOption[] = [
+  { id: 'today', label: 'Today', shortLabel: 'Today', days: 1 },
   { id: '7d', label: 'Last 7 days', shortLabel: '7D', days: 7 },
   { id: 'this_month', label: 'This month', shortLabel: 'This Mo' },
   { id: '31d', label: 'Last 31 days', shortLabel: '31D', days: 31 },
@@ -134,6 +136,8 @@ export function isDateInPreset(
   const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
 
   switch (preset) {
+    case 'today':
+      return diffDays === 0;
     case '7d':
       return diffDays >= 0 && diffDays <= 6;
     case 'this_month':

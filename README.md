@@ -1,4 +1,4 @@
-# Save N Know: Financial Allocation and Multi-Account Ledger (`v4.17.0`)
+# Save N Know: Financial Allocation and Multi-Account Ledger (`v4.18.0`)
 
 **Save N Know** is an installable Progressive Web App (PWA) for personal and business capital allocation, multi-account ledger tracking, expense budgeting and savings goal management, account-driven FX currency conversion, Google Drive spreadsheet alignment and side-by-side reconciliation, file import and ingestion, expense intelligence, biometric app security, and automated savings vaults. Built with React 19, TypeScript, Tailwind CSS v4, Express, and Firebase (Authentication and Cloud Firestore).
 
@@ -6,6 +6,13 @@
 
 ## 1. Core Product Capabilities
 
+- **Seamless Performance, Instant Saves, and Fluid Mobile Interactions (`App.tsx`, `FlexibleExpensesView.tsx`, `FloatingQuickActions.tsx`, `index.css`)**:
+  - Optimistic non-blocking saves update local state and cache immediately while persisting to Cloud Firestore in parallel background operations.
+  - Closed global modals unmount completely to avoid background computation, while heavy Quick Record memos run only when their modal is open.
+  - Deferred live spend and vault checks (`useDeferredValue`) keep number and text inputs in Expenses and Quick Record responsive without delay or breaks, paired with zero-delay mobile tap and horizontal menu scroll CSS.
+- **Today Date Filter and Collapsible-by-Default Analytics (`dateFilters.ts`, `appStateRestore.ts`, `AnalyticsView.tsx`)**:
+  - Added **Today** to the date filter presets across Header, Navigation, Sidebar, and session restoration.
+  - Made every section in Analytics (including Financial Summary, Accounts: Income and Expenses, and Key Financial Performance Metrics) collapsed by default and expanded on user request.
 - **App Assistant Agent with Live Database and Occurrence Intelligence (`appAssistantIntelligence.ts`, `DeductionAgentModal.tsx`, `server.ts`, `App.tsx`)**:
   - Accessible from Quick Record as the primary agent of the app with a minimalist three-tab workspace (**Assistant**, **Insights**, and **Actions**) and live KPI strip (Operating Cash, Savings Vaults, 30-Day Spend, and Budget Health).
   - Evaluates live account balances, budget limits, recurring expense and income occurrences, spending drivers, and deduction patterns to inform, guide, navigate directly to app views, and record entries in one click, with deterministic local database fallback when offline.
@@ -84,15 +91,18 @@
 
 ---
 
-## 3. GitHub File Change Summary (`v4.17.0`)
+## 3. GitHub File Change Summary (`v4.18.0`)
 
 Brief summary of changes per file for GitHub commit and release notes:
 
 | File Path | Summary of Changes for GitHub |
 | :--- | :--- |
-| `src/lib/appAssistantIntelligence.ts` | Added live database and occurrence intelligence engine computing account balances, budget health, top spending categories, recurring expense and income cadences, proactive insight cards, structured AI context, and deterministic local fallback answers. |
-| `src/components/DeductionAgentModal.tsx` | Redesigned the Quick Record App Assistant into a minimalist three-tab agent workspace (Assistant, Insights, Actions) with live KPI bar, database-grounded chat, direct in-app view navigation, and one-click recording. |
-| `server.ts` | Added `POST /api/ai/app-assistant` powered by Gemini with full live database and occurrence context, minimalist professional response rules, and structured navigation and record action suggestions. |
-| `src/App.tsx` | Wired live `transfers`, `budgets`, `activeTab`, and `onNavigateToTab` props into the App Assistant modal so the agent has complete database visibility and direct navigation control. |
-| `src/lib/calculations.ts` | Bumped `APP_VERSION` to `4.17.0` and prepended the `v4.17.0` release log entry. |
-| `README.md` | Updated enterprise architecture documentation, component inventory, and `v4.17.0` per-file GitHub commit change summary using `and` consistently. |
+| `src/App.tsx` | Converted income, batch income, and expense saves to optimistic non-blocking persistence with parallel Firestore writes for settings and batch transfers; conditionally mounted EditExpenseModal, DeductionAgentModal, and CleanSheetModal only when open so closed modals use zero CPU. |
+| `src/components/FlexibleExpensesView.tsx` | Deferred live budget and account spend checks via `useDeferredValue` and removed per-keystroke vault history scans on recipient typing so entering figures and text stays instant without delay or breaks. |
+| `src/components/FloatingQuickActions.tsx` | Guarded heavy transfer, vault, and frequent-expense memos by active modal state and deferred live spend checks so browsing menus and typing in Quick Record remain fluid. |
+| `src/components/AnalyticsView.tsx` | Wrapped the top Financial Summary KPI grid in a collapsible card and set Financial Summary, Accounts: Income and Expenses, and Key Financial Performance Metrics to collapsed by default so all Analytics elements expand only on user request. |
+| `src/lib/dateFilters.ts` | Added the `Today` (`today`) preset to `TimeRangePreset`, `REDESIGNED_DATE_FILTER_OPTIONS`, and `isDateInPreset`. |
+| `src/lib/appStateRestore.ts` | Added `today` to `VALID_RANGES` so Today filter selections restore cleanly across reloads and navigation. |
+| `src/index.css` | Added `-webkit-tap-highlight-color: transparent` on interactive controls and smooth touch horizontal scroll rules for fluid mobile menu navigation. |
+| `src/lib/calculations.ts` | Bumped `APP_VERSION` to `4.18.0` and prepended the `v4.18.0` release log entry. |
+| `README.md` | Updated enterprise product documentation and `v4.18.0` per-file GitHub commit change summary using `and` consistently. |

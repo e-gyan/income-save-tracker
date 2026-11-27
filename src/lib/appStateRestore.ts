@@ -42,6 +42,7 @@ const VALID_TABS: Set<string> = new Set([
 
 const VALID_RANGES: Set<string> = new Set([
   'all',
+  'today',
   '7d',
   'this_month',
   '31d',

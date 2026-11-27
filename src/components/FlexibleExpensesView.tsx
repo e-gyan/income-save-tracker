@@ -300,15 +300,13 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
           const matchedPref = categoryPreferences.find((c) => c.name === patch.category);
           updated.subcategory = matchedPref?.subcategories?.[0] || '';
         }
-        // Automate debit from Savings Vault only if user hasn't manually pinned an account
-        // and non-empty cause/subcategory text matches past vault-debit expenses
+        // Automate debit from Savings Vault only when category or subcategory changes
+        // (never scan history on every recipient keystroke so typing stays instant)
         if (
           !updated.manualAccountOverride &&
           patch.accountId === undefined &&
-          (patch.recipient !== undefined ||
-            patch.subcategory !== undefined ||
-            patch.category !== undefined) &&
-          (updated.recipient.trim().length >= 2 || updated.subcategory.trim().length >= 2)
+          (patch.subcategory !== undefined || patch.category !== undefined) &&
+          updated.subcategory.trim().length >= 2
         ) {
           const learnedVault = learnSavingsVaultDebitAccount({
             expenses,
@@ -392,6 +390,52 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
       return [...prev, nextRow];
     });
   };
+
+  const deferredRows = useDeferredValue(rows);
+
+  // Compute live budget and account spend checks off deferred draft values so
+  // typing figures in amount or text inputs never stalls or breaks.
+  const rowSpendCheckMap = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof checkSpendAgainstBudgetsAndAccount>>();
+    if (isFormCollapsed) return map;
+    for (const row of deferredRows) {
+      const rawAmt = parseFloat(row.amount) || 0;
+      if (rawAmt <= 0 || !row.accountId) continue;
+      const acc = accounts.find((a) => a.id === row.accountId);
+      const rowCurr = row.currency || getAccountCurrency(acc, currency);
+      map.set(
+        row.rowId,
+        checkSpendAgainstBudgetsAndAccount({
+          date: row.date || batchDate,
+          accountId: row.accountId,
+          category: row.category,
+          subcategory: row.subcategory,
+          amount: rawAmt,
+          currency: rowCurr,
+          budgets,
+          expenses,
+          incomes,
+          accounts,
+          transfers,
+          settings,
+          fxSnapshot,
+        })
+      );
+    }
+    return map;
+  }, [
+    isFormCollapsed,
+    deferredRows,
+    batchDate,
+    budgets,
+    expenses,
+    incomes,
+    accounts,
+    transfers,
+    settings,
+    currency,
+    fxSnapshot,
+  ]);
 
   const validDraftRows = useMemo(
     () =>
@@ -1241,24 +1285,11 @@ export const FlexibleExpensesView: React.FC<FlexibleExpensesViewProps> = ({
                       </div>
                     )}
 
-                    {/* Real-Time Budget & Account Spend Check Alerts */}
+                    {/* Real-Time Budget and Account Spend Check Alerts */}
                     {rawRowAmt > 0 &&
                       (() => {
-                        const spendEval = checkSpendAgainstBudgetsAndAccount({
-                          date: row.date || batchDate,
-                          accountId: row.accountId,
-                          category: row.category,
-                          subcategory: row.subcategory,
-                          amount: rawRowAmt,
-                          currency: rowCurr,
-                          budgets,
-                          expenses,
-                          incomes,
-                          accounts,
-                          transfers,
-                          settings,
-                          fxSnapshot,
-                        });
+                        const spendEval = rowSpendCheckMap.get(row.rowId);
+                        if (!spendEval) return null;
 
                         return (
                           <div className="space-y-2">
